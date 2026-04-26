@@ -5,7 +5,7 @@ import Button from '@/components/Button'
 import { supabase, User } from '@/lib/supabase'
 import { generateImage, uploadToStorage } from '@/lib/kie-api'
 
-export default function App() {
+export default function Dashboard() {
   const navigate = useNavigate()
   const [user, setUser] = useState<User | null>(null)
   const [isMenuOpen, setIsMenuOpen] = useState(false)

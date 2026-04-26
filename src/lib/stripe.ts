@@ -2,11 +2,9 @@ import { loadStripe } from '@stripe/stripe-js'
 
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY
 
-if (!stripePublishableKey) {
-  throw new Error('Missing Stripe publishable key')
-}
-
-export const stripePromise = loadStripe(stripePublishableKey)
+export const stripePromise = stripePublishableKey && stripePublishableKey !== 'your_stripe_publishable_key' 
+  ? loadStripe(stripePublishableKey) 
+  : null
 
 export const PRICE_IDS = {
   weekly: 'price_weekly_299', // À remplacer par les vrais IDs Stripe

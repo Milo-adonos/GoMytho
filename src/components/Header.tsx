@@ -24,6 +24,8 @@ export default function Header({ showLogin = true }: HeaderProps) {
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setUser(data.user)
+    }).catch(() => {
+      // Supabase not configured, ignore
     })
   }, [])
 

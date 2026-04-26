@@ -1,324 +1,332 @@
-import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
-import Header from '@/components/Header'
-import Footer from '@/components/Footer'
-import Button from '@/components/Button'
+import { useState, useEffect, useRef } from 'react'
 
 const examples = [
-  {
-    id: 1,
-    before: '⌚',
-    after: '💎',
-    title: 'Poignet vide → Rolex dorée',
-  },
-  {
-    id: 2,
-    before: '😐',
-    after: '🥸',
-    title: 'Selfie normal → Moustache géante',
-  },
-  {
-    id: 3,
-    before: '🐟',
-    after: '🦈',
-    title: 'Photo pêche → Poisson absurde',
-  },
-  {
-    id: 4,
-    before: '🏠',
-    after: '🏎️',
-    title: 'Garage vide → Lamborghini',
-  },
-  {
-    id: 5,
-    before: '🤳',
-    after: '🎤',
-    title: 'Photo solo → Avec célébrité',
-  },
-  {
-    id: 6,
-    before: '🏡',
-    after: '🦕',
-    title: 'Salon normal → Dinosaure',
-  },
-]
-
-const steps = [
-  {
-    number: '01',
-    title: 'Upload ta photo',
-    description: 'Ajoute la photo de ton choix, plus elle est nette plus le résultat sera bluffant.',
-    icon: '📷',
-  },
-  {
-    number: '02',
-    title: 'Décris ton mytho',
-    description: 'Décris ton imagination pour transformer ton image en mytho réaliste.',
-    icon: '🎭',
-  },
-  {
-    number: '03',
-    title: 'L\'IA génère',
-    description: 'En 10 secondes, notre IA crée une image ultra-réaliste impossible à distinguer du vrai.',
-    icon: '⚡',
-  },
-  {
-    number: '04',
-    title: 'Envoie et profite',
-    description: 'Partage à tes potes, mate la réaction, garde ton mytho en mémoire.',
-    icon: '🚀',
-  },
+  { before: '⌚', after: '💎', label: 'Poignet vide', result: 'Rolex dorée' },
+  { before: '😐', after: '🥸', label: 'Selfie normal', result: 'Moustache géante' },
+  { before: '🐟', after: '🦈', label: 'Photo pêche', result: 'Poisson absurde' },
+  { before: '🏠', after: '🏎️', label: 'Garage vide', result: 'Lamborghini' },
+  { before: '🤳', after: '🎤', label: 'Photo solo', result: 'Avec Drake' },
+  { before: '🏡', after: '🦕', label: 'Salon normal', result: 'Dinosaure' },
 ]
 
 const faqs = [
-  {
-    question: 'C\'est légal ?',
-    answer: 'Oui. C\'est une blague entre potes, pas une arnaque bancaire. Évite juste de mytho ton banquier.',
-  },
-  {
-    question: 'Mes photos sont stockées ?',
-    answer: 'Non. Supprimées dès la génération. On n\'en veut pas.',
-  },
-  {
-    question: 'Ça marche sur quoi ?',
-    answer: 'Tout. Vraiment tout. Si tu peux le décrire, l\'IA peut le mettre sur ta photo.',
-  },
-  {
-    question: 'Je peux annuler quand ?',
-    answer: 'À tout moment, en 1 clic. Pas de piège, pas d\'engagement.',
-  },
+  { q: 'C\'est légal ?', a: 'Oui. C\'est une blague entre potes, pas une arnaque bancaire. Évite juste de mytho ton banquier.' },
+  { q: 'Mes photos sont stockées ?', a: 'Non. Supprimées dès la génération. On n\'en veut pas.' },
+  { q: 'Ça marche sur quoi ?', a: 'Tout. Vraiment tout. Si tu peux le décrire, l\'IA peut le mettre sur ta photo.' },
+  { q: 'Je peux annuler quand ?', a: 'À tout moment, en 1 clic. Pas de piège, pas d\'engagement.' },
 ]
+
+const steps = [
+  { num: '01', icon: '📷', title: 'Upload ta photo', desc: 'Ajoute la photo de ton choix, plus elle est nette plus le résultat sera bluffant.' },
+  { num: '02', icon: '🎭', title: 'Décris ton mytho', desc: 'Décris ton imagination pour transformer ton image en mytho réaliste.' },
+  { num: '03', icon: '⚡', title: 'L\'IA génère', desc: 'En 10 secondes, notre IA crée une image ultra-réaliste impossible à distinguer du vrai.' },
+  { num: '04', icon: '🚀', title: 'Envoie et profite', desc: 'Partage à tes potes, mate la réaction, garde ton mytho en mémoire.' },
+]
+
+// Carousel card avec état tap (pour mobile — pas de hover)
+function ExampleCard({ ex, isActive }: { ex: typeof examples[0]; isActive: boolean }) {
+  const [tapped, setTapped] = useState(false)
+
+  return (
+    <div
+      className="flex-shrink-0 snap-center relative rounded-2xl overflow-hidden border transition-all duration-300 active:scale-95"
+      style={{
+        width: '140px',
+        height: '190px',
+        background: '#141826',
+        borderColor: isActive || tapped ? 'rgba(198,255,60,0.6)' : 'rgba(198,255,60,0.12)',
+        boxShadow: isActive || tapped ? '0 0 20px rgba(198,255,60,0.2)' : 'none',
+      }}
+      onTouchStart={() => setTapped(true)}
+      onTouchEnd={() => setTimeout(() => setTapped(false), 600)}
+      onClick={() => { setTapped(t => !t) }}
+    >
+      {/* AVANT state */}
+      <div
+        className="absolute inset-0 flex flex-col items-center justify-center transition-opacity duration-300 p-3"
+        style={{ opacity: tapped ? 0 : 1 }}
+      >
+        <div className="absolute top-2 left-2 px-1.5 py-0.5 bg-white/20 text-white text-[10px] font-bold rounded">AVANT</div>
+        <div className="text-5xl mb-2">{ex.before}</div>
+        <p className="text-[11px] text-text-secondary text-center leading-tight">{ex.label}</p>
+      </div>
+
+      {/* APRÈS state */}
+      <div
+        className="absolute inset-0 flex flex-col items-center justify-center transition-opacity duration-300 p-3"
+        style={{ opacity: tapped ? 1 : 0, background: 'rgba(10,14,26,0.97)' }}
+      >
+        <div
+          className="absolute top-2 left-2 px-1.5 py-0.5 bg-lime text-primary-bg text-[10px] font-bold rounded"
+          style={{ boxShadow: '0 0 8px rgba(198,255,60,0.5)' }}
+        >
+          APRÈS
+        </div>
+        <div className="text-5xl mb-2">{ex.after}</div>
+        <p className="text-[11px] text-lime font-semibold text-center leading-tight px-1">{ex.result}</p>
+      </div>
+    </div>
+  )
+}
 
 export default function Landing() {
   const navigate = useNavigate()
-  const [currentExample, setCurrentExample] = useState(0)
+  const [currentEx, setCurrentEx] = useState(0)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
+  const [isScrolled, setIsScrolled] = useState(false)
+  const carouselRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentExample((prev) => (prev + 1) % examples.length)
+    const iv = setInterval(() => {
+      setCurrentEx(p => {
+        const next = (p + 1) % examples.length
+        // Auto-scroll carousel
+        if (carouselRef.current) {
+          const card = carouselRef.current.children[next] as HTMLElement
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+        }
+        return next
+      })
     }, 3000)
-    return () => clearInterval(interval)
+    return () => clearInterval(iv)
   }, [])
 
-  const handleCTA = () => {
-    navigate('/create')
-  }
+  useEffect(() => {
+    const onScroll = () => setIsScrolled(window.scrollY > 20)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   return (
-    <div className="min-h-screen bg-primary-bg">
-      <Header />
+    <div className="min-h-screen bg-primary-bg relative overflow-x-hidden select-none">
 
-      {/* Hero Section */}
-      <section className="pt-32 pb-20 px-4">
-        <div className="max-w-6xl mx-auto text-center">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="inline-block mb-8 px-6 py-2 bg-secondary-bg rounded-full border border-lime/20"
+      {/* ── HEADER ── */}
+      <header
+        className="fixed top-0 left-0 right-0 z-50 transition-all duration-300"
+        style={{
+          background: isScrolled ? 'rgba(10,14,26,0.95)' : 'transparent',
+          backdropFilter: isScrolled ? 'blur(16px)' : 'none',
+        }}
+      >
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <span className="text-2xl font-black text-lime" style={{ textShadow: '0 0 20px rgba(198,255,60,0.4)' }}>
+            GoMytho
+          </span>
+          <button
+            onClick={() => navigate('/signup')}
+            className="text-lime text-sm font-bold px-4 py-2 rounded-full border active:scale-95 transition-all"
+            style={{ borderColor: 'rgba(198,255,60,0.3)', background: 'rgba(198,255,60,0.06)' }}
           >
-            <p className="text-sm text-text-secondary">
-              <span className="inline-block w-2 h-2 bg-lime rounded-full mr-2 animate-pulse" />
-              Plus de 24 836 mythos créés cette semaine
-            </p>
-          </motion.div>
+            Se connecter
+          </button>
+        </div>
+      </header>
 
-          <motion.h1
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-5xl md:text-7xl lg:text-8xl font-black leading-tight mb-6"
-          >
+      {/* ── HERO ── */}
+      <section className="relative px-4 pt-24 pb-10 flex flex-col items-center text-center overflow-hidden">
+
+        {/* Background glow */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 pointer-events-none" style={{
+          width: '120vw', height: '120vw', maxWidth: '700px', maxHeight: '700px',
+          background: 'radial-gradient(circle, rgba(198,255,60,0.07) 0%, transparent 70%)',
+          filter: 'blur(50px)',
+        }} />
+        <div className="absolute inset-0 dot-grid opacity-20 pointer-events-none" />
+
+        <div className="relative z-10 w-full max-w-lg mx-auto">
+
+          {/* Badge compteur */}
+          <div className="animate-fade-up-1 inline-flex items-center gap-2 mb-6 px-4 py-2 rounded-full border"
+            style={{ background: '#141826', borderColor: 'rgba(198,255,60,0.2)' }}>
+            <span className="w-2 h-2 rounded-full bg-lime animate-pulse-dot" style={{ boxShadow: '0 0 8px rgba(198,255,60,0.9)' }} />
+            <span className="text-xs text-text-secondary">
+              Plus de <span className="text-lime font-black text-sm">24 836</span> mythos cette semaine
+            </span>
+          </div>
+
+          {/* Titre */}
+          <h1 className="animate-fade-up-2 font-black leading-[1.05] tracking-tight mb-4"
+            style={{ fontSize: 'clamp(36px, 10vw, 72px)' }}>
             Crée des photos
             <br />
-            <span className="text-gradient-lime">ultra réalistes</span>
+            <span className="text-gradient-lime" style={{ textShadow: '0 0 40px rgba(198,255,60,0.2)' }}>
+              ultra réalistes
+            </span>
             <br />
-            pour piéger tes potes
-          </motion.h1>
+            pour piéger
+            <br className="sm:hidden" /> tes potes
+          </h1>
 
-          <motion.p
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="text-xl md:text-2xl text-text-secondary mb-8 max-w-3xl mx-auto"
-          >
-            L'IA qui mytho ta vie en 10 secondes. De la Rolex au poisson-bite, on a couvert.
-          </motion.p>
+          {/* Sous-titre */}
+          <p className="animate-fade-up-3 text-base text-text-secondary mb-8 max-w-sm mx-auto leading-relaxed">
+            L'IA qui mytho ta vie en 10 secondes.{' '}
+            <span className="text-text-primary font-semibold">De la Rolex au poisson-bite, on a couvert.</span>
+          </p>
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="mb-6"
-          >
-            <Button onClick={handleCTA} size="lg" className="text-2xl px-12 py-6">
-              Lancer mon mytho
-              <span className="text-3xl">→</span>
-            </Button>
-          </motion.div>
+          {/* CTA */}
+          <div className="animate-fade-up-4 flex flex-col items-center gap-3 mb-6">
+            <button
+              onClick={() => navigate('/create')}
+              className="w-full max-w-xs py-4 text-lg font-black rounded-full bg-lime text-primary-bg active:scale-95 transition-all duration-200 animate-pulse-glow"
+              style={{ boxShadow: '0 0 50px rgba(198,255,60,0.4), 0 0 100px rgba(198,255,60,0.15)' }}
+            >
+              Lancer mon mytho →
+            </button>
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.4 }}
-            className="inline-flex items-center gap-2 bg-lime/10 px-4 py-2 rounded-full border border-lime/30"
-          >
-            <span className="px-2 py-0.5 bg-lime text-primary-bg text-xs font-bold rounded">
-              NOUVEAU
-            </span>
-            <span className="text-sm text-text-secondary">
-              Mode Snap rouge indétectable
-            </span>
-          </motion.div>
-        </div>
-      </section>
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs"
+              style={{ background: 'rgba(198,255,60,0.06)', borderColor: 'rgba(198,255,60,0.3)' }}>
+              <span className="px-1.5 py-0.5 bg-lime text-primary-bg text-[10px] font-black rounded">NOUVEAU</span>
+              <span className="text-text-secondary">Mode Snap rouge indétectable</span>
+            </div>
+          </div>
 
-      {/* Before/After Carousel */}
-      <section className="py-20 px-4 overflow-hidden">
-        <div className="max-w-7xl mx-auto">
-          <div className="flex gap-6 overflow-x-auto pb-6 scrollbar-hide snap-x snap-mandatory">
-            {examples.map((example, index) => (
-              <motion.div
-                key={example.id}
-                initial={{ opacity: 0, scale: 0.9 }}
-                whileInView={{ opacity: 1, scale: 1 }}
-                viewport={{ once: true }}
-                transition={{ delay: index * 0.1 }}
-                className="flex-shrink-0 w-72 snap-center"
-              >
-                <div className="bg-secondary-bg rounded-3xl p-6 border border-lime/10 hover:border-lime/30 transition-all">
-                  <div className="aspect-[9/16] bg-primary-bg rounded-2xl mb-4 flex flex-col items-center justify-center relative overflow-hidden">
-                    <div className="absolute top-4 left-4 px-3 py-1 bg-text-secondary/80 text-primary-bg text-xs font-bold rounded">
-                      AVANT
-                    </div>
-                    <div className="text-8xl mb-4">{example.before}</div>
-                    <div className="absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-lime/20 to-transparent" />
-                    <div className="absolute bottom-4 left-4 px-3 py-1 bg-lime text-primary-bg text-xs font-bold rounded glow-lime">
-                      APRÈS
-                    </div>
-                    <div className="absolute bottom-12 text-8xl">{example.after}</div>
-                  </div>
-                  <p className="text-sm text-text-secondary text-center">{example.title}</p>
-                </div>
-              </motion.div>
-            ))}
+          {/* Carousel avant/après - tap sur mobile */}
+          <div className="animate-fade-up-5 mt-4">
+            <p className="text-[11px] text-text-secondary mb-4 uppercase tracking-widest font-semibold">
+              Tape pour voir la magie ✨
+            </p>
+            <div
+              ref={carouselRef}
+              className="flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-2 -mx-4 px-4"
+            >
+              {examples.map((ex, i) => (
+                <ExampleCard key={i} ex={ex} isActive={currentEx === i} />
+              ))}
+            </div>
+
+            {/* Dots indicator */}
+            <div className="flex justify-center gap-1.5 mt-4">
+              {examples.map((_, i) => (
+                <div
+                  key={i}
+                  className="rounded-full transition-all duration-300"
+                  style={{
+                    width: currentEx === i ? '20px' : '6px',
+                    height: '6px',
+                    background: currentEx === i ? '#C6FF3C' : 'rgba(198,255,60,0.2)',
+                    boxShadow: currentEx === i ? '0 0 8px rgba(198,255,60,0.6)' : 'none',
+                  }}
+                />
+              ))}
+            </div>
           </div>
         </div>
       </section>
 
-      {/* How It Works */}
-      <section className="py-20 px-4 bg-secondary-bg/30">
-        <div className="max-w-7xl mx-auto">
-          <div className="text-center mb-16">
-            <div className="inline-flex items-center gap-2 mb-4">
-              <span className="w-2 h-2 bg-lime rounded-full" />
-              <span className="text-lime text-sm font-semibold tracking-wider uppercase">
-                Comment ça marche
-              </span>
+      {/* ── COMMENT ÇA MARCHE ── */}
+      <section className="py-16 px-4" style={{ background: 'rgba(20,24,38,0.5)' }}>
+        <div className="max-w-lg mx-auto">
+          <div className="text-center mb-10">
+            <div className="inline-flex items-center gap-2 mb-3">
+              <span className="w-2 h-2 bg-lime rounded-full" style={{ boxShadow: '0 0 8px rgba(198,255,60,0.8)' }} />
+              <span className="text-lime text-xs font-bold tracking-widest uppercase">Comment ça marche</span>
             </div>
-            <h2 className="text-4xl md:text-6xl font-black mb-4">
+            <h2 className="font-black mb-2" style={{ fontSize: 'clamp(28px, 8vw, 48px)' }}>
               Prêt en <span className="text-gradient-lime">30 secondes</span>
             </h2>
-            <p className="text-xl text-text-secondary">
-              4 étapes simples pour mytho n'importe qui.
-            </p>
+            <p className="text-text-secondary text-sm">4 étapes. Zéro prise de tête.</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {steps.map((step, index) => (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: index * 0.1 }}
-                className="bg-secondary-bg rounded-3xl p-6 border border-lime/10 hover:border-lime/30 transition-all relative"
+          <div className="flex flex-col gap-4">
+            {steps.map((step, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-4 p-5 rounded-2xl border"
+                style={{ background: '#141826', borderColor: 'rgba(198,255,60,0.1)' }}
               >
-                <div className="text-6xl font-black text-lime/20 absolute top-4 right-4">
-                  {step.number}
+                <div
+                  className="flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center text-2xl"
+                  style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.2)' }}
+                >
+                  {step.icon}
                 </div>
-                <div className="w-16 h-16 bg-lime/10 rounded-2xl flex items-center justify-center mb-4 border border-lime/20">
-                  <span className="text-3xl">{step.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-lime text-xs font-black">{step.num}</span>
+                    <h3 className="font-bold text-base">{step.title}</h3>
+                  </div>
+                  <p className="text-text-secondary text-sm leading-relaxed">{step.desc}</p>
                 </div>
-                <h3 className="text-xl font-bold mb-3">{step.title}</h3>
-                <p className="text-text-secondary leading-relaxed">{step.description}</p>
-              </motion.div>
+              </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* FAQ */}
-      <section className="py-20 px-4">
-        <div className="max-w-4xl mx-auto">
-          <motion.h2
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            className="text-4xl md:text-6xl font-black text-center mb-12"
-          >
+      {/* ── FAQ ── */}
+      <section className="py-16 px-4">
+        <div className="max-w-lg mx-auto">
+          <h2 className="font-black text-center mb-8" style={{ fontSize: 'clamp(28px, 8vw, 48px)' }}>
             Questions ?
-          </motion.h2>
-
-          <div className="space-y-4">
-            {faqs.map((faq, index) => (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: index * 0.1 }}
-                className="bg-secondary-bg rounded-2xl border border-lime/10 overflow-hidden"
+          </h2>
+          <div className="flex flex-col gap-3">
+            {faqs.map((faq, i) => (
+              <div
+                key={i}
+                className="rounded-2xl border overflow-hidden transition-all duration-300"
+                style={{
+                  background: '#141826',
+                  borderColor: openFaq === i ? 'rgba(198,255,60,0.4)' : 'rgba(198,255,60,0.08)',
+                  boxShadow: openFaq === i ? '0 0 20px rgba(198,255,60,0.08)' : 'none',
+                }}
               >
                 <button
-                  onClick={() => setOpenFaq(openFaq === index ? null : index)}
-                  className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-lime/5 transition-colors"
+                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                  className="w-full px-5 py-4 flex items-center justify-between text-left active:bg-white/5 transition-colors"
                 >
-                  <span className="font-bold text-lg">{faq.question}</span>
-                  <motion.span
-                    animate={{ rotate: openFaq === index ? 180 : 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="text-2xl text-lime"
-                  >
-                    ↓
-                  </motion.span>
+                  <span className="font-bold text-sm pr-4">{faq.q}</span>
+                  <span
+                    className="text-lime text-xl flex-shrink-0 transition-transform duration-300"
+                    style={{ transform: openFaq === i ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                  >↓</span>
                 </button>
-                {openFaq === index && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="px-6 pb-4"
-                  >
-                    <p className="text-text-secondary leading-relaxed">{faq.answer}</p>
-                  </motion.div>
+                {openFaq === i && (
+                  <div className="px-5 pb-4 text-text-secondary text-sm leading-relaxed"
+                    style={{ borderTop: '1px solid rgba(198,255,60,0.08)', paddingTop: '12px' }}>
+                    {faq.a}
+                  </div>
                 )}
-              </motion.div>
+              </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Final CTA */}
-      <section className="py-32 px-4 bg-gradient-to-b from-transparent to-secondary-bg/50">
-        <div className="max-w-4xl mx-auto text-center">
-          <motion.h2
-            initial={{ opacity: 0, scale: 0.9 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            viewport={{ once: true }}
-            className="text-5xl md:text-7xl lg:text-8xl font-black mb-12"
+      {/* ── CTA FINAL ── */}
+      <section className="py-24 px-4 relative overflow-hidden">
+        <div className="absolute inset-0 pointer-events-none" style={{
+          background: 'radial-gradient(ellipse at center, rgba(198,255,60,0.06) 0%, transparent 70%)',
+        }} />
+        <div className="relative z-10 max-w-lg mx-auto text-center">
+          <h2 className="font-black mb-8 leading-tight" style={{ fontSize: 'clamp(36px, 12vw, 80px)' }}>
+            Alors,{' '}
+            <span className="text-gradient-lime">on mytho ?</span>
+          </h2>
+          <button
+            onClick={() => navigate('/create')}
+            className="w-full max-w-xs py-5 text-xl font-black rounded-full bg-lime text-primary-bg active:scale-95 transition-all duration-200"
+            style={{ boxShadow: '0 0 60px rgba(198,255,60,0.4), 0 0 120px rgba(198,255,60,0.15)' }}
           >
-            Alors, on mytho ?
-          </motion.h2>
-          <Button onClick={handleCTA} size="lg" className="text-2xl px-12 py-6">
-            Commencer maintenant
-            <span className="text-3xl">→</span>
-          </Button>
+            Commencer maintenant →
+          </button>
+          <p className="mt-4 text-text-secondary text-xs">3 mythos gratuits · Aucune CB requise</p>
         </div>
       </section>
 
-      <Footer />
+      {/* ── FOOTER ── */}
+      <footer className="py-8 px-4" style={{ borderTop: '1px solid rgba(138,143,160,0.1)' }}>
+        <div className="max-w-lg mx-auto text-center flex flex-col gap-4">
+          <span className="text-xl font-black text-lime" style={{ textShadow: '0 0 15px rgba(198,255,60,0.3)' }}>GoMytho</span>
+          <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-text-secondary">
+            <a href="#" className="hover:text-lime transition-colors active:text-lime">Mentions légales</a>
+            <a href="#" className="hover:text-lime transition-colors active:text-lime">CGU</a>
+            <a href="#" className="hover:text-lime transition-colors active:text-lime">Confidentialité</a>
+            <a href="#" className="hover:text-lime transition-colors active:text-lime">Contact</a>
+          </div>
+          <p className="text-xs text-text-secondary/50">© 2026 GoMytho</p>
+        </div>
+      </footer>
     </div>
   )
 }
