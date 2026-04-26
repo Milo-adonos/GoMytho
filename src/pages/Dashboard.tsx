@@ -49,7 +49,7 @@ export default function Dashboard() {
 
       // 2. Appel API Kie.ai avec les paramètres verrouillés
       const resultUrl = await generateImage(
-        { imageUrl: publicImageUrl, prompt, aspectRatio },
+        { userPrompt: prompt, imageUrl: publicImageUrl, aspectRatio },
         (step) => setGeneratingStep(step)
       )
 
@@ -235,6 +235,9 @@ export default function Dashboard() {
                       onFocus={e => (e.target.style.borderColor = 'rgba(198,255,60,0.5)')}
                       onBlur={e => (e.target.style.borderColor = 'rgba(198,255,60,0.15)')}
                     />
+                    <p className="mt-2 text-xs text-text-secondary leading-relaxed">
+                      💡 Astuce : sois précis dans ta description (couleur, position, style) pour un meilleur résultat. Évite les noms de personnes réelles.
+                    </p>
                   </div>
 
                   {/* Actions */}

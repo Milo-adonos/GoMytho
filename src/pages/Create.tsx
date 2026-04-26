@@ -107,6 +107,9 @@ export default function Create() {
                   onFocus={e => (e.target.style.borderColor = 'rgba(198,255,60,0.5)')}
                   onBlur={e => (e.target.style.borderColor = 'rgba(198,255,60,0.15)')}
                 />
+                <p className="mt-2 text-xs text-text-secondary leading-relaxed">
+                  💡 Astuce : sois précis dans ta description (couleur, position, style) pour un meilleur résultat. Évite les noms de personnes réelles.
+                </p>
               </div>
 
               {/* CTA */}

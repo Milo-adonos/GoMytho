@@ -24,78 +24,55 @@ const steps = [
   { num: '04', icon: '🚀', title: 'Envoie et profite', desc: 'Partage à tes potes, mate la réaction, garde ton mytho en mémoire.' },
 ]
 
-// Carousel card avec vraies images avant/après
+// Carousel card — AVANT en haut, APRÈS en bas, séparateur lime au milieu
 function ExampleCard({ ex, isActive }: { ex: typeof examples[0]; isActive: boolean }) {
-  const [tapped, setTapped] = useState(false)
-
   return (
     <div
-      className="flex-shrink-0 snap-center relative rounded-2xl overflow-hidden border transition-all duration-500"
+      className="flex-shrink-0 snap-center flex flex-col rounded-2xl overflow-hidden border transition-all duration-300"
       style={{
         width: '160px',
-        height: '220px',
-        borderColor: isActive || tapped ? 'rgba(198,255,60,0.7)' : 'rgba(198,255,60,0.12)',
-        boxShadow: isActive || tapped ? '0 0 24px rgba(198,255,60,0.25)' : 'none',
+        height: '260px',
+        borderColor: isActive ? 'rgba(198,255,60,0.7)' : 'rgba(198,255,60,0.15)',
+        boxShadow: isActive ? '0 0 24px rgba(198,255,60,0.2)' : 'none',
       }}
-      onClick={() => setTapped(t => !t)}
-      onTouchStart={() => setTapped(true)}
-      onTouchEnd={() => setTimeout(() => setTapped(false), 1200)}
     >
-      {/* Image AVANT */}
-      <img
-        src={ex.before}
-        alt={ex.label}
-        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-500"
-        style={{ opacity: tapped ? 0 : 1 }}
-      />
-
-      {/* Image APRÈS */}
-      <img
-        src={ex.after}
-        alt={ex.result}
-        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-500"
-        style={{ opacity: tapped ? 1 : 0 }}
-      />
-
-      {/* Badge AVANT */}
-      <div
-        className="absolute top-2 left-2 px-2 py-0.5 text-white text-[10px] font-black rounded transition-opacity duration-300"
-        style={{
-          background: 'rgba(0,0,0,0.55)',
-          backdropFilter: 'blur(4px)',
-          opacity: tapped ? 0 : 1,
-        }}
-      >
-        AVANT
-      </div>
-
-      {/* Badge APRÈS */}
-      <div
-        className="absolute top-2 left-2 px-2 py-0.5 bg-lime text-primary-bg text-[10px] font-black rounded transition-opacity duration-300"
-        style={{
-          boxShadow: '0 0 10px rgba(198,255,60,0.6)',
-          opacity: tapped ? 1 : 0,
-        }}
-      >
-        APRÈS
-      </div>
-
-      {/* Label en bas */}
-      <div
-        className="absolute bottom-0 left-0 right-0 px-3 py-2 text-center transition-opacity duration-300"
-        style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.7))' }}
-      >
-        <p className="text-[10px] font-semibold" style={{ color: tapped ? '#C6FF3C' : 'rgba(255,255,255,0.7)' }}>
-          {tapped ? ex.result : ex.label}
-        </p>
-      </div>
-
-      {/* Hint tap si pas encore tappé */}
-      {!tapped && (
-        <div className="absolute bottom-8 right-2 text-[9px] text-white/40 font-medium">
-          tap →
+      {/* AVANT — moitié haute */}
+      <div className="relative flex-1 overflow-hidden">
+        <img
+          src={ex.before}
+          alt={ex.label}
+          className="w-full h-full object-cover"
+        />
+        <div
+          className="absolute top-2 left-2 px-2 py-0.5 text-white text-[10px] font-black rounded"
+          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+        >
+          AVANT
         </div>
-      )}
+      </div>
+
+      {/* Séparateur lime */}
+      <div style={{ height: '2px', background: '#C6FF3C', boxShadow: '0 0 8px rgba(198,255,60,0.8)' }} />
+
+      {/* APRÈS — moitié basse */}
+      <div className="relative flex-1 overflow-hidden">
+        <img
+          src={ex.after}
+          alt={ex.result}
+          className="w-full h-full object-cover"
+        />
+        <div
+          className="absolute top-2 left-2 px-2 py-0.5 text-[10px] font-black rounded"
+          style={{ background: '#C6FF3C', color: '#0A0E1A', boxShadow: '0 0 10px rgba(198,255,60,0.6)' }}
+        >
+          APRÈS
+        </div>
+        {/* Label résultat en bas */}
+        <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5"
+          style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.75))' }}>
+          <p className="text-[10px] font-semibold text-lime truncate">{ex.result}</p>
+        </div>
+      </div>
     </div>
   )
 }
@@ -214,7 +191,7 @@ export default function Landing() {
           {/* Carousel avant/après - tap sur mobile */}
           <div className="animate-fade-up-5 mt-4">
             <p className="text-[11px] text-text-secondary mb-4 uppercase tracking-widest font-semibold">
-              Tape pour voir la magie ✨
+              Avant → Après en 10 secondes ✨
             </p>
             <div
               ref={carouselRef}

@@ -1,139 +1,144 @@
 import axios from 'axios'
 
 const KIE_API_KEY = import.meta.env.VITE_KIE_API_KEY
-const KIE_API_URL = 'https://api.kie.ai/api/v1/jobs/createTask'
+const KIE_ENDPOINT = 'https://api.kie.ai/api/v1/jobs/createTask'
 
-export type AspectRatio = '9:16' | '16:9'
-
-// ─── PROMPT ENHANCER ─────────────────────────────────────────────────────────
-// Enrichit le prompt court de l'utilisateur en quelque chose d'ultra réaliste
-export function enhancePrompt(userPrompt: string): string {
-  return `Edit this photo with extreme photorealism: ${userPrompt}.
-
-Requirements:
-- The result must look 100% real, like a genuine unedited photograph
-- Perfect lighting consistency with the original scene
-- Match shadows, reflections and perspective exactly
-- Seamlessly blend added elements with the existing environment
-- Same camera grain, depth of field and color grading as the original
-- No CGI look, no artifacts, no visible compositing
-- The image must be indistinguishable from a real photo
-
-Style: hyperrealistic photography, natural lighting, photojournalism quality.`
-}
+// ─── PARAMÈTRES FIXES — JAMAIS MODIFIABLES ────────────────────────────────────
+const FIXED_PARAMS = {
+  model: 'nano-banana-2',
+  resolution: '1K',
+  output_format: 'jpg',
+} as const
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
-export interface GenerateImageParams {
-  imageUrl: string     // URL publique Supabase de la photo uploadée
-  prompt: string       // Prompt brut de l'utilisateur
-  aspectRatio?: AspectRatio
+export type AspectRatio = '9:16' | '16:9'
+
+export interface GenerateMythoParams {
+  userPrompt: string
+  imageUrl: string
+  aspectRatio: AspectRatio
 }
 
-export interface GenerateImageResponse {
-  taskId: string
-  status: string
+// ─── PROMPT ENHANCER — SAUCE SECRÈTE, JAMAIS VISIBLE CÔTÉ CLIENT ─────────────
+// Cette fonction est appelée en interne uniquement.
+// L'utilisateur ne voit JAMAIS le prompt enrichi.
+// Seul le prompt original est stocké en DB.
+export function enhancePrompt(userPrompt: string): string {
+  return `${userPrompt}.
+
+CRITICAL REALISM REQUIREMENTS:
+
+The result MUST look like a real, unmodified smartphone photo, indistinguishable from a genuine photograph.
+Match the exact lighting conditions of the original photo (direction, color temperature, intensity, shadows).
+Match the exact image quality, grain, and softness of the original photo (do NOT make added objects sharper or higher resolution than the rest of the image).
+Add realistic shadows, contact points, and reflections where the new element touches existing surfaces.
+Preserve the original photo's perspective, depth of field, and camera angle.
+The added element should appear naturally integrated, with proper occlusion (parts hidden behind existing objects when appropriate).
+
+TEXT AND BRAND ACCURACY (EXTREMELY IMPORTANT — APPLY THESE RULES WITHOUT EXCEPTION):
+
+ALL text, logos, brand names, numbers, and inscriptions in the generated image MUST be perfectly legible, sharp, and 100% accurate.
+ALL text, logos, brand names, numbers, and inscriptions MUST be perfectly legible, sharp, and 100% accurate — NO EXCEPTIONS.
+Brand logos must match the official brand exactly (correct font, spacing, proportions, colors).
+Watch faces, license plates, signs, labels, prices, dates: every character must be readable and grammatically correct.
+NO gibberish text, NO blurry letters, NO invented brand names, NO misspelled words.
+If text appears in the image, it must be a real, coherent, spell-checked phrase or word.
+REPEAT: every single letter and number must be perfectly readable and correctly spelled.
+
+ANTI-AI DETECTION:
+
+Avoid the typical "AI look": no oversaturated colors, no uncanny smoothness, no perfect symmetry on faces, no overly clean edges.
+Preserve natural imperfections: skin pores, fabric texture, ambient dust, motion blur if present in original.
+Keep the natural smartphone camera feel (slight noise in shadows, natural color science).
+
+Photo style: shot on iPhone, casual snapshot, natural lighting, no professional retouching.`
 }
 
-export interface TaskResult {
-  status: 'pending' | 'processing' | 'completed' | 'failed'
-  imageUrl?: string
-}
+// ─── GÉNÉRATION PRINCIPALE ────────────────────────────────────────────────────
+export async function generateMytho(
+  { userPrompt, imageUrl, aspectRatio }: GenerateMythoParams,
+  onProgress?: (step: string) => void
+): Promise<string> {
+  if (!KIE_API_KEY) throw new Error('Clé API Kie.ai manquante')
 
-// ─── CRÉER UNE TÂCHE DE GÉNÉRATION ───────────────────────────────────────────
-export const createGenerationTask = async ({
-  imageUrl,
-  prompt,
-  aspectRatio = '9:16',
-}: GenerateImageParams): Promise<GenerateImageResponse> => {
-  if (!KIE_API_KEY) throw new Error('Kie.ai API key manquante')
+  // Validation stricte de l'aspect ratio
+  if (aspectRatio !== '9:16' && aspectRatio !== '16:9') {
+    throw new Error(`Aspect ratio invalide : ${aspectRatio}. Seuls 9:16 et 16:9 sont acceptés.`)
+  }
 
-  const enhancedPrompt = enhancePrompt(prompt)
+  // Enrichissement du prompt — invisible pour l'utilisateur
+  const enhancedPrompt = enhancePrompt(userPrompt)
 
+  // Payload 100% verrouillé — seuls prompt, imageUrl et aspectRatio varient
   const payload = {
-    model: 'nano-banana-2',          // FIXE — jamais modifié
+    model: FIXED_PARAMS.model,
     input: {
       prompt: enhancedPrompt,
       image_input: [imageUrl],
       aspect_ratio: aspectRatio,
-      resolution: '1K',              // FIXE — toujours 1K
-      output_format: 'jpg',          // FIXE — toujours jpg
+      resolution: FIXED_PARAMS.resolution,
+      output_format: FIXED_PARAMS.output_format,
     },
   }
 
-  const response = await axios.post(KIE_API_URL, payload, {
+  onProgress?.('Envoi à l\'IA...')
+
+  const { data } = await axios.post(KIE_ENDPOINT, payload, {
     headers: {
       Authorization: `Bearer ${KIE_API_KEY}`,
       'Content-Type': 'application/json',
     },
   })
 
-  return {
-    taskId: response.data.task_id || response.data.id,
-    status: response.data.status,
-  }
-}
+  const taskId: string = data.task_id || data.id
+  if (!taskId) throw new Error('Kie.ai n\'a pas retourné de task_id')
 
-// ─── POLLING DU RÉSULTAT ─────────────────────────────────────────────────────
-export const getTaskResult = async (taskId: string): Promise<TaskResult> => {
-  if (!KIE_API_KEY) throw new Error('Kie.ai API key manquante')
+  // ─── POLLING — toutes les 2s, timeout 2 minutes ───────────────────────────
+  const maxAttempts = 60 // 60 × 2s = 120s = 2 minutes
+  const pollInterval = 2000
 
-  const response = await axios.get(
-    `https://api.kie.ai/api/v1/jobs/${taskId}`,
-    {
-      headers: { Authorization: `Bearer ${KIE_API_KEY}` },
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(r => setTimeout(r, pollInterval))
+
+    onProgress?.(`Génération en cours... (${Math.round((attempt / maxAttempts) * 100)}%)`)
+
+    try {
+      const { data: result } = await axios.get(
+        `https://api.kie.ai/api/v1/jobs/${taskId}`,
+        { headers: { Authorization: `Bearer ${KIE_API_KEY}` } }
+      )
+
+      const status: string = result.status
+
+      if (status === 'completed' || status === 'succeeded' || status === 'success') {
+        const imageUrl =
+          result.output?.image_url ||
+          result.output?.[0]?.url ||
+          result.result?.url ||
+          result.output_url
+
+        if (!imageUrl) throw new Error('Image générée introuvable dans la réponse')
+
+        onProgress?.('Mytho prêt !')
+        return imageUrl
+      }
+
+      if (status === 'failed' || status === 'error') {
+        throw new Error(`La génération a échoué : ${result.error || 'raison inconnue'}`)
+      }
+
+      // statuts intermédiaires : 'pending', 'processing', 'running' → on continue
+    } catch (err) {
+      // Ne pas casser la boucle sur une erreur de polling réseau
+      if (attempt === maxAttempts - 1) throw err
     }
-  )
-
-  const data = response.data
-  const status = data.status
-
-  if (status === 'completed' || status === 'succeeded') {
-    return {
-      status: 'completed',
-      imageUrl: data.output?.image_url || data.output?.[0]?.url || data.result?.url,
-    }
-  }
-
-  if (status === 'failed' || status === 'error') {
-    return { status: 'failed' }
-  }
-
-  return { status: 'processing' }
-}
-
-// ─── GÉNÉRATION COMPLÈTE AVEC POLLING ────────────────────────────────────────
-export const generateImage = async (
-  params: GenerateImageParams,
-  onProgress?: (step: string) => void
-): Promise<string> => {
-  onProgress?.('Envoi de ta photo à l\'IA...')
-  const { taskId } = await createGenerationTask(params)
-
-  onProgress?.('Génération en cours...')
-
-  // Polling toutes les 3 secondes, max 60 secondes
-  const maxAttempts = 20
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, 3000))
-    const result = await getTaskResult(taskId)
-
-    if (result.status === 'completed' && result.imageUrl) {
-      onProgress?.('Mytho prêt !')
-      return result.imageUrl
-    }
-
-    if (result.status === 'failed') {
-      throw new Error('La génération a échoué')
-    }
-
-    onProgress?.(`Optimisation du rendu... (${i + 1}/${maxAttempts})`)
   }
 
-  throw new Error('Timeout : la génération a pris trop de temps')
+  throw new Error('Timeout : la génération a dépassé 2 minutes')
 }
 
 // ─── UPLOAD VERS SUPABASE STORAGE ────────────────────────────────────────────
-export const uploadToSupabase = async (file: File, userId: string): Promise<string> => {
+export async function uploadToSupabase(file: File, userId: string): Promise<string> {
   const { supabase } = await import('./supabase')
 
   const fileExt = file.name.split('.').pop() || 'jpg'
@@ -151,3 +156,6 @@ export const uploadToSupabase = async (file: File, userId: string): Promise<stri
 
   return publicUrl
 }
+
+// Compatibilité avec l'ancien nom
+export const generateImage = generateMytho
