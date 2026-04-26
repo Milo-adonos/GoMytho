@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import LoadingAnimation from '@/components/LoadingAnimation'
 import Button from '@/components/Button'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 
 const loadingSteps = [
   'Analyse de ta photo...',

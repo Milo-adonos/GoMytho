@@ -52,7 +52,7 @@ export const uploadToStorage = async (file: File, userId: string) => {
   const fileExt = file.name.split('.').pop()
   const fileName = `${userId}/${Date.now()}.${fileExt}`
 
-  const { data, error } = await supabase.storage
+  const { error } = await supabase.storage
     .from('mythos')
     .upload(fileName, file)
 

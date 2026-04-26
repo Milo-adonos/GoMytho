@@ -18,21 +18,20 @@ export default function Signup() {
     setError('')
 
     try {
-      const { data, error } = await supabase.auth.signUp({
+      const { data: _data, error } = await supabase.auth.signUp({
         email,
         password,
       })
 
       if (error) throw error
 
-      if (data.user) {
-        // Créer l'entrée utilisateur dans la table users
+      if (_data.user) {
         const { error: insertError } = await supabase
           .from('users')
           .insert([
             {
-              id: data.user.id,
-              email: data.user.email,
+              id: _data.user.id,
+              email: _data.user.email,
               credits_remaining: 610, // Crédits du plan monthly
               subscription_status: 'active',
             },
@@ -44,8 +43,9 @@ export default function Signup() {
 
         navigate('/app')
       }
-    } catch (error: any) {
-      setError(error.message || 'Une erreur est survenue')
+    } catch (error: unknown) {
+      const err = error as { message?: string }
+      setError(err.message || 'Une erreur est survenue')
     } finally {
       setIsLoading(false)
     }
@@ -56,7 +56,7 @@ export default function Signup() {
     setError('')
 
     try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
+      const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/app`,
@@ -64,8 +64,9 @@ export default function Signup() {
       })
 
       if (error) throw error
-    } catch (error: any) {
-      setError(error.message || 'Une erreur est survenue')
+    } catch (error: unknown) {
+      const err = error as { message?: string }
+      setError(err.message || 'Une erreur est survenue')
       setIsLoading(false)
     }
   }
