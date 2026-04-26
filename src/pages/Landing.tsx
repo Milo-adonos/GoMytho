@@ -2,12 +2,12 @@ import { useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 
 const examples = [
-  { before: '⌚', after: '💎', label: 'Poignet vide', result: 'Rolex dorée' },
-  { before: '😐', after: '🥸', label: 'Selfie normal', result: 'Moustache géante' },
-  { before: '🐟', after: '🦈', label: 'Photo pêche', result: 'Poisson absurde' },
-  { before: '🏠', after: '🏎️', label: 'Garage vide', result: 'Lamborghini' },
-  { before: '🤳', after: '🎤', label: 'Photo solo', result: 'Avec Drake' },
-  { before: '🏡', after: '🦕', label: 'Salon normal', result: 'Dinosaure' },
+  {
+    before: '/beforeafter/crash-avant.jpg',
+    after: '/beforeafter/crash-apres.jpg',
+    label: 'Range Rover propre',
+    result: 'Accident + flics 😂',
+  },
 ]
 
 const faqs = [
@@ -24,48 +24,78 @@ const steps = [
   { num: '04', icon: '🚀', title: 'Envoie et profite', desc: 'Partage à tes potes, mate la réaction, garde ton mytho en mémoire.' },
 ]
 
-// Carousel card avec état tap (pour mobile — pas de hover)
+// Carousel card avec vraies images avant/après
 function ExampleCard({ ex, isActive }: { ex: typeof examples[0]; isActive: boolean }) {
   const [tapped, setTapped] = useState(false)
 
   return (
     <div
-      className="flex-shrink-0 snap-center relative rounded-2xl overflow-hidden border transition-all duration-300 active:scale-95"
+      className="flex-shrink-0 snap-center relative rounded-2xl overflow-hidden border transition-all duration-500"
       style={{
-        width: '140px',
-        height: '190px',
-        background: '#141826',
-        borderColor: isActive || tapped ? 'rgba(198,255,60,0.6)' : 'rgba(198,255,60,0.12)',
-        boxShadow: isActive || tapped ? '0 0 20px rgba(198,255,60,0.2)' : 'none',
+        width: '160px',
+        height: '220px',
+        borderColor: isActive || tapped ? 'rgba(198,255,60,0.7)' : 'rgba(198,255,60,0.12)',
+        boxShadow: isActive || tapped ? '0 0 24px rgba(198,255,60,0.25)' : 'none',
       }}
+      onClick={() => setTapped(t => !t)}
       onTouchStart={() => setTapped(true)}
-      onTouchEnd={() => setTimeout(() => setTapped(false), 600)}
-      onClick={() => { setTapped(t => !t) }}
+      onTouchEnd={() => setTimeout(() => setTapped(false), 1200)}
     >
-      {/* AVANT state */}
-      <div
-        className="absolute inset-0 flex flex-col items-center justify-center transition-opacity duration-300 p-3"
+      {/* Image AVANT */}
+      <img
+        src={ex.before}
+        alt={ex.label}
+        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-500"
         style={{ opacity: tapped ? 0 : 1 }}
+      />
+
+      {/* Image APRÈS */}
+      <img
+        src={ex.after}
+        alt={ex.result}
+        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-500"
+        style={{ opacity: tapped ? 1 : 0 }}
+      />
+
+      {/* Badge AVANT */}
+      <div
+        className="absolute top-2 left-2 px-2 py-0.5 text-white text-[10px] font-black rounded transition-opacity duration-300"
+        style={{
+          background: 'rgba(0,0,0,0.55)',
+          backdropFilter: 'blur(4px)',
+          opacity: tapped ? 0 : 1,
+        }}
       >
-        <div className="absolute top-2 left-2 px-1.5 py-0.5 bg-white/20 text-white text-[10px] font-bold rounded">AVANT</div>
-        <div className="text-5xl mb-2">{ex.before}</div>
-        <p className="text-[11px] text-text-secondary text-center leading-tight">{ex.label}</p>
+        AVANT
       </div>
 
-      {/* APRÈS state */}
+      {/* Badge APRÈS */}
       <div
-        className="absolute inset-0 flex flex-col items-center justify-center transition-opacity duration-300 p-3"
-        style={{ opacity: tapped ? 1 : 0, background: 'rgba(10,14,26,0.97)' }}
+        className="absolute top-2 left-2 px-2 py-0.5 bg-lime text-primary-bg text-[10px] font-black rounded transition-opacity duration-300"
+        style={{
+          boxShadow: '0 0 10px rgba(198,255,60,0.6)',
+          opacity: tapped ? 1 : 0,
+        }}
       >
-        <div
-          className="absolute top-2 left-2 px-1.5 py-0.5 bg-lime text-primary-bg text-[10px] font-bold rounded"
-          style={{ boxShadow: '0 0 8px rgba(198,255,60,0.5)' }}
-        >
-          APRÈS
-        </div>
-        <div className="text-5xl mb-2">{ex.after}</div>
-        <p className="text-[11px] text-lime font-semibold text-center leading-tight px-1">{ex.result}</p>
+        APRÈS
       </div>
+
+      {/* Label en bas */}
+      <div
+        className="absolute bottom-0 left-0 right-0 px-3 py-2 text-center transition-opacity duration-300"
+        style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.7))' }}
+      >
+        <p className="text-[10px] font-semibold" style={{ color: tapped ? '#C6FF3C' : 'rgba(255,255,255,0.7)' }}>
+          {tapped ? ex.result : ex.label}
+        </p>
+      </div>
+
+      {/* Hint tap si pas encore tappé */}
+      {!tapped && (
+        <div className="absolute bottom-8 right-2 text-[9px] text-white/40 font-medium">
+          tap →
+        </div>
+      )}
     </div>
   )
 }
