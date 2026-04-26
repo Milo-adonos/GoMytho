@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-primary-bg text-text-primary font-sans antialiased;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer utilities {
+  .text-gradient-lime {
+    @apply bg-gradient-to-r from-lime to-lime-hover bg-clip-text text-transparent;
+  }
+
+  .glow-lime {
+    box-shadow: 0 0 20px rgba(198, 255, 60, 0.3);
+  }
+
+  .glow-lime-hover:hover {
+    box-shadow: 0 0 30px rgba(198, 255, 60, 0.5);
+  }
+}
