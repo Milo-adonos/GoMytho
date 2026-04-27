@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
+
+const PLAN_CREDITS: Record<string, number> = { weekly: 70, monthly: 610, free: 3 }
 
 export interface AppUser extends User {}
 
 export default function AppLayout() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [user, setUser] = useState<AppUser | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const init = async () => {
       try {
-        // Récupère la session (gère aussi le callback OAuth avec token dans l'URL)
         const { data: { session } } = await supabase.auth.getSession()
         if (!session) {
-          navigate('/signup')
+          navigate('/login')
           return
         }
         const authUser = session.user
@@ -23,19 +25,22 @@ export default function AppLayout() {
         if (data) {
           setUser(data)
         } else {
-          // Créer le profil si inexistant (ex: 1er login Google)
-          const newUser = { id: authUser.id, email: authUser.email!, credits_remaining: 610, subscription_status: 'active', plan: 'monthly' }
+          // 1er login (ex: Google OAuth) — lire le plan depuis l'URL (?plan=weekly/monthly)
+          const planParam = searchParams.get('plan') || 'monthly'
+          const plan = PLAN_CREDITS[planParam] ? planParam : 'monthly'
+          const credits = PLAN_CREDITS[plan]
+          const newUser = { id: authUser.id, email: authUser.email!, credits_remaining: credits, subscription_status: 'active', plan }
           await supabase.from('users').upsert([newUser], { onConflict: 'id' })
           setUser(newUser as any)
         }
       } catch {
-        navigate('/signup')
+        navigate('/login')
       } finally {
         setLoading(false)
       }
     }
     init()
-  }, [navigate])
+  }, [navigate, searchParams])
 
   if (loading) {
     return (

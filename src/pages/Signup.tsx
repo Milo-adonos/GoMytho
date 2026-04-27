@@ -1,12 +1,24 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
 
+const PLAN_CONFIG = {
+  weekly:  { credits: 70,  label: 'hebdomadaire' },
+  monthly: { credits: 610, label: 'mensuel' },
+  free:    { credits: 3,   label: 'gratuit' },
+}
+
 export default function Signup() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  // Récupère le plan depuis l'URL (?plan=weekly ou ?plan=monthly)
+  const planParam = (searchParams.get('plan') || 'monthly') as keyof typeof PLAN_CONFIG
+  const plan = PLAN_CONFIG[planParam] ? planParam : 'monthly'
+  const { credits } = PLAN_CONFIG[plan]
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -26,13 +38,12 @@ export default function Signup() {
       if (error) throw error
 
       if (_data.user) {
-        // Créer le profil utilisateur (ignore l'erreur si déjà existant)
         await supabase.from('users').upsert([{
           id: _data.user.id,
           email: _data.user.email,
-          credits_remaining: 610,
+          credits_remaining: credits,
           subscription_status: 'active',
-          plan: 'monthly',
+          plan,
         }], { onConflict: 'id' })
 
         // Si une session est active (email confirmation désactivé dans Supabase)
@@ -65,7 +76,7 @@ export default function Signup() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `https://gomytho.com/app`,
+          redirectTo: `https://gomytho.com/app?plan=${plan}`,
         },
       })
 
@@ -91,9 +102,15 @@ export default function Signup() {
             <h1 className="text-4xl md:text-5xl font-black mb-4">
               Crée ton compte
             </h1>
-            <p className="text-text-secondary">
+            <p className="text-text-secondary mb-3">
               Pour accéder à tes mythos depuis n'importe où
             </p>
+            <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
+              <span className="w-2 h-2 rounded-full bg-lime animate-pulse" />
+              <span className="text-lime text-sm font-semibold">
+                Plan {PLAN_CONFIG[plan].label} — {credits} mythos
+              </span>
+            </div>
           </motion.div>
 
           <motion.div
