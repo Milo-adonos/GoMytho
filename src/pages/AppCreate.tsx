@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
 import { generateImage, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
+import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 
 const CREDITS_PER_IMAGE = 8
@@ -22,13 +23,14 @@ export default function AppCreate() {
   const credits = user?.credits_remaining ?? 0
   const canGenerate = !!image && !!prompt.trim() && credits >= CREDITS_PER_IMAGE && !isGenerating
 
-  const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return
-    setImage(file)
+  const handleFile = async (file: File) => {
+    setResultUrl(null)
+    // Convertir en JPEG (gère HEIC/HEIF galerie iPhone, WebP, etc.)
+    const jpeg = await convertToJpeg(file)
+    setImage(jpeg)
     const reader = new FileReader()
     reader.onloadend = () => setImagePreview(reader.result as string)
-    reader.readAsDataURL(file)
-    setResultUrl(null)
+    reader.readAsDataURL(jpeg)
   }
 
   const handleGenerate = async () => {

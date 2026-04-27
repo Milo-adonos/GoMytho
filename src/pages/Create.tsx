@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Header from '@/components/Header'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 import { AspectRatio } from '@/lib/kie-api'
+import { convertToJpeg } from '@/lib/image-utils'
 
 export default function Create() {
   const navigate = useNavigate()
@@ -11,18 +12,19 @@ export default function Create() {
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16')
 
-  const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return
-    setImage(file)
+  const handleFile = async (file: File) => {
+    // Convertir en JPEG (gère HEIC/HEIF galerie iPhone, WebP, etc.)
+    const jpeg = await convertToJpeg(file)
+    setImage(jpeg)
     const reader = new FileReader()
     reader.onloadend = () => setImagePreview(reader.result as string)
-    reader.readAsDataURL(file)
+    reader.readAsDataURL(jpeg)
   }
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
-    if (file) handleFile(file)
+    if (file) await handleFile(file)
   }
 
   const handleGenerate = () => {
