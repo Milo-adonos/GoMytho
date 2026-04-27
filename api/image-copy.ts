@@ -1,6 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import axios from 'axios'
 
+// Image-copy ne fait qu'un GET → 30s suffit largement même sur des URLs lentes.
+export const config = { maxDuration: 30 }
+
 function normalizeImageUrl(rawUrl: string): string {
   try {
     const u = new URL(rawUrl)

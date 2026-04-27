@@ -1,6 +1,31 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import axios from 'axios'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Architecture polling : le serveur ne tient JAMAIS la connexion plus de ~30s
+// (sinon Vercel timeout = 10s sur Hobby, 60s sur Pro). On expose donc deux
+// modes via une seule route :
+//
+//   POST /api/generate-mytho        → mode: "create" (default si imageUrl|s)
+//     body: { userPrompt, imageUrl?, imageUrls?, aspectRatio }
+//     → 200 { taskId, status: 'pending' }
+//
+//   POST /api/generate-mytho        → mode: "poll"
+//     body: { mode: 'poll', taskId }
+//     → 200 { status: 'pending'|'success'|'failed',
+//             imageUrl?, previewDataUrl?, error? }
+//
+// Le client (src/lib/kie-api.ts) crée la tâche puis poll lui-même → on encaisse
+// les générations longues (jusqu'à 3 min) sans perdre la connexion.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const config = {
+  // Sécurité : on autorise jusqu'à 30s par appel (création OU 1 poll). Aucun
+  // appel ne dépasse réellement ces 30s parce que la création répond en ~5s
+  // et chaque poll en ~1s.
+  maxDuration: 30,
+}
+
 type AspectRatio = '9:16' | '16:9'
 
 const KIE_CREATE_ENDPOINT = 'https://api.kie.ai/api/v1/jobs/createTask'
@@ -58,7 +83,7 @@ async function toDataUrlFromUrl(url: string): Promise<string | null> {
     if (url.startsWith('data:image/')) return url
     const response = await axios.get<ArrayBuffer>(url, {
       responseType: 'arraybuffer',
-      timeout: 25000,
+      timeout: 15000,
       maxRedirects: 5,
     })
     const contentType = String(response.headers['content-type'] || 'image/jpeg')
@@ -96,16 +121,68 @@ ANTI-AI DETECTION:
 No oversaturated colors, no uncanny smoothness, no perfect symmetry. Photo style: shot on iPhone, casual snapshot, natural lighting, no professional retouching.`
 }
 
+// ─── HANDLER ────────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
   const apiKey = process.env.VITE_KIE_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'KIE API key missing on server' })
 
-  try {
-    const { userPrompt, imageUrl, imageUrls, aspectRatio } = req.body || {}
+  const body = (req.body || {}) as Record<string, unknown>
+  const mode = String(body.mode || '').toLowerCase()
 
-    // Normalisation : on accepte soit `imageUrls` (array), soit `imageUrl` (legacy).
+  // ─── MODE POLL ─────────────────────────────────────────────────────────────
+  if (mode === 'poll') {
+    const taskId = String(body.taskId || '').trim()
+    if (!taskId) return res.status(400).json({ error: 'taskId required for poll' })
+
+    try {
+      const { data: pollData } = await axios.get(
+        `${KIE_RECORD_ENDPOINT}?taskId=${encodeURIComponent(taskId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 15000 }
+      )
+
+      const inner = (pollData?.data || pollData) as Record<string, unknown>
+      const state = String((inner as any)?.state || (inner as any)?.status || '').toLowerCase()
+
+      if (state === 'failed' || state === 'fail' || state === 'error') {
+        return res.status(200).json({
+          status: 'failed',
+          error: (inner as any)?.failMsg || (inner as any)?.error || 'Kie generation failed',
+        })
+      }
+
+      if (state === 'success' || state === 'completed' || state === 'succeeded' || state === 'done') {
+        const remote = extractKieResultUrl(pollData)
+        if (remote) {
+          // On télécharge en base64 côté serveur quand c'est rapide (<15s),
+          // sinon on retourne juste l'URL (le client la convertira via image-copy).
+          const previewDataUrl = await toDataUrlFromUrl(remote)
+          return res.status(200).json({
+            status: 'success',
+            imageUrl: remote,
+            previewDataUrl,
+          })
+        }
+        // success state mais sans URL → on signale "still processing"
+        return res.status(200).json({ status: 'pending' })
+      }
+
+      // pending / queue / running / generating / etc.
+      return res.status(200).json({ status: 'pending' })
+    } catch (error: any) {
+      const status = error?.response?.status
+      const providerData = error?.response?.data
+      console.error('[generate-mytho] poll error:', { message: error?.message, status, providerData })
+      // On retourne pending pour que le client retente automatiquement.
+      return res.status(200).json({ status: 'pending', warn: error?.message || 'poll error' })
+    }
+  }
+
+  // ─── MODE CREATE (default) ─────────────────────────────────────────────────
+  try {
+    const { userPrompt, imageUrl, imageUrls, aspectRatio } = body as any
+
     let urls: string[] = []
     if (Array.isArray(imageUrls)) {
       urls = imageUrls.filter((u: unknown): u is string => typeof u === 'string' && !!u)
@@ -113,7 +190,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (urls.length === 0 && typeof imageUrl === 'string' && imageUrl) {
       urls = [imageUrl]
     }
-    // Limite haute = 2 (cas image-to-image composition)
     if (urls.length > 2) urls = urls.slice(0, 2)
 
     if (!userPrompt || urls.length === 0) {
@@ -136,7 +212,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data: createData } = await axios.post(KIE_CREATE_ENDPOINT, payload, {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      timeout: 60000,
+      timeout: 25000,
     })
 
     const code = Number(createData?.code ?? 200)
@@ -157,47 +233,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(502).json({ error: 'Kie taskId missing', raw: createData })
     }
 
-    // Polling 2s × 90 attempts = 180s max
-    const maxAttempts = 90
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise((r) => setTimeout(r, 2000))
-
-      let pollData: any
-      try {
-        const { data } = await axios.get(
-          `${KIE_RECORD_ENDPOINT}?taskId=${encodeURIComponent(taskId)}`,
-          { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 30000 }
-        )
-        pollData = data
-      } catch {
-        continue
-      }
-
-      const inner = (pollData?.data || pollData) as Record<string, unknown>
-      const state = String((inner as any)?.state || (inner as any)?.status || '').toLowerCase()
-
-      if (state === 'failed' || state === 'fail' || state === 'error') {
-        return res.status(502).json({
-          error: (inner as any)?.failMsg || (inner as any)?.error || 'Kie generation failed',
-          raw: inner,
-        })
-      }
-
-      if (state === 'success' || state === 'completed' || state === 'succeeded' || state === 'done') {
-        const remote = extractKieResultUrl(pollData)
-        if (remote) {
-          const previewDataUrl = await toDataUrlFromUrl(remote)
-          return res.status(200).json({ imageUrl: remote, previewDataUrl })
-        }
-        // Sinon on laisse encore le polling tourner
-      }
-    }
-
-    return res.status(504).json({ error: 'Timeout waiting for Kie task result', taskId })
+    // Réponse rapide : on retourne le taskId, le client polle.
+    return res.status(200).json({ taskId, status: 'pending' })
   } catch (error: any) {
     const status = error?.response?.status
     const providerData = error?.response?.data
-    console.error('generate-mytho api error:', { message: error?.message, status, providerData })
+    console.error('[generate-mytho] create error:', { message: error?.message, status, providerData })
     return res.status(500).json({ error: error?.message || 'Server generation error', status, providerData })
   }
 }

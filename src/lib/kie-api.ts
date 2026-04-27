@@ -156,7 +156,31 @@ async function urlToDataUrlClient(url: string): Promise<string | null> {
   }
 }
 
+// ─── HELPER : fetch avec timeout (AbortController) ───────────────────────────
+async function fetchJsonWithTimeout(
+  url: string,
+  init: RequestInit,
+  ms: number
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), ms)
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal })
+    const data = await res.json().catch(() => ({}))
+    return { ok: res.ok, status: res.status, data }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // ─── GÉNÉRATION PRINCIPALE ────────────────────────────────────────────────────
+// Architecture : on appelle /api/generate-mytho en 2 phases :
+//   1) mode=create → reçoit un taskId rapidement (~5s)
+//   2) mode=poll x N → on poll jusqu'à success/failed (chaque appel ~1-2s)
+// Aucun appel ne dépasse 30s côté serveur → pas de risque de timeout Vercel.
+//
+// En cas de fail total côté backend, fallback direct Kie.ai depuis le browser.
+//
 // Retourne TOUJOURS un data URL base64 prêt à afficher / télécharger.
 export async function generateMytho(
   params: GenerateMythoParams,
@@ -166,48 +190,93 @@ export async function generateMytho(
   const imageUrls = normalizeImageUrls(params)
   if (imageUrls.length === 0) throw new Error('Aucune photo fournie')
 
-  // 1) Backend Vercel — chemin principal
+  // ── Phase 1 : création de la tâche via backend ───────────────────────────
+  let taskId: string | null = null
+  let backendUsable = true
   try {
     onProgress?.('Envoi sécurisé...')
-    const response = await fetch('/api/generate-mytho', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userPrompt,
-        imageUrl: imageUrls[0],
-        imageUrls,
-        aspectRatio,
-      }),
-    })
-    const payload = await response.json().catch(() => ({}))
-    if (response.ok && (payload?.imageUrl || payload?.previewDataUrl)) {
-      const remote = String(payload.imageUrl || payload.previewDataUrl)
-      let dataUrl = String(payload.previewDataUrl || '')
-      if (!dataUrl) {
-        onProgress?.('Copie locale...')
-        dataUrl = (await urlToDataUrlClient(remote)) || ''
-      }
-      if (!dataUrl) throw new Error('Image générée non récupérable')
-      onProgress?.('Mytho prêt !')
-      return { remoteUrl: remote, dataUrl }
+    const { ok, status, data } = await fetchJsonWithTimeout(
+      '/api/generate-mytho',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'create',
+          userPrompt,
+          imageUrl: imageUrls[0],
+          imageUrls,
+          aspectRatio,
+        }),
+      },
+      30000
+    )
+    if (status === 402) {
+      throw new Error(data?.message || 'Crédits Kie.ai insuffisants. Recharge le solde API.')
     }
-    if (response.status === 402) {
-      throw new Error(payload?.message || 'Crédits Kie.ai insuffisants. Recharge le solde API.')
+    if (ok && typeof data?.taskId === 'string' && data.taskId) {
+      taskId = data.taskId as string
+    } else {
+      console.warn('[generateMytho] backend create failed:', { status, data })
+      backendUsable = false
     }
-    // Sinon → fallback client direct (404/500/502/503/timeout)
   } catch (err) {
-    // On laisse le fallback client tenter sa chance avant de propager
     if ((err as Error)?.message?.includes('Crédits Kie')) throw err
+    console.warn('[generateMytho] backend create exception:', err)
+    backendUsable = false
   }
 
-  // 2) Fallback client direct (utilise VITE_KIE_API_KEY)
-  if (!KIE_API_KEY) throw new Error('Clé API Kie.ai manquante')
+  // ── Phase 2 : polling via backend ────────────────────────────────────────
+  if (taskId && backendUsable) {
+    const maxAttempts = 90 // 90 × 2s = 180s max
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 2000))
+      onProgress?.(`Génération... (${Math.round(((attempt + 1) / maxAttempts) * 100)}%)`)
+      try {
+        const { ok, data } = await fetchJsonWithTimeout(
+          '/api/generate-mytho',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'poll', taskId }),
+          },
+          25000
+        )
+        if (!ok) continue
+        const status = String(data?.status || 'pending').toLowerCase()
+        if (status === 'failed') {
+          throw new Error(`Kie.ai: ${data?.error || 'génération échouée'}`)
+        }
+        if (status === 'success' && data?.imageUrl) {
+          const remote = String(data.imageUrl)
+          let dataUrl = String(data.previewDataUrl || '')
+          if (!dataUrl) {
+            onProgress?.('Copie locale...')
+            dataUrl = (await urlToDataUrlClient(remote)) || ''
+          }
+          if (!dataUrl) throw new Error('Image générée non récupérable')
+          onProgress?.('Mytho prêt !')
+          return { remoteUrl: remote, dataUrl }
+        }
+        // sinon: pending → on continue
+      } catch (err) {
+        // Échec ponctuel d'un poll = on continue jusqu'au max. Sauf erreur métier.
+        if ((err as Error)?.message?.includes('Kie.ai:')) throw err
+        if (attempt >= maxAttempts - 3) throw err
+      }
+    }
+    throw new Error('Timeout : la génération a dépassé 3 minutes')
+  }
+
+  // ── Phase 3 : FALLBACK direct Kie.ai depuis le browser ───────────────────
+  if (!KIE_API_KEY) {
+    throw new Error('Génération impossible (backend KO et clé API manquante côté client).')
+  }
   if (aspectRatio !== '9:16' && aspectRatio !== '16:9') {
     throw new Error(`Aspect ratio invalide : ${aspectRatio}`)
   }
 
   const enhancedPrompt = enhancePrompt(userPrompt, imageUrls.length)
-  const payload = {
+  const fallbackPayload = {
     model: FIXED_PARAMS.model,
     input: {
       prompt: enhancedPrompt,
@@ -219,9 +288,9 @@ export async function generateMytho(
   }
 
   onProgress?.('Envoi à l\'IA...')
-  const { data: createData } = await axios.post(KIE_CREATE_ENDPOINT, payload, {
+  const { data: createData } = await axios.post(KIE_CREATE_ENDPOINT, fallbackPayload, {
     headers: { Authorization: `Bearer ${KIE_API_KEY}`, 'Content-Type': 'application/json' },
-    timeout: 60000,
+    timeout: 30000,
   })
 
   const code = Number(createData?.code ?? 200)
@@ -233,20 +302,20 @@ export async function generateMytho(
     throw new Error(`Kie.ai: ${msg || `erreur ${code}`}`)
   }
 
-  const taskId = extractTaskId(createData)
-  if (!taskId) throw new Error('Kie.ai: taskId introuvable')
+  const fallbackTaskId = extractTaskId(createData)
+  if (!fallbackTaskId) throw new Error('Kie.ai: taskId introuvable')
 
-  // Polling 2s × 90 attempts = 180s max
   const maxAttempts = 90
-  const pollInterval = 2000
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await new Promise((r) => setTimeout(r, pollInterval))
+  let consecutiveErrors = 0
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await new Promise((r) => setTimeout(r, 2000))
     onProgress?.(`Génération... (${Math.round(((attempt + 1) / maxAttempts) * 100)}%)`)
     try {
       const { data: pollData } = await axios.get(
-        `${KIE_RECORD_ENDPOINT}?taskId=${encodeURIComponent(taskId)}`,
-        { headers: { Authorization: `Bearer ${KIE_API_KEY}` }, timeout: 30000 }
+        `${KIE_RECORD_ENDPOINT}?taskId=${encodeURIComponent(fallbackTaskId)}`,
+        { headers: { Authorization: `Bearer ${KIE_API_KEY}` }, timeout: 15000 }
       )
+      consecutiveErrors = 0
       const inner = (pollData?.data || pollData) as Record<string, unknown>
       const state = String(inner?.state || inner?.status || '').toLowerCase()
       if (state === 'failed' || state === 'fail' || state === 'error') {
@@ -261,10 +330,12 @@ export async function generateMytho(
           onProgress?.('Mytho prêt !')
           return { remoteUrl: remote, dataUrl }
         }
-        // Sinon on laisse encore le polling tourner (URL parfois publiée tardivement)
       }
     } catch (err) {
-      if (attempt === maxAttempts - 1) throw err
+      if ((err as Error)?.message?.startsWith('Kie.ai:')) throw err
+      consecutiveErrors += 1
+      // 5 échecs réseau d'affilée → on stoppe pour ne pas faire attendre l'utilisateur
+      if (consecutiveErrors >= 5) throw err
     }
   }
   throw new Error('Timeout : la génération a dépassé 3 minutes')
