@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import LoadingAnimation from '@/components/LoadingAnimation'
-import Button from '@/components/Button'
 import { motion } from 'framer-motion'
 
 const loadingSteps = [
@@ -18,14 +17,17 @@ export default function Analyzing() {
   const [currentStep, setCurrentStep] = useState(0)
   const [progress, setProgress] = useState(0)
   const [isComplete, setIsComplete] = useState(false)
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null)
+  const [aspectRatio, setAspectRatio] = useState<string>('1:1')
 
   useEffect(() => {
-    // Vérifier si on a bien une image uploadée
-    const uploadedImage = sessionStorage.getItem('uploadedImage')
-    if (!uploadedImage) {
+    const img = sessionStorage.getItem('uploadedImage')
+    if (!img) {
       navigate('/create')
       return
     }
+    setUploadedImage(img)
+    setAspectRatio(sessionStorage.getItem('aspectRatio') || '1:1')
 
     // Simuler le chargement progressif (15 secondes au total)
     const totalDuration = 15000
@@ -74,41 +76,89 @@ export default function Analyzing() {
   }
 
   return (
-    <div className="min-h-screen bg-primary-bg flex items-center justify-center px-4">
+    <div className="min-h-screen bg-primary-bg flex flex-col items-center justify-center px-4 py-10">
       <motion.div
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="text-center max-w-2xl"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="w-full max-w-sm text-center"
       >
-        <motion.div
-          animate={{ scale: [1, 1.1, 1] }}
-          transition={{ duration: 0.5 }}
-          className="mb-8"
+        {/* Badge */}
+        <div className="inline-flex items-center gap-2 mb-5 px-3 py-1.5 rounded-full text-xs font-bold"
+          style={{ background: 'rgba(198,255,60,0.1)', border: '1px solid rgba(198,255,60,0.3)', color: '#C6FF3C' }}>
+          <span className="w-1.5 h-1.5 rounded-full bg-lime animate-pulse" />
+          Ton mytho est prêt
+        </div>
+
+        {/* Image floutée avec cadenas — ratio selon le choix de l'utilisateur */}
+        <div
+          className="relative rounded-2xl overflow-hidden mb-6 mx-auto w-full"
+          style={{
+            border: '2px solid rgba(198,255,60,0.3)',
+            boxShadow: '0 0 40px rgba(198,255,60,0.1)',
+            aspectRatio: aspectRatio === '9:16' ? '9/16' : aspectRatio === '16:9' ? '16/9' : '1/1',
+            maxHeight: aspectRatio === '9:16' ? '420px' : '280px',
+            maxWidth: aspectRatio === '16:9' ? '100%' : aspectRatio === '9:16' ? '220px' : '300px',
+          }}
         >
-          <div className="w-32 h-32 bg-lime/20 rounded-full flex items-center justify-center mx-auto border-4 border-lime glow-lime">
-            <span className="text-7xl">✨</span>
+          {/* Photo uploadée floutée */}
+          {uploadedImage && (
+            <img
+              src={uploadedImage}
+              alt="Ton mytho"
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{ filter: 'blur(22px)', transform: 'scale(1.1)' }}
+            />
+          )}
+
+          {/* Overlay sombre */}
+          <div className="absolute inset-0" style={{ background: 'rgba(10,14,26,0.55)' }} />
+
+          {/* Cadenas centré */}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+            <motion.div
+              animate={{ scale: [1, 1.06, 1] }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+              className="w-20 h-20 rounded-full flex items-center justify-center"
+              style={{
+                background: 'rgba(198,255,60,0.15)',
+                border: '2px solid #C6FF3C',
+                boxShadow: '0 0 30px rgba(198,255,60,0.4)',
+              }}
+            >
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="#C6FF3C" strokeWidth="2.5" strokeLinecap="round"/>
+                <rect x="3" y="11" width="18" height="11" rx="3" fill="rgba(198,255,60,0.15)" stroke="#C6FF3C" strokeWidth="2.5"/>
+                <circle cx="12" cy="16.5" r="1.5" fill="#C6FF3C"/>
+              </svg>
+            </motion.div>
+            <p className="text-white font-black text-lg" style={{ textShadow: '0 2px 8px rgba(0,0,0,0.8)' }}>
+              Débloque pour voir
+            </p>
           </div>
-        </motion.div>
+        </div>
 
-        <h1 className="text-5xl md:text-6xl font-black mb-6">
-          Ton mytho est prêt !
+        {/* Titre */}
+        <h1 className="font-black mb-2" style={{ fontSize: 'clamp(28px, 8vw, 40px)' }}>
+          Ton mytho est <span className="text-gradient-lime">prêt&nbsp;!</span>
         </h1>
-
-        <p className="text-xl text-text-secondary mb-12">
-          Débloque-le maintenant pour voir le rendu complet
+        <p className="text-text-secondary text-sm mb-7">
+          Débloque-le maintenant pour voir le résultat complet
         </p>
 
-        <Button onClick={handleUnlock} size="lg" className="text-2xl px-12">
-          Débloquer mon mytho
-          <span className="text-3xl">→</span>
-        </Button>
+        {/* CTA */}
+        <button
+          onClick={handleUnlock}
+          className="w-full py-4 text-lg font-black rounded-full bg-lime text-primary-bg active:scale-95 transition-all duration-200"
+          style={{ boxShadow: '0 0 40px rgba(198,255,60,0.5), 0 0 80px rgba(198,255,60,0.2)' }}
+        >
+          🔓 Débloquer mon mytho →
+        </button>
 
-        <div className="mt-8 flex items-center justify-center gap-2 text-sm text-text-secondary">
-          <span className="w-4 h-4 bg-lime/20 rounded-full flex items-center justify-center">
-            <span className="w-2 h-2 bg-lime rounded-full" />
-          </span>
-          <span>Satisfait ou remboursé</span>
-        </div>
+        {/* Garantie */}
+        <p className="mt-4 text-xs text-text-secondary flex items-center justify-center gap-1.5">
+          <span>🛡️</span> Satisfait ou remboursé — annulable en 1 clic
+        </p>
       </motion.div>
     </div>
   )

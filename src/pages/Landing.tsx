@@ -407,6 +407,17 @@ export default function Landing() {
             <a href="#" className="hover:text-lime transition-colors active:text-lime">Contact</a>
           </div>
           <p className="text-xs text-text-secondary/50">© 2026 GoMytho</p>
+          <p style={{ fontSize: '11px', color: 'rgba(138,143,160,0.4)' }}>
+            Propriétaire du site :{' '}
+            <a
+              href="/admin-login"
+              style={{ textDecoration: 'underline', color: 'rgba(138,143,160,0.4)' }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#C6FF3C')}
+              onMouseLeave={e => (e.currentTarget.style.color = 'rgba(138,143,160,0.4)')}
+            >
+              cliquez ici
+            </a>
+          </p>
         </div>
       </footer>
     </div>

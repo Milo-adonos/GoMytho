@@ -10,6 +10,15 @@ const Signup = lazy(() => import('./pages/Signup'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Creations = lazy(() => import('./pages/Creations'))
 
+// Admin
+const AdminLogin = lazy(() => import('./pages/admin/AdminLogin'))
+const AdminLayout = lazy(() => import('./pages/admin/AdminLayout'))
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'))
+const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
+const AdminMythos = lazy(() => import('./pages/admin/AdminMythos'))
+const AdminFinance = lazy(() => import('./pages/admin/AdminFinance'))
+const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
+
 // Fallback de chargement
 const LoadingFallback = () => (
   <div className="min-h-screen bg-primary-bg flex items-center justify-center">
@@ -31,6 +40,16 @@ function App() {
         <Route path="/signup" element={<Signup />} />
         <Route path="/app" element={<Dashboard />} />
         <Route path="/app/creations" element={<Creations />} />
+
+        {/* Admin */}
+        <Route path="/admin-login" element={<AdminLogin />} />
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<AdminDashboard />} />
+          <Route path="users" element={<AdminUsers />} />
+          <Route path="mythos" element={<AdminMythos />} />
+          <Route path="finance" element={<AdminFinance />} />
+          <Route path="settings" element={<AdminSettings />} />
+        </Route>
       </Routes>
     </Suspense>
   )

@@ -1,231 +1,188 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
-import { stripePromise, PRICE_IDS } from '@/lib/stripe'
+import { PRICE_IDS } from '@/lib/stripe'
 
 export default function Unlock() {
-  const navigate = useNavigate()
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('monthly')
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoading] = useState(false)
 
   const plans = {
     weekly: {
       price: '2,99€',
       period: 'par semaine',
-      credits: '70 mythos / semaine',
+      originalPrice: '5,99€',
       priceId: PRICE_IDS.weekly,
+      features: [
+        '20 images par semaine',
+        'Qualité 1K',
+        'Aucun watermark',
+        'Historique complet',
+      ],
     },
     monthly: {
       price: '9,90€',
       period: 'par mois',
       originalPrice: '19,90€',
-      credits: '610 mythos / mois',
       priceId: PRICE_IDS.monthly,
       badge: 'LE PLUS CHOISI',
+      features: [
+        '70 images par mois',
+        'Qualité 2K',
+        'Génération plus rapide',
+        'Aucun watermark',
+        'Historique complet',
+        'Support prioritaire',
+      ],
     },
   }
 
-  const features = [
-    'Mythos illimités sur abonnement',
-    'Qualité 2K',
-    'Génération ultra rapide',
-    'Aucun watermark',
-    'Historique complet',
-    'Support prioritaire',
-  ]
-
-  const handleCheckout = async () => {
-    setIsLoading(true)
-    try {
-      const stripe = await stripePromise
-      if (!stripe) {
-        throw new Error('Stripe not loaded')
-      }
-
-      // Dans un environnement réel, vous appelleriez votre backend ici
-      // pour créer une session Stripe Checkout
-      // const response = await fetch('/api/create-checkout-session', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({
-      //     priceId: plans[selectedPlan].priceId,
-      //   }),
-      // })
-      // const session = await response.json()
-      // await stripe.redirectToCheckout({ sessionId: session.id })
-
-      // Pour la démo, on redirige directement vers signup
-      setTimeout(() => {
-        navigate('/signup')
-      }, 1000)
-    } catch (error) {
-      console.error('Error:', error)
-      setIsLoading(false)
-    }
+  const PAYMENT_LINKS = {
+    monthly: 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00',
+    weekly: 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01',
   }
+
+  const handleCheckout = () => {
+    window.location.href = PAYMENT_LINKS[selectedPlan]
+  }
+
+  const currentPlan = plans[selectedPlan]
 
   return (
     <div className="min-h-screen bg-primary-bg">
       <Header showLogin={false} />
 
-      <div className="pt-32 pb-20 px-4">
-        <div className="max-w-5xl mx-auto">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-center mb-12"
-          >
-            <h1 className="text-4xl md:text-6xl font-black mb-4">
-              Ton mytho est prêt
-            </h1>
-            <p className="text-xl text-text-secondary mb-8">
-              Débloque-le maintenant pour voir le rendu complet
-            </p>
+      <div className="pt-24 pb-16 px-4">
+        <div className="max-w-md mx-auto">
 
-            <div className="flex flex-wrap items-center justify-center gap-4">
-              <div className="inline-flex items-center gap-2 bg-lime/10 px-4 py-2 rounded-full border border-lime/30">
-                <span className="text-lime">🛡️</span>
-                <span className="text-sm font-semibold">Satisfait ou remboursé</span>
-              </div>
-              <div className="inline-flex items-center gap-2 bg-orange-500/10 px-4 py-2 rounded-full border border-orange-500/30">
-                <span className="text-orange-500">🔥</span>
-                <span className="text-sm font-semibold text-orange-400">
-                  -50% aujourd'hui seulement
-                </span>
-              </div>
-            </div>
+          {/* Header */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center mb-8"
+          >
+            <h1 className="text-3xl font-black mb-1">Choisis ton offre</h1>
+            <p className="text-sm text-text-secondary">Annulable à tout moment, sans engagement</p>
           </motion.div>
 
-          {/* Toggle Hebdo / Mensuel */}
+          {/* Toggle */}
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="flex items-center justify-center gap-4 mb-12"
+            transition={{ delay: 0.05 }}
+            className="flex items-center p-1 rounded-full mb-6"
+            style={{ background: '#141826', border: '1px solid rgba(198,255,60,0.1)' }}
           >
+            {/* Hebdo */}
             <button
               onClick={() => setSelectedPlan('weekly')}
-              className={`px-6 py-3 rounded-full font-semibold transition-all ${
-                selectedPlan === 'weekly'
-                  ? 'bg-lime text-primary-bg'
-                  : 'bg-secondary-bg text-text-secondary hover:text-text-primary'
-              }`}
+              className="flex-1 py-2.5 rounded-full text-sm font-bold transition-all duration-200"
+              style={{
+                background: selectedPlan === 'weekly' ? '#C6FF3C' : 'transparent',
+                color: selectedPlan === 'weekly' ? '#0A0E1A' : '#8A8FA0',
+              }}
             >
               Hebdo
+              <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
             </button>
-            <button
-              onClick={() => setSelectedPlan('monthly')}
-              className={`px-6 py-3 rounded-full font-semibold transition-all ${
-                selectedPlan === 'monthly'
-                  ? 'bg-lime text-primary-bg'
-                  : 'bg-secondary-bg text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              Mensuel
-            </button>
+
+            {/* Mensuel + badge au dessus */}
+            <div className="flex-1 relative flex flex-col items-center">
+              <span
+                className="absolute -top-5 px-2 py-0.5 rounded-full text-[9px] font-black whitespace-nowrap"
+                style={{ background: '#C6FF3C', color: '#0A0E1A', boxShadow: '0 0 8px rgba(198,255,60,0.6)' }}
+              >
+                LE PLUS CHOISI
+              </span>
+              <button
+                onClick={() => setSelectedPlan('monthly')}
+                className="w-full py-2.5 rounded-full text-sm font-bold transition-all duration-200"
+                style={{
+                  background: selectedPlan === 'monthly' ? '#C6FF3C' : 'transparent',
+                  color: selectedPlan === 'monthly' ? '#0A0E1A' : '#8A8FA0',
+                }}
+              >
+                Mensuel
+                <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
+              </button>
+            </div>
           </motion.div>
 
-          {/* Pricing Cards */}
-          <div className="grid md:grid-cols-2 gap-6 mb-12">
-            {/* Card Weekly */}
-            <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.2 }}
-              className={`bg-secondary-bg rounded-3xl p-8 border-2 transition-all ${
-                selectedPlan === 'weekly'
-                  ? 'border-lime scale-105 glow-lime'
-                  : 'border-lime/10'
-              }`}
-            >
-              <h3 className="text-2xl font-bold mb-6">Hebdo</h3>
-              <div className="mb-6">
-                <span className="text-5xl font-black">{plans.weekly.price}</span>
-                <span className="text-text-secondary ml-2">{plans.weekly.period}</span>
+          {/* Card unique selon le plan sélectionné */}
+          <motion.div
+            key={selectedPlan}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="rounded-2xl p-6 mb-5 relative"
+            style={{
+              background: '#141826',
+              border: '1.5px solid rgba(198,255,60,0.4)',
+              boxShadow: '0 0 30px rgba(198,255,60,0.08)',
+            }}
+          >
+            {selectedPlan === 'monthly' && (
+              <div
+                className="absolute -top-3 left-5 px-3 py-0.5 rounded-full text-[11px] font-black"
+                style={{ background: '#C6FF3C', color: '#0A0E1A' }}
+              >
+                LE PLUS CHOISI
               </div>
-              <p className="text-lime font-semibold mb-8">{plans.weekly.credits}</p>
-            </motion.div>
+            )}
 
-            {/* Card Monthly */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.2 }}
-              className={`bg-secondary-bg rounded-3xl p-8 border-2 transition-all relative ${
-                selectedPlan === 'monthly'
-                  ? 'border-lime scale-105 glow-lime'
-                  : 'border-lime/10'
-              }`}
-            >
-              {plans.monthly.badge && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-lime text-primary-bg px-4 py-1 rounded-full text-xs font-bold">
-                  {plans.monthly.badge}
-                </div>
+            {/* Prix */}
+            <div className="flex items-baseline gap-2 mb-1">
+              {currentPlan.originalPrice && (
+                <span className="text-base text-text-secondary line-through">{currentPlan.originalPrice}</span>
               )}
-              <h3 className="text-2xl font-bold mb-6">Mensuel</h3>
-              <div className="mb-6">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl text-text-secondary line-through">
-                    {plans.monthly.originalPrice}
-                  </span>
-                  <span className="text-5xl font-black">{plans.monthly.price}</span>
-                </div>
-                <span className="text-text-secondary">{plans.monthly.period}</span>
-              </div>
-              <p className="text-lime font-semibold mb-8">{plans.monthly.credits}</p>
-            </motion.div>
+              <span className="text-4xl font-black">{currentPlan.price}</span>
+              <span className="text-text-secondary text-sm">{currentPlan.period}</span>
+            </div>
+
+            {/* Séparateur */}
+            <div className="my-4" style={{ height: '1px', background: 'rgba(198,255,60,0.1)' }} />
+
+            {/* Features */}
+            <ul className="space-y-3">
+              {currentPlan.features.map((f, i) => (
+                <li key={i} className="flex items-center gap-3 text-sm">
+                  <span
+                    className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[11px] font-black"
+                    style={{ background: 'rgba(198,255,60,0.15)', color: '#C6FF3C' }}
+                  >✓</span>
+                  <span className="text-text-primary">{f}</span>
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+
+          {/* Badges */}
+          <div className="flex gap-2 mb-5">
+            <div className="flex-1 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold"
+              style={{ background: 'rgba(198,255,60,0.06)', border: '1px solid rgba(198,255,60,0.15)', color: '#C6FF3C' }}>
+              🛡️ Satisfait ou remboursé
+            </div>
+            <div className="flex-1 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold"
+              style={{ background: 'rgba(249,115,22,0.06)', border: '1px solid rgba(249,115,22,0.2)', color: '#fb923c' }}>
+              🔥 -50% aujourd'hui
+            </div>
           </div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="bg-secondary-bg/50 rounded-3xl p-8 mb-8"
+          {/* CTA */}
+          <Button
+            onClick={handleCheckout}
+            disabled={isLoading}
+            size="lg"
+            fullWidth
+            className="mb-3"
           >
-            <p className="text-center text-text-secondary mb-6">
-              <span className="text-lime font-semibold">⚡ 8 crédits</span> / image
-            </p>
+            {isLoading ? 'Chargement...' : 'DEVENIR MYTHO PRO →'}
+          </Button>
 
-            <div className="grid md:grid-cols-2 gap-4 mb-8">
-              {features.map((feature, index) => (
-                <div key={index} className="flex items-start gap-3">
-                  <span className="text-lime text-xl mt-0.5">✓</span>
-                  <span className="text-text-secondary">{feature}</span>
-                </div>
-              ))}
-            </div>
-
-            <Button
-              onClick={handleCheckout}
-              disabled={isLoading}
-              size="lg"
-              fullWidth
-              className="mb-4"
-            >
-              {isLoading ? 'Chargement...' : 'DEVENIR MYTHO PRO'}
-              <span className="text-2xl">→</span>
-            </Button>
-
-            <p className="text-center text-sm text-text-secondary mb-4">
-              Annulable à tout moment
-            </p>
-
-            <div className="flex items-center justify-center gap-2 text-sm text-orange-400">
-              <span>🔥</span>
-              <span>1480 personnes ont commencé dans les dernières minutes</span>
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.4 }}
-            className="text-center text-xs text-text-secondary/50"
-          >
-            <p>Paiement sécurisé par Stripe</p>
-          </motion.div>
+          <p className="text-center text-xs text-text-secondary">
+            🔒 Paiement sécurisé · Annulable à tout moment
+          </p>
         </div>
       </div>
     </div>

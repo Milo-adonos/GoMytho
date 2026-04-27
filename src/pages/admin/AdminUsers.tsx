@@ -1,0 +1,148 @@
+import { useEffect, useState } from 'react'
+
+interface User {
+  id: string; email: string; plan: string; subscription_status: string
+  created_at: string; total_mythos: number; total_cost_eur: number
+  total_revenue_eur: number; net_eur: number
+}
+
+const statusColors: Record<string, string> = {
+  active: '#4ade80', cancelled: '#ef4444', trial: '#fb923c',
+}
+const planColors: Record<string, string> = {
+  monthly: '#C6FF3C', weekly: '#8A8FA0',
+}
+
+function relativeDate(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const d = Math.floor(diff / 86400000)
+  if (d === 0) return "aujourd'hui"
+  if (d === 1) return 'il y a 1j'
+  if (d < 30) return `il y a ${d}j`
+  return `il y a ${Math.floor(d / 30)}m`
+}
+
+export default function AdminUsers() {
+  const [users, setUsers] = useState<User[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [planFilter, setPlanFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [page, setPage] = useState(1)
+  const [sortKey, setSortKey] = useState<keyof User>('created_at')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const fetchUsers = () => {
+    setLoading(true)
+    const params = new URLSearchParams({ page: String(page), limit: '50', search, plan: planFilter, status: statusFilter })
+    fetch(`/api/admin/users?${params}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { setUsers(d.users || []); setTotal(d.total || 0); setLoading(false) })
+      .catch(() => setLoading(false))
+  }
+
+  useEffect(() => { fetchUsers() }, [page, planFilter, statusFilter])
+
+  const handleSort = (key: keyof User) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortKey(key); setSortDir('desc') }
+  }
+
+  const sorted = [...users].sort((a, b) => {
+    const va = a[sortKey]; const vb = b[sortKey]
+    if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va
+    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
+  })
+
+  const thCls = "px-4 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-text-secondary cursor-pointer hover:text-lime select-none"
+  const tdCls = "px-4 py-3 text-sm"
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-black text-white">Utilisateurs <span className="text-text-secondary font-normal text-base">({total})</span></h1>
+      </div>
+
+      {/* Filtres */}
+      <div className="flex flex-wrap gap-2">
+        <input
+          value={search} onChange={e => setSearch(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && fetchUsers()}
+          placeholder="Rechercher un email..."
+          className="px-3 py-2 rounded-xl text-sm bg-secondary-bg text-text-primary border focus:outline-none"
+          style={{ borderColor: 'rgba(198,255,60,0.15)', minWidth: '200px' }}
+        />
+        {(['all', 'weekly', 'monthly'] as const).map(p => (
+          <button key={p} onClick={() => { setPlanFilter(p); setPage(1) }}
+            className="px-3 py-2 rounded-xl text-xs font-bold transition-all"
+            style={{ background: planFilter === p ? 'rgba(198,255,60,0.15)' : '#141826', color: planFilter === p ? '#C6FF3C' : '#8A8FA0', border: '1px solid rgba(198,255,60,0.1)' }}>
+            {p === 'all' ? 'Tous' : p === 'weekly' ? 'Hebdo' : 'Mensuel'}
+          </button>
+        ))}
+        {(['all', 'active', 'cancelled'] as const).map(s => (
+          <button key={s} onClick={() => { setStatusFilter(s); setPage(1) }}
+            className="px-3 py-2 rounded-xl text-xs font-bold transition-all"
+            style={{ background: statusFilter === s ? 'rgba(198,255,60,0.15)' : '#141826', color: statusFilter === s ? '#C6FF3C' : '#8A8FA0', border: '1px solid rgba(198,255,60,0.1)' }}>
+            {s === 'all' ? 'Tous statuts' : s === 'active' ? 'Actif' : 'Annulé'}
+          </button>
+        ))}
+      </div>
+
+      {/* Table */}
+      <div className="rounded-2xl overflow-hidden" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <tr>
+                {[['email', 'Email'], ['plan', 'Plan'], ['subscription_status', 'Statut'], ['created_at', 'Inscription'], ['total_mythos', 'Analyses'], ['total_cost_eur', 'Coût IA'], ['total_revenue_eur', 'CA'], ['net_eur', 'Net']].map(([key, label]) => (
+                  <th key={key} className={thCls} onClick={() => handleSort(key as keyof User)}>
+                    {label} {sortKey === key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-text-secondary text-sm">Chargement...</td></tr>
+              ) : sorted.map((u, i) => (
+                <tr key={u.id} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}
+                  className="hover:bg-white/5 transition-colors">
+                  <td className={`${tdCls} text-lime font-medium`}>{u.email}</td>
+                  <td className={tdCls}>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: `${planColors[u.plan]}20`, color: planColors[u.plan] }}>
+                      {u.plan === 'weekly' ? 'Hebdo' : 'Mensuel'}
+                    </span>
+                  </td>
+                  <td className={tdCls}>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: `${statusColors[u.subscription_status] || '#8A8FA0'}20`, color: statusColors[u.subscription_status] || '#8A8FA0' }}>
+                      {u.subscription_status}
+                    </span>
+                  </td>
+                  <td className={`${tdCls} text-text-secondary`}>{relativeDate(u.created_at)}</td>
+                  <td className={`${tdCls} text-text-primary`}>{u.total_mythos}</td>
+                  <td className={`${tdCls} text-orange-400`}>{u.total_cost_eur.toFixed(2)}€</td>
+                  <td className={`${tdCls} text-white`}>{u.total_revenue_eur.toFixed(2)}€</td>
+                  <td className={tdCls} style={{ color: u.net_eur >= 0 ? '#4ade80' : '#ef4444' }}>
+                    {u.net_eur >= 0 ? '+' : ''}{u.net_eur.toFixed(2)}€
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        {total > 50 && (
+          <div className="flex items-center justify-between px-4 py-3 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+            <p className="text-xs text-text-secondary">Page {page} · {total} utilisateurs</p>
+            <div className="flex gap-2">
+              <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-30 border" style={{ borderColor: 'rgba(198,255,60,0.2)', color: '#C6FF3C' }}>←</button>
+              <button disabled={page * 50 >= total} onClick={() => setPage(p => p + 1)} className="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-30 border" style={{ borderColor: 'rgba(198,255,60,0.2)', color: '#C6FF3C' }}>→</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
