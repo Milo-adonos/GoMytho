@@ -77,14 +77,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (req.body?.returnUrl as string | undefined) ||
       `${getOrigin(req)}/settings`
 
-    const session = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: returnUrl,
-    })
-
-    return res.status(200).json({ url: session.url })
-  } catch (error) {
-    console.error('stripe-portal error:', error)
-    return res.status(500).json({ error: 'Unable to create portal session' })
+    try {
+      const session = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: returnUrl,
+      })
+      return res.status(200).json({ url: session.url })
+    } catch (portalErr: any) {
+      // Erreur typique : le Customer Portal n'est pas configuré dans le
+      // dashboard Stripe → URL : https://dashboard.stripe.com/settings/billing/portal
+      const message = portalErr?.message || 'Customer Portal Stripe non configuré'
+      console.error('[stripe-portal] portal create failed:', message)
+      return res.status(500).json({
+        error: message.includes('configuration')
+          ? 'Le portail Stripe n\'est pas encore activé. Réessaie dans quelques minutes.'
+          : message,
+      })
+    }
+  } catch (error: any) {
+    console.error('stripe-portal error:', error?.message || error)
+    return res.status(500).json({ error: error?.message || 'Unable to create portal session' })
   }
 }
