@@ -23,7 +23,7 @@ export default function Analyzing() {
   useEffect(() => {
     const img = sessionStorage.getItem('uploadedImage')
     if (!img) {
-      navigate('/create')
+      navigate('/uploadphoto')
       return
     }
     setUploadedImage(img)
@@ -63,7 +63,7 @@ export default function Analyzing() {
   }, [navigate])
 
   const handleUnlock = () => {
-    navigate('/unlock')
+    navigate('/choixoffre')
   }
 
   if (!isComplete) {

@@ -77,7 +77,7 @@ export default function AppCreate() {
         <div className="text-right">
           <p className="text-xs text-text-secondary">≈ {Math.floor(credits / CREDITS_PER_IMAGE)} mytho{Math.floor(credits / CREDITS_PER_IMAGE) > 1 ? 's' : ''} restant{Math.floor(credits / CREDITS_PER_IMAGE) > 1 ? 's' : ''}</p>
           {credits < CREDITS_PER_IMAGE && (
-            <button onClick={() => navigate('/app/settings')} className="text-xs text-lime font-bold mt-1">
+            <button onClick={() => navigate('/settings')} className="text-xs text-lime font-bold mt-1">
               Recharger →
             </button>
           )}
@@ -165,7 +165,7 @@ export default function AppCreate() {
         {isGenerating ? '⏳ Génération...' : `✨ Générer — ${CREDITS_PER_IMAGE} crédits`}
       </button>
       {credits < CREDITS_PER_IMAGE && !isGenerating && (
-        <p className="text-center text-xs text-red-400 mt-2">Crédits insuffisants · <button onClick={() => navigate('/app/settings')} className="underline">Gérer l'abonnement</button></p>
+        <p className="text-center text-xs text-red-400 mt-2">Crédits insuffisants · <button onClick={() => navigate('/settings')} className="underline">Gérer l'abonnement</button></p>
       )}
     </div>
   )

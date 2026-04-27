@@ -253,7 +253,7 @@ export default function Landing() {
           {/* CTA */}
           <div className="animate-fade-up-4 flex flex-col items-center gap-3 mb-6">
             <button
-              onClick={() => navigate('/create')}
+              onClick={() => navigate('/uploadphoto')}
               className="w-full max-w-xs py-4 text-lg font-black rounded-full bg-lime text-primary-bg active:scale-95 transition-all duration-200 animate-pulse-glow"
               style={{ boxShadow: '0 0 50px rgba(198,255,60,0.4), 0 0 100px rgba(198,255,60,0.15)' }}
             >
@@ -386,7 +386,7 @@ export default function Landing() {
             <span className="text-gradient-lime">on mytho ?</span>
           </h2>
           <button
-            onClick={() => navigate('/create')}
+            onClick={() => navigate('/uploadphoto')}
             className="w-full max-w-xs py-5 text-xl font-black rounded-full bg-lime text-primary-bg active:scale-95 transition-all duration-200"
             style={{ boxShadow: '0 0 60px rgba(198,255,60,0.4), 0 0 120px rgba(198,255,60,0.15)' }}
           >

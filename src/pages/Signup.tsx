@@ -47,12 +47,12 @@ export default function Signup() {
         }], { onConflict: 'id' })
 
         if (_data.session) {
-          navigate('/app')
+          navigate('/resultats')
         } else {
           // Fallback : connexion directe si pas de session (ne devrait pas arriver)
           const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
           if (signInData.session) {
-            navigate('/app')
+            navigate('/resultats')
           } else {
             setError('Compte créé ! Connecte-toi maintenant.')
             navigate('/login')
@@ -75,7 +75,7 @@ export default function Signup() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `https://gomytho.com/app?plan=${plan}`,
+          redirectTo: `https://gomytho.com/resultats?plan=${plan}`,
         },
       })
 

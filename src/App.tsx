@@ -1,17 +1,14 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { Suspense, lazy } from 'react'
 
-// Lazy load pour éviter les erreurs de chargement initial
 const Landing = lazy(() => import('./pages/Landing'))
 const Create = lazy(() => import('./pages/Create'))
 const Analyzing = lazy(() => import('./pages/Analyzing'))
 const Unlock = lazy(() => import('./pages/Unlock'))
 const Signup = lazy(() => import('./pages/Signup'))
 const Login = lazy(() => import('./pages/Login'))
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Creations = lazy(() => import('./pages/Creations'))
 
-// Nouvelle app interne
+// App interne
 const AppLayout = lazy(() => import('./pages/AppLayout'))
 const AppCreations = lazy(() => import('./pages/AppCreations'))
 const AppCreate = lazy(() => import('./pages/AppCreate'))
@@ -26,7 +23,6 @@ const AdminMythos = lazy(() => import('./pages/admin/AdminMythos'))
 const AdminFinance = lazy(() => import('./pages/admin/AdminFinance'))
 const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
 
-// Fallback de chargement
 const LoadingFallback = () => (
   <div className="min-h-screen bg-primary-bg flex items-center justify-center">
     <div className="text-center">
@@ -40,22 +36,29 @@ function App() {
   return (
     <Suspense fallback={<LoadingFallback />}>
       <Routes>
+        {/* Funnel public */}
         <Route path="/" element={<Landing />} />
-        <Route path="/create" element={<Create />} />
-        <Route path="/analyzing" element={<Analyzing />} />
-        <Route path="/unlock" element={<Unlock />} />
+        <Route path="/uploadphoto" element={<Create />} />
+        <Route path="/chargementmytho" element={<Analyzing />} />
+        <Route path="/choixoffre" element={<Unlock />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/login" element={<Login />} />
+
         {/* App interne — layout avec bottom nav */}
-        <Route path="/app" element={<AppLayout />}>
-          <Route index element={<AppCreations />} />
-          <Route path="new" element={<AppCreate />} />
-          <Route path="settings" element={<AppSettings />} />
+        <Route element={<AppLayout />}>
+          <Route path="/resultats" element={<AppCreations />} />
+          <Route path="/makemytho" element={<AppCreate />} />
+          <Route path="/settings" element={<AppSettings />} />
         </Route>
 
-        {/* Anciennes routes conservées pour compatibilité */}
-        <Route path="/app/dashboard" element={<Dashboard />} />
-        <Route path="/app/creations" element={<Creations />} />
+        {/* Redirections des anciennes URLs */}
+        <Route path="/create" element={<Navigate to="/uploadphoto" replace />} />
+        <Route path="/analyzing" element={<Navigate to="/chargementmytho" replace />} />
+        <Route path="/unlock" element={<Navigate to="/choixoffre" replace />} />
+        <Route path="/app" element={<Navigate to="/resultats" replace />} />
+        <Route path="/app/new" element={<Navigate to="/makemytho" replace />} />
+        <Route path="/app/settings" element={<Navigate to="/settings" replace />} />
+        <Route path="/app/creations" element={<Navigate to="/resultats" replace />} />
 
         {/* Admin */}
         <Route path="/admin-login" element={<AdminLogin />} />

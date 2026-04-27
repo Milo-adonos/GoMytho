@@ -31,7 +31,7 @@ export default function Create() {
     sessionStorage.setItem('uploadedImageName', image.name)
     sessionStorage.setItem('userPrompt', prompt)
     sessionStorage.setItem('aspectRatio', aspectRatio)
-    navigate('/analyzing')
+    navigate('/chargementmytho')
   }
 
   return (

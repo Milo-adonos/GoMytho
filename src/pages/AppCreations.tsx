@@ -48,7 +48,7 @@ export default function AppCreations() {
         <h2 className="text-xl font-black mb-2">Aucune création</h2>
         <p className="text-text-secondary text-sm mb-6">Lance ton premier mytho et retrouve-le ici</p>
         <button
-          onClick={() => navigate('/app/new')}
+          onClick={() => navigate('/makemytho')}
           className="px-6 py-3 rounded-full font-black text-primary-bg bg-lime active:scale-95 transition-all"
           style={{ boxShadow: '0 0 30px rgba(198,255,60,0.3)' }}
         >

@@ -18,24 +18,11 @@ export default function Login() {
     setError('')
 
     try {
-      // Vérifier si l'email existe dans notre table users
-      const { data: existingUser } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', email)
-        .maybeSingle()
-
-      if (!existingUser) {
-        setError('❌ Aucun compte enregistré avec cet email. Tu dois d\'abord payer et créer un compte.')
-        setIsLoading(false)
-        return
-      }
-
       const { data, error } = await supabase.auth.signInWithPassword({ email, password })
 
       if (error) {
         if (error.message?.includes('Invalid login credentials')) {
-          setError('❌ Mot de passe incorrect.')
+          setError('❌ Email ou mot de passe incorrect. Pas encore de compte ? Commence par payer ton abonnement.')
         } else {
           setError(error.message || 'Une erreur est survenue')
         }
@@ -43,7 +30,7 @@ export default function Login() {
       }
 
       if (data.session) {
-        navigate('/app')
+        navigate('/resultats')
       }
     } catch {
       setError('Une erreur est survenue. Réessaie.')
@@ -59,7 +46,7 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/app`,
+          redirectTo: `${window.location.origin}/resultats`,
         },
       })
       if (error) throw error
@@ -98,9 +85,9 @@ export default function Login() {
             {error && (
               <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-sm space-y-2">
                 <p className="text-red-400">{error}</p>
-                {error.includes('Aucun compte') && (
+                {error.includes('incorrect') && (
                   <a
-                    href="/create"
+                    href="/uploadphoto"
                     className="block text-center mt-2 text-lime font-semibold hover:underline"
                   >
                     → Essayer GoMytho gratuitement

@@ -31,7 +31,7 @@ export default function Header({ showLogin = true }: HeaderProps) {
 
   const handleLogin = () => {
     if (user) {
-      navigate('/app')
+      navigate('/resultats')
     } else {
       navigate('/login')
     }

@@ -15,12 +15,21 @@ export default function AppLayout() {
   useEffect(() => {
     const init = async () => {
       try {
+        // Écouter les changements d'auth pour gérer le callback OAuth
         const { data: { session } } = await supabase.auth.getSession()
         if (!session) {
-          navigate('/login')
-          return
+          // Attendre un court instant au cas où le token OAuth est en cours de traitement
+          await new Promise(r => setTimeout(r, 300))
+          const { data: { session: session2 } } = await supabase.auth.getSession()
+          if (!session2) {
+            navigate('/login')
+            return
+          }
         }
-        const authUser = session.user
+        const { data: { session: finalSession } } = await supabase.auth.getSession()
+        const activeSession = finalSession || session
+        if (!activeSession) { navigate('/login'); return }
+        const authUser = activeSession.user
         const { data } = await supabase.from('users').select('*').eq('id', authUser.id).single()
         if (data) {
           setUser(data)
