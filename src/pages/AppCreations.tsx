@@ -41,6 +41,7 @@ export default function AppCreations() {
           if (!mergedByUrl.has(m.image_url)) mergedByUrl.set(m.image_url, m)
         })
         const merged = Array.from(mergedByUrl.values())
+          .filter((m) => typeof m.image_url === 'string' && m.image_url.startsWith('http'))
           .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
         setMythos(merged)
         saveLocalMythos(user.id, merged)

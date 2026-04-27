@@ -9,6 +9,18 @@ function extractImageUrlFromAny(input: unknown): string | null {
   const seen = new WeakSet<object>()
   const queue: unknown[] = [input]
   const urlRegex = /https?:\/\/[^\s"'<>]+/g
+  const dataUriRegex = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g
+
+  const normalizeUrl = (raw: string): string | null => {
+    const s = raw.trim().replace(/^['"]|['"]$/g, '')
+    if (!s) return null
+    if (s.startsWith('data:image/')) return s
+    if (/^https?:\/\//i.test(s)) return s
+    if (s.startsWith('//')) return `https:${s}`
+    if (s.startsWith('/')) return `https://api.kie.ai${s}`
+    if (/^[a-z0-9.-]+\.[a-z]{2,}\//i.test(s)) return `https://${s}`
+    return null
+  }
 
   while (queue.length) {
     const current = queue.shift()
@@ -16,12 +28,20 @@ function extractImageUrlFromAny(input: unknown): string | null {
 
     if (typeof current === 'string') {
       try { queue.push(JSON.parse(current)) } catch {}
+      try { const decoded = decodeURIComponent(current); if (decoded !== current) queue.push(decoded) } catch {}
       const matches = current.match(urlRegex) || []
+      const dataUris = current.match(dataUriRegex) || []
+      if (dataUris[0]) return dataUris[0]
       const picked = matches.find((u) =>
         /(png|jpg|jpeg|webp|gif|bmp)(\?|$)/i.test(u) ||
         /(cdn|storage|image|img|media|output|result)/i.test(u)
       )
-      if (picked) return picked
+      if (picked) {
+        const normalized = normalizeUrl(picked)
+        if (normalized) return normalized
+      }
+      const maybeSingle = normalizeUrl(current)
+      if (maybeSingle && /(png|jpg|jpeg|webp|gif|bmp|image|media|cdn|storage)/i.test(maybeSingle)) return maybeSingle
       continue
     }
 
@@ -37,7 +57,10 @@ function extractImageUrlFromAny(input: unknown): string | null {
       const keys = ['image_url', 'imageUrl', 'url', 'output_url', 'result_url', 'download_url']
       for (const k of keys) {
         const v = obj[k]
-        if (typeof v === 'string' && /^https?:\/\//.test(v)) return v
+        if (typeof v === 'string') {
+          const normalized = normalizeUrl(v)
+          if (normalized) return normalized
+        }
       }
       Object.values(obj).forEach((v) => queue.push(v))
     }
@@ -99,6 +122,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const maxAttempts = 120
     let bestEffortUrl: string | null = null
+    let successWithoutUrlCount = 0
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await new Promise((r) => setTimeout(r, 2000))
@@ -126,6 +150,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
         const imageUrlOut = maybeUrl || bestEffortUrl
         if (imageUrlOut) return res.status(200).json({ imageUrl: imageUrlOut })
+        successWithoutUrlCount += 1
+        if (successWithoutUrlCount < 15) continue
         return res.status(502).json({ error: 'Image URL not found', raw: normalized })
       }
 

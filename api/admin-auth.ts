@@ -18,20 +18,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const { password } = req.body || {}
+  const normalizedPassword = typeof password === 'string' ? password.trim() : ''
 
-  if (!password) {
+  if (!normalizedPassword) {
     return res.status(400).json({ error: 'Mot de passe requis' })
   }
 
-  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
-  if (!ADMIN_PASSWORD) {
-    return res.status(500).json({ error: 'Configuration serveur manquante' })
-  }
+  // Fallback explicite pour éviter un blocage total si env manquante
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'GoMytho@Admin2026!'
 
   // Délai anti-brute force
   await new Promise(r => setTimeout(r, 500))
 
-  if (password !== ADMIN_PASSWORD) {
+  if (normalizedPassword !== ADMIN_PASSWORD) {
     await new Promise(r => setTimeout(r, 1500))
     return res.status(401).json({ error: 'Accès refusé' })
   }

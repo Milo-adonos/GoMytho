@@ -23,6 +23,18 @@ function extractImageUrlFromAny(input: unknown): string | null {
   const seen = new WeakSet<object>()
   const queue: unknown[] = [input]
   const urlRegex = /https?:\/\/[^\s"'<>]+/g
+  const dataUriRegex = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g
+
+  const normalizeUrl = (raw: string): string | null => {
+    const s = raw.trim().replace(/^['"]|['"]$/g, '')
+    if (!s) return null
+    if (s.startsWith('data:image/')) return s
+    if (/^https?:\/\//i.test(s)) return s
+    if (s.startsWith('//')) return `https:${s}`
+    if (s.startsWith('/')) return `https://api.kie.ai${s}`
+    if (/^[a-z0-9.-]+\.[a-z]{2,}\//i.test(s)) return `https://${s}`
+    return null
+  }
 
   while (queue.length) {
     const current = queue.shift()
@@ -37,12 +49,30 @@ function extractImageUrlFromAny(input: unknown): string | null {
         // ignore JSON parse error
       }
 
+      // Essai string URL-encodée
+      try {
+        const decoded = decodeURIComponent(current)
+        if (decoded !== current) queue.push(decoded)
+      } catch {
+        // ignore decode errors
+      }
+
       const matches = current.match(urlRegex) || []
+      const dataUris = current.match(dataUriRegex) || []
+      if (dataUris[0]) return dataUris[0]
       const picked = matches.find((u) =>
         /(png|jpg|jpeg|webp|gif|bmp)(\?|$)/i.test(u) ||
         /(cdn|storage|image|img|media|output|result)/i.test(u)
       )
-      if (picked) return picked
+      if (picked) {
+        const normalized = normalizeUrl(picked)
+        if (normalized) return normalized
+      }
+
+      const maybeSingle = normalizeUrl(current)
+      if (maybeSingle && /(png|jpg|jpeg|webp|gif|bmp|image|media|cdn|storage)/i.test(maybeSingle)) {
+        return maybeSingle
+      }
       continue
     }
 
@@ -61,7 +91,10 @@ function extractImageUrlFromAny(input: unknown): string | null {
       ]
       for (const key of directKeys) {
         const v = obj[key]
-        if (typeof v === 'string' && /^https?:\/\//.test(v)) return v
+        if (typeof v === 'string') {
+          const normalized = normalizeUrl(v)
+          if (normalized) return normalized
+        }
       }
 
       Object.values(obj).forEach((v) => queue.push(v))
@@ -179,6 +212,7 @@ export async function generateMytho(
   const maxAttempts = 120 // 120 × 2s = 240s = 4 minutes
   const pollInterval = 2000
   let bestEffortUrl: string | null = null
+  let successWithoutUrlCount = 0
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise(r => setTimeout(r, pollInterval))
@@ -217,7 +251,12 @@ export async function generateMytho(
       if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
         const imageUrl = extractImageUrlFromAny(normalized)
 
-        if (!imageUrl) throw new Error('Image générée introuvable dans la réponse')
+        if (!imageUrl) {
+          successWithoutUrlCount += 1
+          // Kie peut marquer success puis publier l'URL quelques secondes après
+          if (successWithoutUrlCount < 15) continue
+          throw new Error('Image générée introuvable dans la réponse')
+        }
 
         onProgress?.('Mytho prêt !')
         return imageUrl
