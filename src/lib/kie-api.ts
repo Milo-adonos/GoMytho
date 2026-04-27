@@ -19,6 +19,26 @@ export interface GenerateMythoParams {
   aspectRatio: AspectRatio
 }
 
+function normalizeComparableUrl(raw: string): string {
+  try {
+    const u = new URL(raw)
+    u.hash = ''
+    u.search = ''
+    return decodeURIComponent(u.toString())
+  } catch {
+    return decodeURIComponent(raw)
+  }
+}
+
+function keepOnlyGeneratedUrl(candidate: string | null, sourceImageUrl: string): string | null {
+  if (!candidate) return null
+  if (candidate.startsWith('data:image/')) return candidate
+  const a = normalizeComparableUrl(candidate)
+  const b = normalizeComparableUrl(sourceImageUrl)
+  if (a === b) return null
+  return candidate
+}
+
 function extractImageUrlFromAny(input: unknown): string | null {
   const seen = new WeakSet<object>()
   const queue: unknown[] = [input]
@@ -268,12 +288,6 @@ export async function generateMytho(
     timeout: 60000,
   })
 
-  const immediateImageUrl = extractImageUrlFromAny(data)
-  if (immediateImageUrl) {
-    onProgress?.('Mytho prêt !')
-    return immediateImageUrl
-  }
-
   const providerCode = Number(data?.code ?? data?.statusCode ?? 200)
   const providerMsg = String(data?.msg || data?.message || data?.error || '').trim()
   if (providerCode !== 200) {
@@ -327,13 +341,13 @@ export async function generateMytho(
 
       const normalized = result?.data || result
       const status: string = normalized?.state || normalized?.status || normalized?.task_status
-      const maybeUrl = extractImageUrlFromAny(normalized)
+      const maybeUrl = keepOnlyGeneratedUrl(extractImageUrlFromAny(normalized), imageUrl)
       if (maybeUrl) bestEffortUrl = maybeUrl
 
       if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-        const imageUrl = extractImageUrlFromAny(normalized)
+        const generatedImageUrl = keepOnlyGeneratedUrl(extractImageUrlFromAny(normalized), imageUrl)
 
-        if (!imageUrl) {
+        if (!generatedImageUrl) {
           successWithoutUrlCount += 1
           // Kie peut marquer success puis publier l'URL quelques secondes après
           if (successWithoutUrlCount < 15) continue
@@ -341,7 +355,7 @@ export async function generateMytho(
         }
 
         onProgress?.('Mytho prêt !')
-        return imageUrl
+        return generatedImageUrl
       }
 
       if (status === 'failed' || status === 'error' || status === 'fail') {

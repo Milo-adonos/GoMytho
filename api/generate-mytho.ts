@@ -5,6 +5,26 @@ type AspectRatio = '9:16' | '16:9'
 
 const KIE_ENDPOINT = 'https://api.kie.ai/api/v1/jobs/createTask'
 
+function normalizeComparableUrl(raw: string): string {
+  try {
+    const u = new URL(raw)
+    u.hash = ''
+    u.search = ''
+    return decodeURIComponent(u.toString())
+  } catch {
+    return decodeURIComponent(raw)
+  }
+}
+
+function keepOnlyGeneratedUrl(candidate: string | null, sourceImageUrl: string): string | null {
+  if (!candidate) return null
+  if (candidate.startsWith('data:image/')) return candidate
+  const a = normalizeComparableUrl(candidate)
+  const b = normalizeComparableUrl(sourceImageUrl)
+  if (a === b) return null
+  return candidate
+}
+
 async function toDataUrlFromUrl(url: string): Promise<string | null> {
   try {
     if (!url) return null
@@ -176,12 +196,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       timeout: 60000,
     })
 
-    const immediateImageUrl = extractImageUrlFromAny(data)
-    if (immediateImageUrl) {
-      const previewDataUrl = await toDataUrlFromUrl(immediateImageUrl)
-      return res.status(200).json({ imageUrl: immediateImageUrl, previewDataUrl, immediate: true })
-    }
-
     const providerCode = Number(data?.code ?? data?.statusCode ?? 200)
     const providerMsg = String(data?.msg || data?.message || data?.error || '').trim()
     if (providerCode !== 200) {
@@ -237,7 +251,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const normalized = result?.data || result
       const status: string = normalized?.state || normalized?.status || normalized?.task_status
-      const maybeUrl = extractImageUrlFromAny(normalized)
+      const maybeUrl = keepOnlyGeneratedUrl(extractImageUrlFromAny(normalized), String(imageUrl))
       if (maybeUrl) bestEffortUrl = maybeUrl
 
       if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
