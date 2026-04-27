@@ -3,33 +3,12 @@ import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
 import { generateMytho, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
+import { saveMythoToCloud } from '@/lib/mythos-sync'
 import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 
 const CREDITS_PER_IMAGE = 8
 const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
-const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
-
-function saveLocalCreation(
-  userId: string,
-  remoteUrl: string,
-  previewDataUrl: string,
-  userPrompt: string
-) {
-  const key = `gomytho_creations_${userId}`
-  const raw = localStorage.getItem(key)
-  type Entry = { id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }
-  const list = raw ? (JSON.parse(raw) as Entry[]) : []
-  const entry: Entry = {
-    id: `local-${Date.now()}`,
-    user_id: userId,
-    image_url: remoteUrl || previewDataUrl,
-    preview_data_url: previewDataUrl,
-    prompt: userPrompt,
-    created_at: new Date().toISOString(),
-  }
-  localStorage.setItem(key, JSON.stringify([entry, ...list].slice(0, 200)))
-}
 
 async function downloadDataUrl(dataUrl: string, filename = `mytho-${Date.now()}.jpg`) {
   try {
@@ -152,7 +131,7 @@ export default function AppCreate() {
 
       // 2) Génération IA — retourne TOUJOURS un dataUrl base64 prêt à afficher
       setStep('Génération IA...')
-      const { remoteUrl, dataUrl } = await generateMytho(
+      const { dataUrl } = await generateMytho(
         { userPrompt: prompt, imageUrl: sourceUrl, aspectRatio },
         (s) => setStep(s)
       )
@@ -160,14 +139,16 @@ export default function AppCreate() {
       // 3) Affichage immédiat depuis la copie locale base64
       setResultDataUrl(dataUrl)
 
-      // 4) Sauvegarde locale (toujours fiable, même si Storage tombe)
-      saveLocalCreation(activeUser.id, remoteUrl, dataUrl, prompt)
+      // 4) Sauvegarde cloud (manifeste Supabase Storage) + cache local
+      setStep('Sauvegarde...')
+      await saveMythoToCloud({
+        userId: activeUser.id,
+        generatedDataUrl: dataUrl,
+        prompt,
+      })
 
-      // 5) DB / crédits — non bloquant
+      // 5) Crédits — non bloquant
       try {
-        if (USE_MYTHOS_TABLE && remoteUrl?.startsWith('http')) {
-          await supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: remoteUrl, prompt }])
-        }
         if (USE_USERS_TABLE) {
           await supabase
             .from('users')

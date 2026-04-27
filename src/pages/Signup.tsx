@@ -5,31 +5,15 @@ import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
 import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
+import { saveMythoToCloud } from '@/lib/mythos-sync'
 import type { AspectRatio } from '@/lib/kie-api'
 
 const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
-const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
 
 const PLAN_CONFIG = {
   weekly:  { credits: 160, label: 'hebdomadaire' },
   monthly: { credits: 560, label: 'mensuel' },
   free:    { credits: 3,   label: 'gratuit' },
-}
-
-function saveLocalCreation(userId: string, remoteUrl: string, prompt: string, previewDataUrl: string) {
-  const key = `gomytho_creations_${userId}`
-  const raw = localStorage.getItem(key)
-  type Entry = { id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }
-  const list = raw ? (JSON.parse(raw) as Entry[]) : []
-  const entry: Entry = {
-    id: `local-${Date.now()}`,
-    user_id: userId,
-    image_url: remoteUrl || previewDataUrl,
-    prompt,
-    created_at: new Date().toISOString(),
-    preview_data_url: previewDataUrl,
-  }
-  localStorage.setItem(key, JSON.stringify([entry, ...list].slice(0, 200)))
 }
 
 export default function Signup() {
@@ -105,22 +89,13 @@ export default function Signup() {
             const publicUrl = await uploadToSupabase(file, userId)
 
             setGenStep('Génération de ton mytho...')
-            const { remoteUrl, dataUrl } = await generateMytho(
+            const { dataUrl } = await generateMytho(
               { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
               (s) => setGenStep(s)
             )
 
             setGenStep('Sauvegarde...')
-            if (USE_MYTHOS_TABLE && remoteUrl.startsWith('http')) {
-              try {
-                await supabase.from('mythos').insert([{
-                  user_id: userId, image_url: remoteUrl, prompt: pendingPrompt,
-                }])
-              } catch (dbErr) {
-                console.warn('DB sauvegarde non critique :', dbErr)
-              }
-            }
-            saveLocalCreation(userId, remoteUrl, pendingPrompt, dataUrl)
+            await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
 
             localStorage.removeItem('gomytho_pending_image')
             localStorage.removeItem('gomytho_pending_prompt')
