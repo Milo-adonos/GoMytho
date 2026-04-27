@@ -4,8 +4,10 @@ import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
-import { generateImage, uploadToSupabase } from '@/lib/kie-api'
+import { generateImage, uploadToSupabase, persistGeneratedImage } from '@/lib/kie-api'
 import type { AspectRatio } from '@/lib/kie-api'
+
+const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
 
 const PLAN_CONFIG = {
   weekly:  { credits: 160, label: 'hebdomadaire' },  // 20 images × 8 crédits
@@ -43,13 +45,15 @@ export default function Signup() {
       if (error) throw error
 
       if (_data.user) {
-        await supabase.from('users').upsert([{
-          id: _data.user.id,
-          email: _data.user.email,
-          credits_remaining: credits,
-          subscription_status: 'active',
-          plan,
-        }], { onConflict: 'id' })
+        if (USE_USERS_TABLE) {
+          await supabase.from('users').upsert([{
+            id: _data.user.id,
+            email: _data.user.email,
+            credits_remaining: credits,
+            subscription_status: 'active',
+            plan,
+          }], { onConflict: 'id' })
+        }
 
         // Cache local pour éviter les incohérences d'affichage si la DB tarde
         localStorage.setItem('gomytho_user_plan', plan)
@@ -89,9 +93,11 @@ export default function Signup() {
               (s) => setGenStep(s)
             )
 
+            const stableUrl = await persistGeneratedImage(resultUrl, userId)
+
             setGenStep('Sauvegarde...')
             await supabase.from('mythos').insert([{
-              user_id: userId, image_url: resultUrl, prompt: pendingPrompt
+              user_id: userId, image_url: stableUrl, prompt: pendingPrompt
             }])
 
             // Nettoyer

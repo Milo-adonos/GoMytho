@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
-import { generateImage, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
+import { generateImage, uploadToSupabase, persistGeneratedImage, AspectRatio } from '@/lib/kie-api'
 import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 
 const CREDITS_PER_IMAGE = 8
+const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
 
 export default function AppCreate() {
   const navigate = useNavigate()
@@ -97,20 +98,8 @@ export default function AppCreate() {
         setUser(activeUser as User)
       }
 
-      // Lire les crédits les plus fiables (DB > contexte > cache)
+      // Crédits depuis contexte/cache (évite dépendance table users manquante)
       let availableCredits = credits
-      try {
-        const { data: dbProfile } = await supabase
-          .from('users')
-          .select('credits_remaining')
-          .eq('id', activeUser.id)
-          .maybeSingle()
-        if (typeof dbProfile?.credits_remaining === 'number') {
-          availableCredits = dbProfile.credits_remaining
-        }
-      } catch {
-        // ignore, on garde le fallback local
-      }
 
       if (availableCredits < CREDITS_PER_IMAGE) {
         alert('Crédits insuffisants pour générer ce mytho.')
@@ -141,16 +130,20 @@ export default function AppCreate() {
         )
       }
 
-      setResultUrl(url)
-      saveLocalCreation(activeUser.id, url, prompt)
+      setStep('Stabilisation du résultat...')
+      const stableUrl = await persistGeneratedImage(url, activeUser.id)
+      setResultUrl(stableUrl)
+      saveLocalCreation(activeUser.id, stableUrl, prompt)
 
       // Sauvegarde DB NON bloquante
-      const [insertRes, updateRes] = await Promise.all([
-        supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: url, prompt }]),
-        supabase.from('users').update({ credits_remaining: availableCredits - CREDITS_PER_IMAGE }).eq('id', activeUser.id),
-      ])
-      if (insertRes.error || updateRes.error) {
-        console.warn('DB save warning:', { insertError: insertRes.error?.message, updateError: updateRes.error?.message })
+      const insertRes = await supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: stableUrl, prompt }])
+      let updateErrorMessage: string | undefined
+      if (USE_USERS_TABLE) {
+        const updateRes = await supabase.from('users').update({ credits_remaining: availableCredits - CREDITS_PER_IMAGE }).eq('id', activeUser.id)
+        updateErrorMessage = updateRes.error?.message
+      }
+      if (insertRes.error || updateErrorMessage) {
+        console.warn('DB save warning:', { insertError: insertRes.error?.message, updateError: updateErrorMessage })
       }
 
       setUser({ ...activeUser, credits_remaining: availableCredits - CREDITS_PER_IMAGE })

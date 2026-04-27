@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
-import { generateImage, uploadToSupabase } from '@/lib/kie-api'
+import { generateImage, uploadToSupabase, persistGeneratedImage } from '@/lib/kie-api'
 import type { AspectRatio } from '@/lib/kie-api'
 
 const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
+const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
 
 export interface AppUser extends User {}
 
@@ -22,7 +23,8 @@ async function tryAutoGenerate(userId: string) {
       { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
       () => {}
     )
-    await supabase.from('mythos').insert([{ user_id: userId, image_url: resultUrl, prompt: pendingPrompt }])
+    const stableUrl = await persistGeneratedImage(resultUrl, userId)
+    await supabase.from('mythos').insert([{ user_id: userId, image_url: stableUrl, prompt: pendingPrompt }])
     localStorage.removeItem('gomytho_pending_image')
     localStorage.removeItem('gomytho_pending_prompt')
     localStorage.removeItem('gomytho_pending_ratio')
@@ -61,6 +63,22 @@ export default function AppLayout() {
       }
 
       const authUser = session.user
+
+      // Mode sans table users (évite spam 404 si table absente)
+      if (!USE_USERS_TABLE) {
+        const cachedPlan = (localStorage.getItem('gomytho_user_plan') as 'weekly' | 'monthly' | null) || 'monthly'
+        const cachedCredits = Number(localStorage.getItem('gomytho_user_credits') || PLAN_CREDITS[cachedPlan] || 0)
+        setUser({
+          id: authUser.id,
+          email: authUser.email!,
+          credits_remaining: Number.isFinite(cachedCredits) ? cachedCredits : 0,
+          subscription_status: 'active',
+          plan: cachedPlan,
+          created_at: new Date().toISOString(),
+        } as any)
+        setLoading(false)
+        return
+      }
 
       // ── 2. Charger le profil depuis la DB (NON-CRITIQUE) ────────────────
       // Une erreur ici ne déconnecte PAS l'utilisateur
