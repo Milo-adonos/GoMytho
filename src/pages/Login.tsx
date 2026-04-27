@@ -36,8 +36,6 @@ export default function Login() {
       if (error) {
         if (error.message?.includes('Invalid login credentials')) {
           setError('❌ Mot de passe incorrect.')
-        } else if (error.message?.includes('Email not confirmed')) {
-          setError('✉️ Confirme ton email avant de te connecter.')
         } else {
           setError(error.message || 'Une erreur est survenue')
         }

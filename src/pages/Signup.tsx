@@ -46,17 +46,16 @@ export default function Signup() {
           plan,
         }], { onConflict: 'id' })
 
-        // Si une session est active (email confirmation désactivé dans Supabase)
         if (_data.session) {
           navigate('/app')
         } else {
-          // Email confirmation activé → essayer de se connecter directement
-          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email, password })
-          if (!signInError && signInData.session) {
+          // Fallback : connexion directe si pas de session (ne devrait pas arriver)
+          const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
+          if (signInData.session) {
             navigate('/app')
           } else {
-            // Afficher message de confirmation d'email
-            setError('✉️ Vérifie ta boîte mail et clique sur le lien de confirmation, puis reviens ici pour te connecter.')
+            setError('Compte créé ! Connecte-toi maintenant.')
+            navigate('/login')
           }
         }
       }
