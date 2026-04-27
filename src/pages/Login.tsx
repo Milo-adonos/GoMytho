@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import Header from '@/components/Header'
@@ -10,8 +10,6 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
-  const navigate = useNavigate()
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
@@ -30,7 +28,7 @@ export default function Login() {
       }
 
       if (data.session) {
-        navigate('/resultats')
+        window.location.href = '/resultats'
       }
     } catch {
       setError('Une erreur est survenue. Réessaie.')

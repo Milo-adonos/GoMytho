@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
@@ -12,7 +12,6 @@ const PLAN_CONFIG = {
 }
 
 export default function Signup() {
-  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   // Récupère le plan depuis l'URL (?plan=weekly ou ?plan=monthly)
   const planParam = (searchParams.get('plan') || 'monthly') as keyof typeof PLAN_CONFIG
@@ -47,15 +46,13 @@ export default function Signup() {
         }], { onConflict: 'id' })
 
         if (_data.session) {
-          navigate('/resultats')
+          window.location.href = '/resultats'
         } else {
-          // Fallback : connexion directe si pas de session (ne devrait pas arriver)
           const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
-          if (signInData.session) {
-            navigate('/resultats')
+          if (signInData?.session) {
+            window.location.href = '/resultats'
           } else {
-            setError('Compte créé ! Connecte-toi maintenant.')
-            navigate('/login')
+            window.location.href = '/login'
           }
         }
       }

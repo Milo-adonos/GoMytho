@@ -21,8 +21,9 @@ const createSafeClient = () => {
   return {
     auth: {
       getUser: () => Promise.resolve({ data: { user: null }, error: null }),
-      signInWithPassword: () => Promise.resolve({ data: null, error: { message: 'Supabase non configuré' } }),
-      signUp: () => Promise.resolve({ data: null, error: { message: 'Supabase non configuré' } }),
+      getSession: () => Promise.resolve({ data: { session: null }, error: null }),
+      signInWithPassword: () => Promise.resolve({ data: { user: null, session: null }, error: { message: 'Supabase non configuré' } }),
+      signUp: () => Promise.resolve({ data: { user: null, session: null }, error: { message: 'Supabase non configuré' } }),
       signInWithOAuth: () => Promise.resolve({ data: null, error: null }),
       signOut: () => Promise.resolve({ error: null }),
       onAuthStateChange: (_cb: unknown) => ({ data: { subscription: { unsubscribe: () => {} } } }),

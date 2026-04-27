@@ -15,26 +15,27 @@ export default function AppLayout() {
   useEffect(() => {
     const init = async () => {
       try {
-        // Écouter les changements d'auth pour gérer le callback OAuth
-        const { data: { session } } = await supabase.auth.getSession()
+        const { data: sessionData } = await supabase.auth.getSession()
+        let session = sessionData?.session
+
+        // Attendre un peu si pas encore de session (callback OAuth en cours)
         if (!session) {
-          // Attendre un court instant au cas où le token OAuth est en cours de traitement
-          await new Promise(r => setTimeout(r, 300))
-          const { data: { session: session2 } } = await supabase.auth.getSession()
-          if (!session2) {
-            navigate('/login')
-            return
-          }
+          await new Promise(r => setTimeout(r, 500))
+          const { data: sessionData2 } = await supabase.auth.getSession()
+          session = sessionData2?.session
         }
-        const { data: { session: finalSession } } = await supabase.auth.getSession()
-        const activeSession = finalSession || session
-        if (!activeSession) { navigate('/login'); return }
-        const authUser = activeSession.user
+
+        if (!session) {
+          window.location.href = '/login'
+          return
+        }
+
+        const authUser = session.user
         const { data } = await supabase.from('users').select('*').eq('id', authUser.id).single()
+
         if (data) {
           setUser(data)
         } else {
-          // 1er login (ex: Google OAuth) — lire le plan depuis l'URL (?plan=weekly/monthly)
           const planParam = searchParams.get('plan') || 'monthly'
           const plan = PLAN_CREDITS[planParam] ? planParam : 'monthly'
           const credits = PLAN_CREDITS[plan]
@@ -42,8 +43,9 @@ export default function AppLayout() {
           await supabase.from('users').upsert([newUser], { onConflict: 'id' })
           setUser(newUser as any)
         }
-      } catch {
-        navigate('/login')
+      } catch (e) {
+        console.error('AppLayout error:', e)
+        window.location.href = '/login'
       } finally {
         setLoading(false)
       }
