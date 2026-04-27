@@ -1,8 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import crypto from 'crypto'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { parse } from 'cookie'
-
-const { createHmac, timingSafeEqual } = crypto
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_gomytho_2026'
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000

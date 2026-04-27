@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAdmin } from '../_middleware'
+import { requireAdmin } from '../_auth'
 import { createClient } from '@supabase/supabase-js'
 
 const WEEKLY_PRICE = 2.99

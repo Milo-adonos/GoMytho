@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { serialize } from 'cookie'
-import { generateToken, checkRateLimit } from './_middleware'
+import { generateToken, checkRateLimit } from './_auth'
 
 function parseBody(raw: unknown): any {
   if (raw && typeof raw === 'object') return raw
