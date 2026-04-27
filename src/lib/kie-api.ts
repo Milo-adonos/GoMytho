@@ -19,6 +19,58 @@ export interface GenerateMythoParams {
   aspectRatio: AspectRatio
 }
 
+function extractImageUrlFromAny(input: unknown): string | null {
+  const seen = new WeakSet<object>()
+  const queue: unknown[] = [input]
+  const urlRegex = /https?:\/\/[^\s"'<>]+/g
+
+  while (queue.length) {
+    const current = queue.shift()
+    if (!current) continue
+
+    if (typeof current === 'string') {
+      // Essai JSON stringifié
+      try {
+        const parsed = JSON.parse(current)
+        queue.push(parsed)
+      } catch {
+        // ignore JSON parse error
+      }
+
+      const matches = current.match(urlRegex) || []
+      const picked = matches.find((u) =>
+        /(png|jpg|jpeg|webp|gif|bmp)(\?|$)/i.test(u) ||
+        /(cdn|storage|image|img|media|output|result)/i.test(u)
+      )
+      if (picked) return picked
+      continue
+    }
+
+    if (Array.isArray(current)) {
+      current.forEach((item) => queue.push(item))
+      continue
+    }
+
+    if (typeof current === 'object') {
+      const obj = current as Record<string, unknown>
+      if (seen.has(obj)) continue
+      seen.add(obj)
+
+      const directKeys = [
+        'image_url', 'imageUrl', 'url', 'output_url', 'result_url', 'download_url',
+      ]
+      for (const key of directKeys) {
+        const v = obj[key]
+        if (typeof v === 'string' && /^https?:\/\//.test(v)) return v
+      }
+
+      Object.values(obj).forEach((v) => queue.push(v))
+    }
+  }
+
+  return null
+}
+
 // ─── PROMPT ENHANCER — SAUCE SECRÈTE, JAMAIS VISIBLE CÔTÉ CLIENT ─────────────
 // Cette fonction est appelée en interne uniquement.
 // L'utilisateur ne voit JAMAIS le prompt enrichi.
@@ -59,6 +111,25 @@ export async function generateMytho(
   { userPrompt, imageUrl, aspectRatio }: GenerateMythoParams,
   onProgress?: (step: string) => void
 ): Promise<string> {
+  // 0) Priorité au backend (plus stable que le client navigateur)
+  try {
+    onProgress?.('Envoi sécurisé...')
+    const response = await fetch('/api/generate-mytho', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userPrompt, imageUrl, aspectRatio }),
+    })
+    if (response.ok) {
+      const payload = await response.json()
+      if (payload?.imageUrl) {
+        onProgress?.('Mytho prêt !')
+        return payload.imageUrl as string
+      }
+    }
+  } catch {
+    // fallback client ci-dessous
+  }
+
   if (!KIE_API_KEY) throw new Error('Clé API Kie.ai manquante')
 
   // Validation stricte de l'aspect ratio
@@ -105,8 +176,9 @@ export async function generateMytho(
   }
 
   // ─── POLLING — toutes les 2s, timeout 2 minutes ───────────────────────────
-  const maxAttempts = 60 // 60 × 2s = 120s = 2 minutes
+  const maxAttempts = 120 // 120 × 2s = 240s = 4 minutes
   const pollInterval = 2000
+  let bestEffortUrl: string | null = null
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise(r => setTimeout(r, pollInterval))
@@ -139,28 +211,11 @@ export async function generateMytho(
 
       const normalized = result?.data || result
       const status: string = normalized?.state || normalized?.status || normalized?.task_status
+      const maybeUrl = extractImageUrlFromAny(normalized)
+      if (maybeUrl) bestEffortUrl = maybeUrl
 
       if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-        // recordInfo peut renvoyer un JSON string dans resultJson
-        let resultJson: any = null
-        try {
-          if (typeof normalized?.resultJson === 'string') {
-            resultJson = JSON.parse(normalized.resultJson)
-          } else if (typeof normalized?.result_json === 'string') {
-            resultJson = JSON.parse(normalized.result_json)
-          }
-        } catch {
-          resultJson = null
-        }
-
-        const imageUrl =
-          normalized?.output?.image_url ||
-          normalized?.output?.[0]?.url ||
-          normalized?.result?.url ||
-          normalized?.output_url ||
-          resultJson?.output?.image_url ||
-          resultJson?.output?.[0]?.url ||
-          resultJson?.result?.url
+        const imageUrl = extractImageUrlFromAny(normalized)
 
         if (!imageUrl) throw new Error('Image générée introuvable dans la réponse')
 
@@ -179,7 +234,12 @@ export async function generateMytho(
     }
   }
 
-  throw new Error('Timeout : la génération a dépassé 2 minutes')
+  if (bestEffortUrl) {
+    onProgress?.('Mytho prêt (fallback) !')
+    return bestEffortUrl
+  }
+
+  throw new Error('Timeout : la génération a dépassé 4 minutes')
 }
 
 // ─── UPLOAD VERS SUPABASE STORAGE ────────────────────────────────────────────
@@ -216,9 +276,9 @@ export async function uploadToSupabase(file: File, userId: string): Promise<stri
     }
   }
 
-  // Policy RLS ou autres blocages Storage côté client:
-  // fallback vers upload serveur (service role) pour éviter le blocage utilisateur.
-  if (error && /(row-level security|not allowed|permission|unauthorized|forbidden)/i.test(error.message || '')) {
+  // Toute erreur upload client => fallback upload serveur (service role)
+  // pour éviter les blocages RLS/policies/bad request côté Storage.
+  if (error) {
     const { data: sessionData } = await supabase.auth.getSession()
     const token = sessionData?.session?.access_token
     if (!token) throw new Error('Session utilisateur introuvable pour upload serveur.')
@@ -245,13 +305,39 @@ export async function uploadToSupabase(file: File, userId: string): Promise<stri
     return payload.publicUrl as string
   }
 
-  if (error) throw error
-
   const { data: { publicUrl } } = supabase.storage
     .from(bucketName)
     .getPublicUrl(fileName)
 
   return publicUrl
+}
+
+/**
+ * Rend l'URL finale robuste:
+ * - tente de télécharger l'image générée distante
+ * - la ré-uploade dans notre bucket Supabase (URL stable)
+ * - fallback sur l'URL originale si la récupération distante échoue
+ */
+export async function persistGeneratedImage(
+  generatedUrl: string,
+  userId: string
+): Promise<string> {
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 20000)
+    const res = await fetch(generatedUrl, { signal: controller.signal })
+    clearTimeout(timeout)
+    if (!res.ok) throw new Error(`download failed: ${res.status}`)
+    const blob = await res.blob()
+    const file = new File([blob], `generated-${Date.now()}.jpg`, {
+      type: blob.type || 'image/jpeg',
+    })
+    const stableUrl = await uploadToSupabase(file, userId)
+    return stableUrl
+  } catch (err) {
+    console.warn('persistGeneratedImage fallback to original URL:', err)
+    return generatedUrl
+  }
 }
 
 function fileToDataUrl(file: File): Promise<string> {
