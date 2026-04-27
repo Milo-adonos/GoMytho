@@ -114,25 +114,53 @@ export async function generateMytho(
     onProgress?.(`Génération en cours... (${Math.round((attempt / maxAttempts) * 100)}%)`)
 
     try {
-      const { data: result } = await axios.get(
-        `https://api.kie.ai/api/v1/jobs/${taskId}`,
-        {
-          headers: { Authorization: `Bearer ${KIE_API_KEY}` },
-          timeout: 30000,
-        }
-      )
+      // Endpoint officiel Kie.ai (Market): /jobs/recordInfo?taskId=...
+      let result: any
+      try {
+        const response = await axios.get(
+          `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`,
+          {
+            headers: { Authorization: `Bearer ${KIE_API_KEY}` },
+            timeout: 30000,
+          }
+        )
+        result = response.data
+      } catch (primaryErr) {
+        // Fallback legacy endpoint
+        const response = await axios.get(
+          `https://api.kie.ai/api/v1/jobs/${encodeURIComponent(taskId)}`,
+          {
+            headers: { Authorization: `Bearer ${KIE_API_KEY}` },
+            timeout: 30000,
+          }
+        )
+        result = response.data
+      }
 
       const normalized = result?.data || result
-      const status: string = normalized?.status || normalized?.task_status || normalized?.state
+      const status: string = normalized?.state || normalized?.status || normalized?.task_status
 
-      if (status === 'completed' || status === 'succeeded' || status === 'success') {
+      if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+        // recordInfo peut renvoyer un JSON string dans resultJson
+        let resultJson: any = null
+        try {
+          if (typeof normalized?.resultJson === 'string') {
+            resultJson = JSON.parse(normalized.resultJson)
+          } else if (typeof normalized?.result_json === 'string') {
+            resultJson = JSON.parse(normalized.result_json)
+          }
+        } catch {
+          resultJson = null
+        }
+
         const imageUrl =
           normalized?.output?.image_url ||
           normalized?.output?.[0]?.url ||
           normalized?.result?.url ||
           normalized?.output_url ||
-          normalized?.data?.output?.image_url ||
-          normalized?.data?.result?.url
+          resultJson?.output?.image_url ||
+          resultJson?.output?.[0]?.url ||
+          resultJson?.result?.url
 
         if (!imageUrl) throw new Error('Image générée introuvable dans la réponse')
 
@@ -140,7 +168,7 @@ export async function generateMytho(
         return imageUrl
       }
 
-      if (status === 'failed' || status === 'error') {
+      if (status === 'failed' || status === 'error' || status === 'fail') {
         throw new Error(`La génération a échoué : ${normalized?.error || normalized?.message || 'raison inconnue'}`)
       }
 
