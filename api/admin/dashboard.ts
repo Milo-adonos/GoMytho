@@ -9,34 +9,18 @@ function getSupabase() {
   return createClient(url, key)
 }
 
-// Données mock pour démo si Supabase n'est pas configuré
-function getMockData() {
+function getEmptyData() {
   const now = new Date()
   const days = Array.from({ length: 30 }, (_, i) => {
     const d = new Date(now)
     d.setDate(d.getDate() - (29 - i))
-    return {
-      date: d.toISOString().split('T')[0],
-      revenue: Math.floor(Math.random() * 150 + 20),
-      mythos: Math.floor(Math.random() * 80 + 10),
-    }
+    return { date: d.toISOString().split('T')[0], revenue: 0, mythos: 0 }
   })
   return {
-    totalRevenue: 3842.5,
-    revenue30d: 620.3,
-    totalCost: 287.4,
-    totalMythos: 7768,
-    netProfit: 3555.1,
-    margin: 92.5,
-    activeSubscribers: 124,
-    weeklySubscribers: 38,
-    monthlySubscribers: 86,
-    newSubscribers30d: 27,
-    newSubscribersGrowth: 12.5,
-    churnRate: 4.2,
-    churnCount: 5,
-    dailyRevenue: days,
-    dailyMythos: days,
+    totalRevenue: 0, revenue30d: 0, totalCost: 0, totalMythos: 0,
+    netProfit: 0, margin: 0, activeSubscribers: 0, weeklySubscribers: 0,
+    monthlySubscribers: 0, newSubscribers30d: 0, newSubscribersGrowth: 0,
+    churnRate: 0, churnCount: 0, dailyRevenue: days, dailyMythos: days,
   }
 }
 
@@ -45,7 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const supabase = getSupabase()
   if (!supabase) {
-    return res.status(200).json(getMockData())
+    return res.status(200).json(getEmptyData())
   }
 
   try {
@@ -86,6 +70,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       dailyMythos: [],
     })
   } catch {
-    return res.status(200).json(getMockData())
+    return res.status(200).json(getEmptyData())
   }
 }

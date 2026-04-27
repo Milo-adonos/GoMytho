@@ -10,26 +10,7 @@ function getSupabase() {
 }
 
 function getMockMythos() {
-  const prompts = [
-    'Mets une Rolex sur mon poignet',
-    'Ajoute un dinosaure dans le salon',
-    'Mets une moustache géante sur mon pote',
-    'Transforme ma Peugeot en Lamborghini',
-    'Ajoute Drake à côté de moi',
-    'Mets un bébé dans mes bras',
-  ]
-  return {
-    mythos: Array.from({ length: 20 }, (_, i) => ({
-      id: `mytho-${i + 1}`,
-      user_email: `user${(i % 5) + 1}@example.com`,
-      prompt: prompts[i % prompts.length],
-      image_url: '',
-      aspect_ratio: i % 2 === 0 ? '9:16' : '16:9',
-      created_at: new Date(Date.now() - Math.random() * 30 * 86400000).toISOString(),
-      cost: 0.037,
-    })),
-    total: 20,
-  }
+  return { mythos: [], total: 0 }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

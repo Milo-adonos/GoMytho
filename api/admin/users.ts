@@ -12,24 +12,7 @@ function getSupabase() {
 const COST_PER_IMAGE = 0.037
 
 function getMockUsers() {
-  return {
-    users: Array.from({ length: 12 }, (_, i) => ({
-      id: `user-${i + 1}`,
-      email: `user${i + 1}@example.com`,
-      plan: i % 3 === 0 ? 'weekly' : 'monthly',
-      subscription_status: i % 5 === 0 ? 'cancelled' : 'active',
-      created_at: new Date(Date.now() - Math.random() * 90 * 86400000).toISOString(),
-      total_mythos: Math.floor(Math.random() * 200),
-      total_cost_eur: 0,
-      total_revenue_eur: i % 3 === 0 ? 2.99 * 4 : 9.90 * 2,
-      net_eur: 0,
-    })).map(u => ({
-      ...u,
-      total_cost_eur: +(u.total_mythos * COST_PER_IMAGE).toFixed(2),
-      net_eur: +(u.total_revenue_eur - u.total_mythos * COST_PER_IMAGE).toFixed(2),
-    })),
-    total: 12,
-  }
+  return { users: [], total: 0 }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
