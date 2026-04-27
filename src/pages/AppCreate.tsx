@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
-import { generateImage, uploadToSupabase, persistGeneratedImage, AspectRatio } from '@/lib/kie-api'
+import { generateImage, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
 import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 
@@ -133,6 +133,12 @@ export default function AppCreate() {
     }
   }
 
+  const dataUrlToFile = async (dataUrl: string, filename: string): Promise<File> => {
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    return new File([blob], filename, { type: blob.type || 'image/jpeg' })
+  }
+
   const saveLocalCreation = (
     userId: string,
     imageUrl: string,
@@ -227,20 +233,28 @@ export default function AppCreate() {
         )
       }
 
-      setStep('Stabilisation du résultat...')
-      const stableUrlRaw = await persistGeneratedImage(url, activeUser.id)
-      const stableUrl = normalizeStorageUrl(stableUrlRaw)
-      const previewDataUrl = await urlToDataUrl(url) || await urlToDataUrl(stableUrl)
-      if (!previewDataUrl) {
-        throw new Error('Impossible de copier localement l’image générée')
-      }
-      // Affichage prioritaire 100% local (copie de l'image IA) pour éviter tout 404 distant.
-      setResultUrl(previewDataUrl)
+      setStep('Copie locale du résultat...')
+      const previewDataUrl = await urlToDataUrl(url)
+      if (!previewDataUrl) throw new Error('Impossible de copier localement l’image générée')
+
+      // Affichage immédiat depuis la copie locale (jamais dépendant d'une URL distante).
       setResultPreviewDataUrl(previewDataUrl)
+      setResultUrl(previewDataUrl)
+
+      setStep('Sauvegarde...')
+      let stableUrl = previewDataUrl
+      try {
+        const generatedFile = await dataUrlToFile(previewDataUrl, `generated-${Date.now()}.jpg`)
+        const uploaded = await uploadToSupabase(generatedFile, activeUser.id)
+        stableUrl = normalizeStorageUrl(uploaded)
+      } catch (uploadErr) {
+        // On garde la création locale même si l'upload distant échoue.
+        console.warn('Upload résultat distant échoué, fallback local conservé:', uploadErr)
+      }
       saveLocalCreation(activeUser.id, stableUrl, prompt, previewDataUrl)
 
       // Sauvegarde DB NON bloquante
-      const insertRes = USE_MYTHOS_TABLE
+      const insertRes = USE_MYTHOS_TABLE && stableUrl.startsWith('http')
         ? await supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: stableUrl, prompt }])
         : { error: null as { message?: string } | null }
       let updateErrorMessage: string | undefined

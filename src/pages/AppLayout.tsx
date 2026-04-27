@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
-import { generateImage, uploadToSupabase, persistGeneratedImage } from '@/lib/kie-api'
+import { generateImage, uploadToSupabase } from '@/lib/kie-api'
 import type { AspectRatio } from '@/lib/kie-api'
 
 const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
@@ -34,6 +34,12 @@ async function toDataUrl(url: string): Promise<string | null> {
   }
 }
 
+async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
+  const res = await fetch(dataUrl)
+  const blob = await res.blob()
+  return new File([blob], filename, { type: blob.type || 'image/jpeg' })
+}
+
 function saveLocalCreation(userId: string, imageUrl: string, prompt: string, previewDataUrl?: string | null) {
   const key = `gomytho_creations_${userId}`
   const raw = localStorage.getItem(key)
@@ -63,9 +69,17 @@ async function tryAutoGenerate(userId: string) {
       { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
       () => {}
     )
-    const stableUrl = normalizeStorageUrl(await persistGeneratedImage(resultUrl, userId))
-    const previewDataUrl = await toDataUrl(resultUrl) || await toDataUrl(stableUrl)
-    if (USE_MYTHOS_TABLE) {
+    const previewDataUrl = await toDataUrl(resultUrl)
+    if (!previewDataUrl) throw new Error('Impossible de copier localement l’image générée')
+
+    let stableUrl = previewDataUrl
+    try {
+      const generatedFile = await dataUrlToFile(previewDataUrl, `generated-${Date.now()}.jpg`)
+      stableUrl = normalizeStorageUrl(await uploadToSupabase(generatedFile, userId))
+    } catch (uploadErr) {
+      console.warn('Upload résultat distant échoué (AppLayout auto-gen), fallback local conservé:', uploadErr)
+    }
+    if (USE_MYTHOS_TABLE && stableUrl.startsWith('http')) {
       await supabase.from('mythos').insert([{ user_id: userId, image_url: stableUrl, prompt: pendingPrompt }])
     }
     saveLocalCreation(userId, stableUrl, pendingPrompt, previewDataUrl)

@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
-import { generateImage, uploadToSupabase, persistGeneratedImage } from '@/lib/kie-api'
+import { generateImage, uploadToSupabase } from '@/lib/kie-api'
 import type { AspectRatio } from '@/lib/kie-api'
 
 const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
@@ -38,6 +38,12 @@ async function toDataUrl(url: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
+  const res = await fetch(dataUrl)
+  const blob = await res.blob()
+  return new File([blob], filename, { type: blob.type || 'image/jpeg' })
 }
 
 function saveLocalCreation(userId: string, imageUrl: string, prompt: string, previewDataUrl?: string | null) {
@@ -133,11 +139,19 @@ export default function Signup() {
               (s) => setGenStep(s)
             )
 
-            const stableUrl = normalizeStorageUrl(await persistGeneratedImage(resultUrl, userId))
-            const previewDataUrl = await toDataUrl(resultUrl) || await toDataUrl(stableUrl)
+            const previewDataUrl = await toDataUrl(resultUrl)
+            if (!previewDataUrl) throw new Error('Impossible de copier localement l’image générée')
+
+            let stableUrl = previewDataUrl
+            try {
+              const generatedFile = await dataUrlToFile(previewDataUrl, `generated-${Date.now()}.jpg`)
+              stableUrl = normalizeStorageUrl(await uploadToSupabase(generatedFile, userId))
+            } catch (uploadErr) {
+              console.warn('Upload résultat distant échoué (signup auto-gen), fallback local conservé:', uploadErr)
+            }
 
             setGenStep('Sauvegarde...')
-            if (USE_MYTHOS_TABLE) {
+            if (USE_MYTHOS_TABLE && stableUrl.startsWith('http')) {
               await supabase.from('mythos').insert([{
                 user_id: userId, image_url: stableUrl, prompt: pendingPrompt
               }])
