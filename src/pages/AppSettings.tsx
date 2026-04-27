@@ -1,39 +1,51 @@
+import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_PORTAL_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
 const STRIPE_PORTAL_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
-const STRIPE_CANCEL_URL = import.meta.env.VITE_STRIPE_PORTAL_URL || 'https://billing.stripe.com/p/login'
+
+type CancelDialog =
+  | { stage: 'confirm' }
+  | { stage: 'loading' }
+  | { stage: 'success'; message: string }
+  | { stage: 'error'; message: string }
 
 export default function AppSettings() {
   const navigate = useNavigate()
   const { user } = useOutletContext<{ user: User | null }>()
+  const [cancelDialog, setCancelDialog] = useState<CancelDialog | null>(null)
 
-  const openStripePortal = async () => {
+  const openCancelConfirm = () => setCancelDialog({ stage: 'confirm' })
+  const closeCancelDialog = () => setCancelDialog(null)
+
+  const handleConfirmCancel = async () => {
+    setCancelDialog({ stage: 'loading' })
     try {
       const { data } = await supabase.auth.getSession()
       const token = data?.session?.access_token
-      if (!token) throw new Error('No session token')
+      if (!token) throw new Error('Session expirée. Reconnecte-toi.')
 
-      const response = await fetch('/api/stripe-portal', {
+      const response = await fetch('/api/stripe-cancel', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          returnUrl: `${window.location.origin}/settings`,
-        }),
       })
-
-      if (!response.ok) throw new Error('Portal API error')
-      const payload = await response.json()
-      if (!payload?.url) throw new Error('Missing portal URL')
-
-      window.location.href = payload.url
-    } catch {
-      // Fallback si API indisponible en local ou config incomplète
-      window.location.href = STRIPE_CANCEL_URL
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(payload?.error || `Erreur ${response.status}`)
+      }
+      setCancelDialog({
+        stage: 'success',
+        message: payload?.message || 'Abonnement annulé avec succès.',
+      })
+    } catch (e: any) {
+      setCancelDialog({
+        stage: 'error',
+        message: e?.message || 'Annulation impossible. Contacte le support.',
+      })
     }
   }
 
@@ -70,8 +82,8 @@ export default function AppSettings() {
     {
       icon: '❌',
       label: 'Annuler l\'abonnement',
-      sub: 'Gérer via le portail Stripe',
-      action: openStripePortal,
+      sub: 'Tu gardes ton accès jusqu\'à la fin de la période payée',
+      action: openCancelConfirm,
       show: user?.subscription_status === 'active',
       danger: true,
     },
@@ -147,6 +159,101 @@ export default function AppSettings() {
       <p className="text-center text-xs text-text-secondary pb-4">
         Un problème ? <a href="mailto:support@gomytho.com" className="text-lime underline">support@gomytho.com</a>
       </p>
+
+      {/* Dialog d'annulation d'abonnement */}
+      {cancelDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.7)' }}
+          onClick={cancelDialog.stage === 'loading' ? undefined : closeCancelDialog}
+        >
+          <div
+            className="rounded-2xl p-6 max-w-sm w-full"
+            style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.08)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {cancelDialog.stage === 'confirm' && (
+              <>
+                <div className="text-3xl mb-3">⚠️</div>
+                <h2 className="text-lg font-black text-white mb-2">
+                  Annuler ton abonnement&nbsp;?
+                </h2>
+                <p className="text-sm text-text-secondary mb-5">
+                  Tu garderas ton accès et tes crédits jusqu'à la fin de la période
+                  déjà payée. Aucun nouveau prélèvement ne sera effectué.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={closeCancelDialog}
+                    className="flex-1 py-3 rounded-xl text-sm font-bold transition-all active:scale-95"
+                    style={{ background: 'rgba(255,255,255,0.06)', color: '#fff' }}
+                  >
+                    Garder
+                  </button>
+                  <button
+                    onClick={handleConfirmCancel}
+                    className="flex-1 py-3 rounded-xl text-sm font-bold transition-all active:scale-95"
+                    style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)' }}
+                  >
+                    Annuler l'abo
+                  </button>
+                </div>
+              </>
+            )}
+
+            {cancelDialog.stage === 'loading' && (
+              <div className="flex flex-col items-center py-4">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mb-4" />
+                <p className="text-sm text-text-secondary">Annulation en cours…</p>
+              </div>
+            )}
+
+            {cancelDialog.stage === 'success' && (
+              <>
+                <div className="text-3xl mb-3">✅</div>
+                <h2 className="text-lg font-black text-white mb-2">
+                  Abonnement annulé
+                </h2>
+                <p className="text-sm text-text-secondary mb-5">{cancelDialog.message}</p>
+                <button
+                  onClick={() => {
+                    closeCancelDialog()
+                    window.location.reload()
+                  }}
+                  className="w-full py-3 rounded-xl font-black bg-lime text-primary-bg transition-all active:scale-95"
+                >
+                  OK
+                </button>
+              </>
+            )}
+
+            {cancelDialog.stage === 'error' && (
+              <>
+                <div className="text-3xl mb-3">❌</div>
+                <h2 className="text-lg font-black text-white mb-2">
+                  Annulation impossible
+                </h2>
+                <p className="text-sm text-text-secondary mb-5">{cancelDialog.message}</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={closeCancelDialog}
+                    className="flex-1 py-3 rounded-xl text-sm font-bold transition-all active:scale-95"
+                    style={{ background: 'rgba(255,255,255,0.06)', color: '#fff' }}
+                  >
+                    Fermer
+                  </button>
+                  <a
+                    href="mailto:support@gomytho.com"
+                    className="flex-1 py-3 rounded-xl text-sm font-bold text-center transition-all active:scale-95 bg-lime text-primary-bg"
+                  >
+                    Support
+                  </a>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
