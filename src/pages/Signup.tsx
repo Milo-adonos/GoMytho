@@ -104,12 +104,14 @@ export default function Signup() {
             <p className="text-text-secondary mb-3">
               Pour accéder à tes mythos depuis n'importe où
             </p>
-            <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
-              <span className="w-2 h-2 rounded-full bg-lime animate-pulse" />
-              <span className="text-lime text-sm font-semibold">
-                Plan {PLAN_CONFIG[plan].label} — {credits} mythos
-              </span>
-            </div>
+            {searchParams.get('plan') && (
+              <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
+                <span className="w-2 h-2 rounded-full bg-lime animate-pulse" />
+                <span className="text-lime text-sm font-semibold">
+                  Plan {PLAN_CONFIG[plan].label} — {credits} mythos
+                </span>
+              </div>
+            )}
           </motion.div>
 
           <motion.div
@@ -220,22 +222,6 @@ export default function Signup() {
             </p>
           </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className="text-center mt-8"
-          >
-            <p className="text-text-secondary">
-              Déjà un compte ?{' '}
-              <button
-                onClick={() => navigate('/login')}
-                className="text-lime hover:underline font-semibold"
-              >
-                Se connecter
-              </button>
-            </p>
-          </motion.div>
         </div>
       </div>
     </div>
