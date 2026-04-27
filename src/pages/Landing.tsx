@@ -1,12 +1,56 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 
+// Génère un nombre pseudo-aléatoire entre 938 et 2371
+// Change chaque jour à 15h heure française (UTC+2 en été)
+function getDailyMythoCount(): number {
+  const now = new Date()
+  // Heure française = UTC+2 (avril–octobre)
+  const frenchHour = (now.getUTCHours() + 2) % 24
+  // Avant 15h → on utilise encore la "journée d'hier" comme seed
+  const seedDate = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    frenchHour < 15 ? now.getUTCDate() - 1 : now.getUTCDate()
+  ))
+  const seed = seedDate.getUTCFullYear() * 10000
+    + (seedDate.getUTCMonth() + 1) * 100
+    + seedDate.getUTCDate()
+  // LCG pseudo-random déterministe basé sur la date
+  const rand = ((seed * 1664525 + 1013904223) & 0x7fffffff) / 0x7fffffff
+  return Math.floor(938 + rand * (2371 - 938 + 1))
+}
+
 const examples = [
   {
     before: '/beforeafter/crash-avant.jpg',
     after: '/beforeafter/crash-apres.jpg',
     label: 'Range Rover propre',
     result: 'Accident + flics 😂',
+  },
+  {
+    before: '/beforeafter/mamie-avant.jpg',
+    after: '/beforeafter/mamie-apres.jpg',
+    label: 'Mamie dans son jardin',
+    result: 'Mamie qui fume 😭',
+  },
+  {
+    before: '/beforeafter/maison-avant.jpg',
+    after: '/beforeafter/maison-apres.jpg',
+    label: 'Mur propre',
+    result: 'Taguée "RnBoi Crousty" 💀',
+  },
+  {
+    before: '/beforeafter/rolex-avant.jpg',
+    after: '/beforeafter/rolex-apres.jpg',
+    label: 'Bracelet élastique',
+    result: 'Rolex Submariner 😏',
+  },
+  {
+    before: '/beforeafter/lambo-avant.jpg',
+    after: '/beforeafter/lambo-apres.jpg',
+    label: 'Peugeot 108',
+    result: 'Lamborghini Aventador 🔥',
   },
 ]
 
@@ -24,53 +68,56 @@ const steps = [
   { num: '04', icon: '🚀', title: 'Envoie et profite', desc: 'Partage à tes potes, mate la réaction, garde ton mytho en mémoire.' },
 ]
 
-// Carousel card — AVANT en haut, APRÈS en bas, séparateur lime au milieu
+// Carousel card — AVANT en haut (16:9), séparateur lime, APRÈS en bas (16:9)
 function ExampleCard({ ex, isActive }: { ex: typeof examples[0]; isActive: boolean }) {
+  // Largeur = 85vw max 340px, hauteur de chaque image = largeur * 9/16
+  const cardWidth = 'min(85vw, 340px)'
+
   return (
     <div
-      className="flex-shrink-0 snap-center flex flex-col rounded-2xl overflow-hidden border transition-all duration-300"
+      className="flex-shrink-0 snap-center rounded-2xl overflow-hidden border transition-all duration-300"
       style={{
-        width: '160px',
-        height: '260px',
+        width: cardWidth,
         borderColor: isActive ? 'rgba(198,255,60,0.7)' : 'rgba(198,255,60,0.15)',
-        boxShadow: isActive ? '0 0 24px rgba(198,255,60,0.2)' : 'none',
+        boxShadow: isActive ? '0 0 32px rgba(198,255,60,0.25)' : 'none',
       }}
     >
-      {/* AVANT — moitié haute */}
-      <div className="relative flex-1 overflow-hidden">
+      {/* AVANT — ratio 16:9 */}
+      <div className="relative w-full" style={{ paddingBottom: '56.25%' /* 9/16 */ }}>
         <img
           src={ex.before}
           alt={ex.label}
-          className="w-full h-full object-cover"
+          className="absolute inset-0 w-full h-full object-cover"
         />
         <div
-          className="absolute top-2 left-2 px-2 py-0.5 text-white text-[10px] font-black rounded"
-          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+          className="absolute top-3 left-3 px-2.5 py-1 text-white text-xs font-black rounded-lg"
+          style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)' }}
         >
           AVANT
         </div>
       </div>
 
       {/* Séparateur lime */}
-      <div style={{ height: '2px', background: '#C6FF3C', boxShadow: '0 0 8px rgba(198,255,60,0.8)' }} />
+      <div style={{ height: '3px', background: '#C6FF3C', boxShadow: '0 0 12px rgba(198,255,60,1)' }} />
 
-      {/* APRÈS — moitié basse */}
-      <div className="relative flex-1 overflow-hidden">
+      {/* APRÈS — ratio 16:9 */}
+      <div className="relative w-full" style={{ paddingBottom: '56.25%' }}>
         <img
           src={ex.after}
           alt={ex.result}
-          className="w-full h-full object-cover"
+          className="absolute inset-0 w-full h-full object-cover"
         />
         <div
-          className="absolute top-2 left-2 px-2 py-0.5 text-[10px] font-black rounded"
-          style={{ background: '#C6FF3C', color: '#0A0E1A', boxShadow: '0 0 10px rgba(198,255,60,0.6)' }}
+          className="absolute top-3 left-3 px-2.5 py-1 text-xs font-black rounded-lg"
+          style={{ background: '#C6FF3C', color: '#0A0E1A', boxShadow: '0 0 12px rgba(198,255,60,0.7)' }}
         >
           APRÈS
         </div>
-        {/* Label résultat en bas */}
-        <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5"
-          style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.75))' }}>
-          <p className="text-[10px] font-semibold text-lime truncate">{ex.result}</p>
+        <div
+          className="absolute bottom-0 left-0 right-0 px-3 py-2"
+          style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.85))' }}
+        >
+          <p className="text-xs font-bold text-lime">{ex.result}</p>
         </div>
       </div>
     </div>
@@ -88,10 +135,15 @@ export default function Landing() {
     const iv = setInterval(() => {
       setCurrentEx(p => {
         const next = (p + 1) % examples.length
-        // Auto-scroll carousel
         if (carouselRef.current) {
           const card = carouselRef.current.children[next] as HTMLElement
-          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+          if (card) {
+            // Scroll uniquement à l'intérieur du carousel, sans toucher au scroll de la page
+            carouselRef.current.scrollTo({
+              left: card.offsetLeft - carouselRef.current.offsetLeft,
+              behavior: 'smooth',
+            })
+          }
         }
         return next
       })
@@ -148,7 +200,7 @@ export default function Landing() {
             style={{ background: '#141826', borderColor: 'rgba(198,255,60,0.2)' }}>
             <span className="w-2 h-2 rounded-full bg-lime animate-pulse-dot" style={{ boxShadow: '0 0 8px rgba(198,255,60,0.9)' }} />
             <span className="text-xs text-text-secondary">
-              Plus de <span className="text-lime font-black text-sm">24 836</span> mythos cette semaine
+              Plus de <span className="text-lime font-black text-sm">{getDailyMythoCount().toLocaleString('fr-FR')}</span> mythos aujourd'hui
             </span>
           </div>
 
@@ -157,8 +209,36 @@ export default function Landing() {
             style={{ fontSize: 'clamp(36px, 10vw, 72px)' }}>
             Crée des photos
             <br />
-            <span className="text-gradient-lime" style={{ textShadow: '0 0 40px rgba(198,255,60,0.2)' }}>
+            <span
+              className="text-gradient-lime relative inline-block"
+              style={{ textShadow: '0 0 40px rgba(198,255,60,0.2)' }}
+            >
               ultra réalistes
+              <svg
+                className="absolute left-0 -bottom-2 w-full overflow-visible"
+                height="8"
+                viewBox="0 0 200 8"
+                preserveAspectRatio="none"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M0 6 Q50 1 100 5 Q150 9 200 4"
+                  stroke="#C6FF3C"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  filter="url(#glow)"
+                />
+                <defs>
+                  <filter id="glow">
+                    <feGaussianBlur stdDeviation="2" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+              </svg>
             </span>
             <br />
             pour piéger
@@ -167,8 +247,7 @@ export default function Landing() {
 
           {/* Sous-titre */}
           <p className="animate-fade-up-3 text-base text-text-secondary mb-8 max-w-sm mx-auto leading-relaxed">
-            L'IA qui mytho ta vie en 10 secondes.{' '}
-            <span className="text-text-primary font-semibold">De la Rolex au poisson-bite, on a couvert.</span>
+            Ton entourage va jamais s'en remettre 😭
           </p>
 
           {/* CTA */}
@@ -180,22 +259,16 @@ export default function Landing() {
             >
               Lancer mon mytho →
             </button>
-
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs"
-              style={{ background: 'rgba(198,255,60,0.06)', borderColor: 'rgba(198,255,60,0.3)' }}>
-              <span className="px-1.5 py-0.5 bg-lime text-primary-bg text-[10px] font-black rounded">NOUVEAU</span>
-              <span className="text-text-secondary">Mode Snap rouge indétectable</span>
-            </div>
           </div>
 
-          {/* Carousel avant/après - tap sur mobile */}
-          <div className="animate-fade-up-5 mt-4">
+          {/* Carousel avant/après */}
+          <div className="animate-fade-up-5 mt-6">
             <p className="text-[11px] text-text-secondary mb-4 uppercase tracking-widest font-semibold">
-              Avant → Après en 10 secondes ✨
+              Résultats réels ✨
             </p>
             <div
               ref={carouselRef}
-              className="flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-2 -mx-4 px-4"
+              className="flex gap-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-2 -mx-4 px-4"
             >
               {examples.map((ex, i) => (
                 <ExampleCard key={i} ex={ex} isActive={currentEx === i} />
@@ -203,20 +276,22 @@ export default function Landing() {
             </div>
 
             {/* Dots indicator */}
-            <div className="flex justify-center gap-1.5 mt-4">
-              {examples.map((_, i) => (
-                <div
-                  key={i}
-                  className="rounded-full transition-all duration-300"
-                  style={{
-                    width: currentEx === i ? '20px' : '6px',
-                    height: '6px',
-                    background: currentEx === i ? '#C6FF3C' : 'rgba(198,255,60,0.2)',
-                    boxShadow: currentEx === i ? '0 0 8px rgba(198,255,60,0.6)' : 'none',
-                  }}
-                />
-              ))}
-            </div>
+            {examples.length > 1 && (
+              <div className="flex justify-center gap-1.5 mt-4">
+                {examples.map((_, i) => (
+                  <div
+                    key={i}
+                    className="rounded-full transition-all duration-300"
+                    style={{
+                      width: currentEx === i ? '20px' : '6px',
+                      height: '6px',
+                      background: currentEx === i ? '#C6FF3C' : 'rgba(198,255,60,0.2)',
+                      boxShadow: currentEx === i ? '0 0 8px rgba(198,255,60,0.6)' : 'none',
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </section>
