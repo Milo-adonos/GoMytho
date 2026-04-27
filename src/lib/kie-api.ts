@@ -242,15 +242,15 @@ export async function generateMytho(
       }
       throw new Error('Réponse serveur invalide : image manquante')
     }
-    // En local Vite, /api/* peut renvoyer 404 => fallback client.
-    if (response.status === 404) {
+    // Fallback client dès que la route serveur n'est pas exploitable.
+    // On conserve seulement le blocage explicite pour solde Kie insuffisant.
+    if (response.status === 402) {
+      throw new Error(payload?.message || payload?.error || 'Crédits Kie insuffisants')
+    }
+    if (response.status === 404 || response.status === 500 || response.status === 502 || response.status === 503) {
       shouldFallbackClient = true
     } else {
-      throw new Error(
-        payload?.message ||
-        payload?.error ||
-        `Génération serveur indisponible (${response.status})`
-      )
+      shouldFallbackClient = true
     }
   } catch (err) {
     if (!shouldFallbackClient) throw err
