@@ -22,8 +22,10 @@ async function fetchFinance(): Promise<FinanceData> {
 }
 
 export default function AdminFinance() {
+  // Mise à jour manuelle uniquement (intervalMs: 0). L'utilisateur clique
+  // sur "↻ Rafraîchir" pour récupérer les dernières données Stripe / Supabase.
   const { data, loading, refreshing, lastUpdatedAt, refresh } = useAutoRefresh(fetchFinance, {
-    intervalMs: 10000,
+    intervalMs: 0,
   })
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-lime" /></div>
@@ -51,7 +53,7 @@ export default function AdminFinance() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-xl font-black text-white">Finances</h1>
-        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={refresh} />
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={refresh} auto={false} />
       </div>
 
       {/* Récap mois */}

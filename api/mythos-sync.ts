@@ -1,5 +1,26 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
+import { createHash } from 'crypto'
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Mappe un id de manifeste arbitraire (ex: "m-1736188123-abc1") vers un
+// UUID stable et déterministe, utilisable comme PK dans public.mythos
+// (la colonne `id` est typée UUID — un format autre échoue silencieusement).
+//
+// On hash l'id source avec SHA-1 puis on formate les 16 premiers octets
+// en UUID v5-like. Ainsi un même id local renvoie toujours le même UUID →
+// idempotent pour les upserts (pas de doublons à chaque retry).
+function localIdToUuid(localId: string): string {
+  if (UUID_REGEX.test(localId)) return localId
+  const hash = createHash('sha1').update(localId).digest()
+  const bytes = Buffer.from(hash.subarray(0, 16))
+  // Force version=5 et variant=1 pour respecter le RFC 4122
+  bytes[6] = (bytes[6] & 0x0f) | 0x50
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
 
 // ─── Manifeste utilisateur dans Supabase Storage ─────────────────────────────
 // Permet de synchroniser les créations entre appareils SANS dépendre d'une
@@ -113,9 +134,10 @@ async function mirrorInsertSql(
       }
     }
     if (!imageUrl) return
-    await adminClient.from('mythos').upsert(
+    const sqlId = localIdToUuid(entry.id)
+    const { error } = await adminClient.from('mythos').upsert(
       [{
-        id: entry.id,
+        id: sqlId,
         user_id: uid,
         image_url: imageUrl,
         prompt: entry.prompt,
@@ -123,6 +145,9 @@ async function mirrorInsertSql(
       }],
       { onConflict: 'id' }
     )
+    if (error) {
+      console.warn(`[mythos-sync] mirror SQL upsert error (id=${entry.id}/${sqlId}):`, error.message)
+    }
   } catch (err) {
     console.warn('[mythos-sync] mirror SQL insert failed (non bloquant):', err)
   }
@@ -130,7 +155,8 @@ async function mirrorInsertSql(
 
 async function mirrorDeleteSql(adminClient: any, id: string): Promise<void> {
   try {
-    await adminClient.from('mythos').delete().eq('id', id)
+    const sqlId = localIdToUuid(id)
+    await adminClient.from('mythos').delete().eq('id', sqlId)
   } catch (err) {
     console.warn('[mythos-sync] mirror SQL delete failed (non bloquant):', err)
   }

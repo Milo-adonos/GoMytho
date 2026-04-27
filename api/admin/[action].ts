@@ -1,7 +1,22 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { createHmac, timingSafeEqual } from 'crypto'
+import { createHmac, timingSafeEqual, createHash } from 'crypto'
 import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Mappe un id de manifeste arbitraire vers un UUID stable et déterministe
+// (cf. api/mythos-sync.ts pour les détails). Permet au backfill de réussir
+// l'insert dans public.mythos.id (typé UUID).
+function localIdToUuid(localId: string): string {
+  if (UUID_REGEX.test(localId)) return localId
+  const hash = createHash('sha1').update(localId).digest()
+  const bytes = Buffer.from(hash.subarray(0, 16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x50
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
 
 const WEEKLY_PRICE = 2.99
 const MONTHLY_PRICE = 9.90
@@ -41,6 +56,8 @@ type StripeStats = {
   newSubscribers30d: number
   newSubscribersPrev30d: number
   cancelledLast30d: number
+  cancelledAllTime: number
+  totalSubscribersAllTime: number
   dailyRevenue: Record<string, number>  // YYYY-MM-DD -> €
   subscriptions: Array<{
     customerId: string
@@ -135,16 +152,24 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
     if ((sub.canceled_at || 0) >= thirtyDaysAgo) cancelledLast30d++
   }
 
+  const activeSubscribers = weeklySubscribers + monthlySubscribers
+  // Total cumulé = abonnés actifs + tous les abonnements canceled remontés
+  // par Stripe (la limite de 100 reste large pour notre échelle).
+  const cancelledAllTime = canceledSubs.data.length
+  const totalSubscribersAllTime = activeSubscribers + cancelledAllTime
+
   return {
     totalRevenueAllTime,
     revenue30d,
     revenuePrev30d,
-    activeSubscribers: weeklySubscribers + monthlySubscribers,
+    activeSubscribers,
     weeklySubscribers,
     monthlySubscribers,
     newSubscribers30d,
     newSubscribersPrev30d,
     cancelledLast30d,
+    cancelledAllTime,
+    totalSubscribersAllTime,
     dailyRevenue,
     subscriptions,
   }
@@ -237,21 +262,55 @@ async function handleDashboard(res: VercelResponse) {
 
   // ─── Récupération parallèle Stripe + Supabase ──────────────────────────────
   // Stripe = source de vérité pour CA + abonnés (paiement réel)
-  // Supabase = source pour les analyses générées (table mythos)
+  // Supabase = source pour les analyses générées :
+  //   - on lit la table SQL public.mythos (rapide, indexée)
+  //   - ET on lit les manifests Storage en fallback / source authoritative,
+  //     car certaines créations historiques n'ont pas été mirrorées en SQL
+  //     (bug d'UUID dans mirrorInsertSql, corrigé). Si Storage > SQL, on
+  //     déclenche aussi un backfill automatique pour synchroniser.
   const now = new Date()
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30)
 
-  const [stripeStats, mythosData] = await Promise.all([
+  const [stripeStats, mythosData, storageMythos] = await Promise.all([
     stripe ? fetchStripeStats(stripe).catch((e) => {
       console.error('[admin/dashboard] stripe error:', e?.message || e)
       return null
     }) : Promise.resolve(null),
     supabase ? supabase.from('mythos').select('id, created_at') : Promise.resolve({ data: [] as any[] }),
+    supabase ? collectMythosFromStorage(supabase).catch((e) => {
+      console.error('[admin/dashboard] storage scan error:', e?.message || e)
+      return [] as Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>
+    }) : Promise.resolve([]),
   ])
 
-  const allMythos = (mythosData as any)?.data || []
+  const sqlMythos = (mythosData as any)?.data || []
+
+  // On fusionne SQL + Storage par UUID dérivé. Storage est plus authoritative
+  // côté front (c'est là que les mythos sont écrits en premier), SQL ne sert
+  // qu'au panel admin. La fusion garantit qu'on ne sous-compte jamais.
+  const sqlIds = new Set<string>(sqlMythos.map((m: any) => String(m.id)))
+  const merged: Array<{ id: string; created_at: string }> = sqlMythos.map((m: any) => ({
+    id: String(m.id),
+    created_at: String(m.created_at || ''),
+  }))
+  let storageOnlyCount = 0
+  for (const e of storageMythos) {
+    const sqlId = localIdToUuid(e.id)
+    if (sqlIds.has(sqlId)) continue
+    merged.push({ id: sqlId, created_at: e.created_at })
+    storageOnlyCount++
+  }
+
+  const allMythos = merged
   const totalMythos = allMythos.length
   const totalCost = totalMythos * COST_PER_IMAGE
+
+  // ─── Backfill silencieux : si Storage est en avance sur SQL, on rattrape
+  // l'écart en arrière-plan pour les prochains appels (idempotent grâce à
+  // l'UUID déterministe). On ne bloque pas la réponse.
+  if (supabase && storageOnlyCount > 0) {
+    void backfillMythosToSql(supabase, storageMythos).catch(() => { /* silent */ })
+  }
 
   // Si Stripe est dispo on s'en sert, sinon on tombe à 0 (mais structure complète)
   const totalRevenue = stripeStats?.totalRevenueAllTime ?? 0
@@ -307,6 +366,8 @@ async function handleDashboard(res: VercelResponse) {
     activeSubscribers: stripeStats?.activeSubscribers ?? 0,
     weeklySubscribers: stripeStats?.weeklySubscribers ?? 0,
     monthlySubscribers: stripeStats?.monthlySubscribers ?? 0,
+    totalSubscribersAllTime: stripeStats?.totalSubscribersAllTime ?? 0,
+    cancelledAllTime: stripeStats?.cancelledAllTime ?? 0,
     newSubscribers30d: newSub30d,
     newSubscribersGrowth: +newSubGrowth.toFixed(1),
     churnRate: +churnRate.toFixed(1),
@@ -315,6 +376,102 @@ async function handleDashboard(res: VercelResponse) {
     dailyMythos: dailyChartData,
     stripeAvailable: !!stripeStats,
   })
+}
+
+// ─── Collecte tous les mythos historiques depuis Supabase Storage ───────────
+//
+// Lit les manifestes {uid}/index.json du bucket et renvoie une liste plate
+// des entrées. Sert :
+//   1. Au comptage exact des analyses (le mirror SQL a pu rater des inserts).
+//   2. Au backfill automatique vers public.mythos.
+//
+// Performance : 1 list + 1 download par utilisateur. Acceptable jusqu'à
+// quelques centaines d'utilisateurs (au-delà, mettre en cache via KV/Redis).
+async function collectMythosFromStorage(
+  supabase: ReturnType<typeof createClient>,
+): Promise<Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>> {
+  const bucket = String(process.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
+  const { data: folders, error } = await supabase.storage.from(bucket).list('', { limit: 1000 })
+  if (error || !folders) return []
+
+  const out: Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }> = []
+  await Promise.all(
+    folders.map(async (folder) => {
+      if (!folder.name || folder.name.includes('.')) return
+      const uid = folder.name
+      try {
+        const { data: blob } = await supabase.storage.from(bucket).download(`${uid}/index.json`)
+        if (!blob) return
+        const manifest = JSON.parse(await blob.text())
+        const entries = Array.isArray(manifest?.entries) ? manifest.entries : []
+        for (const entry of entries) {
+          if (!entry?.id || !entry?.image_path || !entry?.prompt) continue
+          out.push({
+            id: String(entry.id),
+            user_id: uid,
+            created_at: String(entry.created_at || new Date().toISOString()),
+            image_path: String(entry.image_path),
+            prompt: String(entry.prompt),
+          })
+        }
+      } catch {
+        /* manifest illisible → on ignore ce user */
+      }
+    })
+  )
+  return out
+}
+
+// ─── Backfill vers public.mythos ────────────────────────────────────────────
+// Idempotent : utilise localIdToUuid pour générer le même PK à chaque appel,
+// donc les upserts ne créent jamais de doublons.
+async function backfillMythosToSql(
+  supabase: ReturnType<typeof createClient>,
+  entries: Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>,
+): Promise<void> {
+  const bucket = String(process.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
+  const SIGNED_URL_TTL = 60 * 60 * 24 * 365  // 1 an
+
+  // Filtre les entrées dont l'utilisateur existe en DB (FK contrainte).
+  const userIds = Array.from(new Set(entries.map((e) => e.user_id)))
+  const { data: existingUsers } = await supabase.from('users').select('id').in('id', userIds)
+  const validUserIds = new Set((existingUsers || []).map((u: any) => String(u.id)))
+  const validEntries = entries.filter((e) => validUserIds.has(e.user_id))
+  if (validEntries.length === 0) return
+
+  // On batch en lots de 50 pour ne pas saturer la base.
+  for (let i = 0; i < validEntries.length; i += 50) {
+    const batch = validEntries.slice(i, i + 50)
+    const rows = await Promise.all(
+      batch.map(async (e) => {
+        let imageUrl: string | null = null
+        if (/^https?:\/\//.test(e.image_path)) {
+          imageUrl = e.image_path
+        } else {
+          const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(e.image_path, SIGNED_URL_TTL)
+          imageUrl = signed?.signedUrl || null
+          if (!imageUrl) {
+            const { data: pub } = supabase.storage.from(bucket).getPublicUrl(e.image_path)
+            imageUrl = pub?.publicUrl || null
+          }
+        }
+        if (!imageUrl) return null
+        return {
+          id: localIdToUuid(e.id),
+          user_id: e.user_id,
+          image_url: imageUrl,
+          prompt: e.prompt,
+          created_at: e.created_at,
+        }
+      })
+    )
+    const validRows = rows.filter((r): r is NonNullable<typeof r> => r !== null)
+    if (validRows.length === 0) continue
+    const { error } = await supabase.from('mythos').upsert(validRows, { onConflict: 'id' })
+    if (error) {
+      console.warn(`[admin/dashboard] backfill upsert error (batch ${i}):`, error.message)
+    }
+  }
 }
 
 // (legacy unused — gardé pour compat)
@@ -332,8 +489,10 @@ function buildEmptyDashboard() {
   return {
     totalRevenue: 0, revenue30d: 0, revenueGrowth: 0, totalCost: 0,
     totalMythos: 0, netProfit: 0, margin: 0, activeSubscribers: 0,
-    weeklySubscribers: 0, monthlySubscribers: 0, newSubscribers30d: 0,
-    newSubscribersGrowth: 0, churnRate: 0, churnCount: 0,
+    weeklySubscribers: 0, monthlySubscribers: 0,
+    totalSubscribersAllTime: 0, cancelledAllTime: 0,
+    newSubscribers30d: 0, newSubscribersGrowth: 0,
+    churnRate: 0, churnCount: 0,
     dailyRevenue: days, dailyMythos: days,
   }
 }
@@ -729,7 +888,7 @@ async function handleMigrate(res: VercelResponse) {
 
           const { error: upErr } = await supabase.from('mythos').upsert(
             [{
-              id: entry.id,
+              id: localIdToUuid(String(entry.id)),
               user_id: uid,
               image_url: imageUrl,
               prompt: String(entry.prompt),

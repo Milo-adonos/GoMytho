@@ -15,6 +15,8 @@ interface DashboardData {
   activeSubscribers: number
   weeklySubscribers: number
   monthlySubscribers: number
+  totalSubscribersAllTime: number
+  cancelledAllTime: number
   newSubscribers30d: number
   newSubscribersGrowth: number
   churnRate: number
@@ -45,8 +47,10 @@ function MetricCard({ icon, label, value, sub, accent }: {
 }
 
 export default function AdminDashboard() {
+  // Mise à jour manuelle uniquement (intervalMs: 0). 1er chargement au montage,
+  // puis l'utilisateur clique sur "↻ Rafraîchir" quand il veut les chiffres frais.
   const { data, loading, refreshing, lastUpdatedAt, refresh } = useAutoRefresh(fetchDashboard, {
-    intervalMs: 10000,
+    intervalMs: 0,
   })
 
   if (loading) {
@@ -67,7 +71,7 @@ export default function AdminDashboard() {
           <h1 className="text-xl font-black text-white">Vue d'ensemble</h1>
           <p className="text-xs text-text-secondary mt-0.5">{new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
         </div>
-        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={refresh} />
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={refresh} auto={false} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
@@ -75,6 +79,12 @@ export default function AdminDashboard() {
         <MetricCard icon="📈" label="Bénéfice net" value={fmt(data.netProfit)} sub={`Marge : ${data.margin.toFixed(1)}%`} accent="#4ade80" />
         <MetricCard icon="🤖" label="Coût IA" value={fmt(data.totalCost)} sub={`${data.totalMythos.toLocaleString('fr-FR')} analyses`} accent="#fb923c" />
         <MetricCard icon="👥" label="Abonnés actifs" value={data.activeSubscribers.toString()} sub={`${data.weeklySubscribers} hebdo · ${data.monthlySubscribers} mensuel`} accent="#60a5fa" />
+        <MetricCard
+          icon="🏆" label="Total abonnés"
+          value={data.totalSubscribersAllTime.toString()}
+          sub={`${data.activeSubscribers} actifs · ${data.cancelledAllTime} annulés`}
+          accent="#a78bfa"
+        />
         <MetricCard icon="✨" label="Nouveaux (30j)" value={`+${data.newSubscribers30d}`} sub={`+${data.newSubscribersGrowth.toFixed(1)}% vs mois dernier`} accent="#C6FF3C" />
         <MetricCard
           icon="📉" label="Churn (30j)"

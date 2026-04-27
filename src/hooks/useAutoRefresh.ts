@@ -12,6 +12,11 @@ import { useEffect, useRef, useState } from 'react'
 //
 // Le hook met aussi le fetch en pause quand l'onglet n'est pas visible
 // (économie de bande passante + de quota Vercel).
+//
+// Pour désactiver complètement le polling automatique (mode "manuel only"),
+// passe `intervalMs: 0`. Dans ce cas le hook fait uniquement le 1er fetch
+// initial puis n'auto-rafraîchit plus (l'utilisateur doit cliquer sur le
+// bouton ↻ exposé via `refresh()`).
 export interface AutoRefreshOptions {
   intervalMs?: number
   initialDelayMs?: number
@@ -65,8 +70,10 @@ export function useAutoRefresh<T>(
   useEffect(() => {
     aliveRef.current = true
     let timer: ReturnType<typeof setInterval> | null = null
+    const autoEnabled = intervalMs > 0
 
     const start = () => {
+      if (!autoEnabled) return
       if (timer) clearInterval(timer)
       timer = setInterval(() => {
         if (document.visibilityState === 'visible') void run()
@@ -74,6 +81,7 @@ export function useAutoRefresh<T>(
     }
 
     const onVisibility = () => {
+      if (!autoEnabled) return
       if (document.visibilityState === 'visible') void run()
     }
 
@@ -82,13 +90,17 @@ export function useAutoRefresh<T>(
       start()
     }, initialDelayMs)
 
-    document.addEventListener('visibilitychange', onVisibility)
+    if (autoEnabled) {
+      document.addEventListener('visibilitychange', onVisibility)
+    }
 
     return () => {
       aliveRef.current = false
       clearTimeout(init)
       if (timer) clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
+      if (autoEnabled) {
+        document.removeEventListener('visibilitychange', onVisibility)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intervalMs, initialDelayMs])
