@@ -8,8 +8,6 @@ export default function AdminSettings() {
   const [showPassword, setShowPassword] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [migrating, setMigrating] = useState(false)
-  const [migrationResult, setMigrationResult] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/admin/settings', { credentials: 'include' })
@@ -32,29 +30,6 @@ export default function AdminSettings() {
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }
-
-  const handleMigrate = async () => {
-    if (migrating) return
-    if (!confirm('Cette action va parcourir le bucket Storage et reconstituer la table SQL des analyses + corriger les utilisateurs payants restés en plan="free". Continuer ?')) return
-    setMigrating(true)
-    setMigrationResult(null)
-    try {
-      const r = await fetch('/api/admin/migrate', { credentials: 'include' })
-      const d = await r.json()
-      if (!r.ok) {
-        setMigrationResult(`❌ Erreur : ${d.error || 'inconnue'}`)
-      } else {
-        setMigrationResult(
-          `✅ Migration OK · ${d.usersFixed} user(s) corrigés · ${d.mythosImported} analyse(s) importée(s)` +
-          (d.mythosSkipped > 0 ? ` · ${d.mythosSkipped} ignorée(s)` : '')
-        )
-      }
-    } catch (e: any) {
-      setMigrationResult(`❌ ${e?.message || 'Erreur réseau'}`)
-    } finally {
-      setMigrating(false)
-    }
   }
 
   const inputCls = "w-full px-4 py-3 rounded-xl text-sm text-text-primary bg-primary-bg border focus:outline-none transition-all"
@@ -118,31 +93,6 @@ export default function AdminSettings() {
       <button onClick={handleSave} disabled={saving} className="w-full py-3 rounded-xl font-black bg-lime text-primary-bg transition-all active:scale-95 disabled:opacity-50">
         {saving ? 'Sauvegarde...' : saved ? '✓ Sauvegardé !' : 'Sauvegarder les paramètres'}
       </button>
-
-      {/* Outils de maintenance données */}
-      <div className="rounded-2xl p-5 space-y-3" style={{ background: '#141826', border: '1px solid rgba(251,146,60,0.2)' }}>
-        <div>
-          <p className="text-sm font-bold text-white">Synchroniser les données historiques</p>
-          <p className="text-xs text-text-secondary mt-1">
-            Reconstitue la table SQL <code className="text-lime">mythos</code> depuis le bucket Storage
-            et corrige les utilisateurs ayant payé mais restés à plan="free" (ancien bug).
-            À utiliser une seule fois après mise à jour.
-          </p>
-        </div>
-        <button
-          onClick={handleMigrate}
-          disabled={migrating}
-          className="w-full py-2.5 rounded-xl font-bold text-sm transition-all active:scale-95 disabled:opacity-50"
-          style={{ background: 'rgba(251,146,60,0.12)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.3)' }}
-        >
-          {migrating ? 'Migration en cours…' : '🔄 Lancer la migration'}
-        </button>
-        {migrationResult && (
-          <p className="text-xs" style={{ color: migrationResult.startsWith('✅') ? '#4ade80' : '#ef4444' }}>
-            {migrationResult}
-          </p>
-        )}
-      </div>
     </div>
   )
 }

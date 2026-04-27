@@ -19,7 +19,20 @@ export default function AdminLayout() {
     fetch('/api/admin/dashboard', { credentials: 'include' })
       .then(r => {
         if (r.status === 401) navigate('/admin-login')
-        else setChecking(false)
+        else {
+          setChecking(false)
+          // Réparation silencieuse en arrière-plan : rapatrie d'éventuelles
+          // analyses faites avant l'ajout du miroir SQL et active les comptes
+          // payants oubliés. Ne bloque jamais l'affichage.
+          // Une seule fois par session navigateur (clé sessionStorage).
+          try {
+            const KEY = 'gomytho_admin_synced'
+            if (!sessionStorage.getItem(KEY)) {
+              sessionStorage.setItem(KEY, '1')
+              fetch('/api/admin/migrate', { credentials: 'include' }).catch(() => {})
+            }
+          } catch { /* ignore */ }
+        }
       })
       .catch(() => navigate('/admin-login'))
   }, [navigate])

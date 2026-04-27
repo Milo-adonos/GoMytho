@@ -90,6 +90,10 @@ async function signUrl(adminClient: any, bucket: string, path: string): Promise<
 // Le panel admin agrège ses statistiques depuis cette table. On garde le
 // manifeste Storage comme source de vérité côté client, mais on duplique
 // les métadonnées en SQL pour les requêtes admin (count, joins users, etc.).
+// TTL long (1 an = max Supabase) pour le miroir admin afin que les images
+// restent visibles dans le panel même après plusieurs mois.
+const ADMIN_MIRROR_TTL = 60 * 60 * 24 * 365
+
 async function mirrorInsertSql(
   adminClient: any,
   bucket: string,
@@ -97,7 +101,17 @@ async function mirrorInsertSql(
   entry: ManifestEntry
 ): Promise<void> {
   try {
-    const imageUrl = await signUrl(adminClient, bucket, entry.image_path)
+    let imageUrl: string | null = null
+    if (/^https?:\/\//.test(entry.image_path)) {
+      imageUrl = entry.image_path
+    } else {
+      const { data: signed } = await adminClient.storage.from(bucket).createSignedUrl(entry.image_path, ADMIN_MIRROR_TTL)
+      imageUrl = signed?.signedUrl || null
+      if (!imageUrl) {
+        const { data: pub } = adminClient.storage.from(bucket).getPublicUrl(entry.image_path)
+        imageUrl = pub?.publicUrl || null
+      }
+    }
     if (!imageUrl) return
     await adminClient.from('mythos').upsert(
       [{

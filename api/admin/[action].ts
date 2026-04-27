@@ -388,7 +388,8 @@ async function handleMigrate(res: VercelResponse) {
   if (!supabase) return res.status(500).json({ error: 'Supabase non configuré' })
 
   const bucket = String(process.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
-  const SIGNED_URL_TTL = 60 * 60 * 24 * 7
+  // 1 an (max Supabase) pour que les images restent visibles longtemps
+  const SIGNED_URL_TTL = 60 * 60 * 24 * 365
 
   let usersFixed = 0
   let mythosImported = 0
