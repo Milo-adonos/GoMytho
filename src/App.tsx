@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Suspense, lazy } from 'react'
+import TappitDebugBadge from './components/TappitDebugBadge'
 
 const Landing = lazy(() => import('./pages/Landing'))
 const Create = lazy(() => import('./pages/Create'))
@@ -36,6 +37,8 @@ const LoadingFallback = () => (
 function App() {
   return (
     <Suspense fallback={<LoadingFallback />}>
+      {/* Badge de debug Tappit/Radar — activable avec ?taap=1 dans l'URL */}
+      <TappitDebugBadge />
       <Routes>
         {/* Funnel public */}
         <Route path="/" element={<Landing />} />
