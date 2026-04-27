@@ -88,6 +88,11 @@ function extractImageUrlFromAny(input: unknown): string | null {
         const normalized = normalizeUrl(picked)
         if (normalized) return normalized
       }
+      // Fallback: certaines URLs de providers n'ont ni extension ni mot-clé "image".
+      if (matches[0]) {
+        const normalized = normalizeUrl(matches[0])
+        if (normalized) return normalized
+      }
 
       const maybeSingle = normalizeUrl(current)
       if (maybeSingle && /(png|jpg|jpeg|webp|gif|bmp|image|media|cdn|storage)/i.test(maybeSingle)) {
@@ -108,6 +113,8 @@ function extractImageUrlFromAny(input: unknown): string | null {
 
       const directKeys = [
         'image_url', 'imageUrl', 'url', 'output_url', 'result_url', 'download_url',
+        'resultImageUrl', 'result_image_url', 'originImageUrl', 'origin_image_url',
+        'fileUrl', 'file_url', 'mediaUrl', 'media_url',
       ]
       for (const key of directKeys) {
         const v = obj[key]
@@ -350,12 +357,13 @@ export async function generateMytho(
         if (!generatedImageUrl) {
           successWithoutUrlCount += 1
           // Kie peut marquer success puis publier l'URL quelques secondes après
-          if (successWithoutUrlCount < 15) continue
-          throw new Error('Image générée introuvable dans la réponse')
+          // On laisse tourner la boucle complète au lieu d'échouer trop tôt.
+          if (successWithoutUrlCount < maxAttempts) continue
         }
-
-        onProgress?.('Mytho prêt !')
-        return generatedImageUrl
+        if (generatedImageUrl) {
+          onProgress?.('Mytho prêt !')
+          return generatedImageUrl
+        }
       }
 
       if (status === 'failed' || status === 'error' || status === 'fail') {

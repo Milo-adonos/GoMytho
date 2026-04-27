@@ -77,6 +77,11 @@ function extractImageUrlFromAny(input: unknown): string | null {
         const normalized = normalizeUrl(picked)
         if (normalized) return normalized
       }
+      // Fallback: certaines URLs de providers n'ont ni extension ni mot-clé "image".
+      if (matches[0]) {
+        const normalized = normalizeUrl(matches[0])
+        if (normalized) return normalized
+      }
       const maybeSingle = normalizeUrl(current)
       if (maybeSingle && /(png|jpg|jpeg|webp|gif|bmp|image|media|cdn|storage)/i.test(maybeSingle)) return maybeSingle
       continue
@@ -91,7 +96,11 @@ function extractImageUrlFromAny(input: unknown): string | null {
       const obj = current as Record<string, unknown>
       if (seen.has(obj)) continue
       seen.add(obj)
-      const keys = ['image_url', 'imageUrl', 'url', 'output_url', 'result_url', 'download_url']
+      const keys = [
+        'image_url', 'imageUrl', 'url', 'output_url', 'result_url', 'download_url',
+        'resultImageUrl', 'result_image_url', 'originImageUrl', 'origin_image_url',
+        'fileUrl', 'file_url', 'mediaUrl', 'media_url',
+      ]
       for (const k of keys) {
         const v = obj[k]
         if (typeof v === 'string') {
@@ -261,8 +270,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return res.status(200).json({ imageUrl: imageUrlOut, previewDataUrl })
         }
         successWithoutUrlCount += 1
-        if (successWithoutUrlCount < 15) continue
-        return res.status(502).json({ error: 'Image URL not found', raw: normalized })
+        // Ne pas échouer trop tôt: certaines tâches marquées "success"
+        // publient l'URL un peu plus tard.
+        if (successWithoutUrlCount < maxAttempts) continue
       }
 
       if (status === 'failed' || status === 'error' || status === 'fail') {
