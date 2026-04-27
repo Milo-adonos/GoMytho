@@ -7,15 +7,16 @@ interface LoadingAnimationProps {
 
 export default function LoadingAnimation({ text, progress }: LoadingAnimationProps) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-primary-bg px-6 w-full overflow-x-hidden">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-primary-bg w-screen max-w-full overflow-x-hidden px-6">
       <motion.div
         animate={{ scale: [1, 1.05, 1] }}
         transition={{ duration: 2, repeat: Infinity }}
-        className="mb-12 w-full flex justify-center"
+        className="mb-10 w-full max-w-full flex justify-center"
+        style={{ transformOrigin: 'center' }}
       >
         <h1
-          className="font-black text-lime font-display whitespace-nowrap leading-none text-center"
-          style={{ fontSize: 'clamp(26px, 8.5vw, 56px)', letterSpacing: '-0.02em' }}
+          className="font-black text-lime font-display whitespace-nowrap leading-none text-center text-[8vw] sm:text-5xl md:text-6xl"
+          style={{ letterSpacing: '-0.03em', maxWidth: '92vw' }}
         >
           GoMytho.com
         </h1>
