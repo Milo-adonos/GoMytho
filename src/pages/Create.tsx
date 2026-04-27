@@ -11,14 +11,17 @@ export default function Create() {
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16')
+  const [isConverting, setIsConverting] = useState(false)
 
   const handleFile = async (file: File) => {
-    // Convertir en JPEG (gère HEIC/HEIF galerie iPhone, WebP, etc.)
-    const jpeg = await convertToJpeg(file)
-    setImage(jpeg)
-    const reader = new FileReader()
-    reader.onloadend = () => setImagePreview(reader.result as string)
-    reader.readAsDataURL(jpeg)
+    setIsConverting(true)
+    try {
+      const { file: jpeg, preview } = await convertToJpeg(file)
+      setImage(jpeg)
+      setImagePreview(preview)
+    } finally {
+      setIsConverting(false)
+    }
   }
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -54,23 +57,30 @@ export default function Create() {
             <div
               onDrop={handleDrop}
               onDragOver={e => e.preventDefault()}
-              onClick={() => document.getElementById('file-upload')?.click()}
+              onClick={() => !isConverting && document.getElementById('file-upload')?.click()}
               className="border-2 border-dashed rounded-3xl p-12 text-center active:scale-95 transition-all duration-200 cursor-pointer mb-8"
               style={{ borderColor: 'rgba(198,255,60,0.3)', background: 'rgba(20,24,38,0.5)' }}
             >
-              <div
-                className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5"
-                style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.2)' }}
-              >
-                <span className="text-4xl">📷</span>
-              </div>
-              <h3 className="text-xl font-bold mb-2">Clique pour sélectionner ta photo</h3>
-              <p className="text-text-secondary text-sm">ou glisse-dépose ici</p>
+              {isConverting ? (
+                <>
+                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mx-auto mb-3" />
+                  <p className="text-lime font-bold">Traitement de la photo...</p>
+                </>
+              ) : (
+                <>
+                  <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5"
+                    style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.2)' }}>
+                    <span className="text-4xl">📷</span>
+                  </div>
+                  <h3 className="text-xl font-bold mb-2">Clique pour sélectionner ta photo</h3>
+                  <p className="text-text-secondary text-sm">Galerie, caméra — tous formats acceptés</p>
+                </>
+              )}
               <input
                 id="file-upload"
                 type="file"
-                accept="image/*"
-                onChange={e => { if (e.target.files?.[0]) handleFile(e.target.files[0]) }}
+                accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                onChange={async e => { if (e.target.files?.[0]) await handleFile(e.target.files[0]) }}
                 className="hidden"
               />
             </div>

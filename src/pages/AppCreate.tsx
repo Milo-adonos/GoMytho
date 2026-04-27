@@ -17,6 +17,7 @@ export default function AppCreate() {
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16')
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isConverting, setIsConverting] = useState(false)
   const [step, setStep] = useState('')
   const [resultUrl, setResultUrl] = useState<string | null>(null)
 
@@ -25,12 +26,14 @@ export default function AppCreate() {
 
   const handleFile = async (file: File) => {
     setResultUrl(null)
-    // Convertir en JPEG (gère HEIC/HEIF galerie iPhone, WebP, etc.)
-    const jpeg = await convertToJpeg(file)
-    setImage(jpeg)
-    const reader = new FileReader()
-    reader.onloadend = () => setImagePreview(reader.result as string)
-    reader.readAsDataURL(jpeg)
+    setIsConverting(true)
+    try {
+      const { file: jpeg, preview } = await convertToJpeg(file)
+      setImage(jpeg)
+      setImagePreview(preview)
+    } finally {
+      setIsConverting(false)
+    }
   }
 
   const handleGenerate = async () => {
@@ -121,14 +124,29 @@ export default function AppCreate() {
       {/* Upload zone */}
       {!imagePreview ? (
         <div
-          onClick={() => document.getElementById('file-upload-app')?.click()}
+          onClick={() => !isConverting && document.getElementById('file-upload-app')?.click()}
           className="rounded-2xl p-10 text-center cursor-pointer active:scale-95 transition-all mb-5"
           style={{ background: 'rgba(20,24,38,0.5)', border: '2px dashed rgba(198,255,60,0.2)' }}
         >
-          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl" style={{ background: 'rgba(198,255,60,0.08)' }}>📷</div>
-          <p className="font-bold mb-1">Sélectionne ta photo</p>
-          <p className="text-xs text-text-secondary">ou glisse-dépose ici</p>
-          <input id="file-upload-app" type="file" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) handleFile(e.target.files[0]) }} />
+          {isConverting ? (
+            <>
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mx-auto mb-3" />
+              <p className="text-lime font-bold text-sm">Traitement de la photo...</p>
+            </>
+          ) : (
+            <>
+              <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl" style={{ background: 'rgba(198,255,60,0.08)' }}>📷</div>
+              <p className="font-bold mb-1">Sélectionne ta photo</p>
+              <p className="text-xs text-text-secondary">Galerie, caméra — tous formats acceptés</p>
+            </>
+          )}
+          <input
+            id="file-upload-app"
+            type="file"
+            accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+            className="hidden"
+            onChange={async e => { if (e.target.files?.[0]) await handleFile(e.target.files[0]) }}
+          />
         </div>
       ) : (
         <div className="relative rounded-2xl overflow-hidden mb-5" style={{ border: '1px solid rgba(198,255,60,0.2)' }}>
