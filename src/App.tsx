@@ -10,6 +10,12 @@ const Signup = lazy(() => import('./pages/Signup'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Creations = lazy(() => import('./pages/Creations'))
 
+// Nouvelle app interne
+const AppLayout = lazy(() => import('./pages/AppLayout'))
+const AppCreations = lazy(() => import('./pages/AppCreations'))
+const AppCreate = lazy(() => import('./pages/AppCreate'))
+const AppSettings = lazy(() => import('./pages/AppSettings'))
+
 // Admin
 const AdminLogin = lazy(() => import('./pages/admin/AdminLogin'))
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout'))
@@ -38,7 +44,15 @@ function App() {
         <Route path="/analyzing" element={<Analyzing />} />
         <Route path="/unlock" element={<Unlock />} />
         <Route path="/signup" element={<Signup />} />
-        <Route path="/app" element={<Dashboard />} />
+        {/* App interne — layout avec bottom nav */}
+        <Route path="/app" element={<AppLayout />}>
+          <Route index element={<AppCreations />} />
+          <Route path="new" element={<AppCreate />} />
+          <Route path="settings" element={<AppSettings />} />
+        </Route>
+
+        {/* Anciennes routes conservées pour compatibilité */}
+        <Route path="/app/dashboard" element={<Dashboard />} />
         <Route path="/app/creations" element={<Creations />} />
 
         {/* Admin */}
