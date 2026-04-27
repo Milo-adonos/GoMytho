@@ -1,49 +1,20 @@
-import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_PORTAL_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
 const STRIPE_PORTAL_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
-
-type PortalDialog =
-  | { stage: 'loading' }
-  | { stage: 'error'; message: string }
+// Page de gestion d'abonnement Stripe (magic-link). Le client saisit son email
+// et reçoit un lien pour annuler / modifier son abonnement.
+const STRIPE_PORTAL_URL =
+  import.meta.env.VITE_STRIPE_PORTAL_URL ||
+  'https://billing.stripe.com/p/login/fZu4gyauk4oy0rg8dVgYU00'
 
 export default function AppSettings() {
   const navigate = useNavigate()
   const { user } = useOutletContext<{ user: User | null }>()
-  const [portalDialog, setPortalDialog] = useState<PortalDialog | null>(null)
 
-  const closePortalDialog = () => setPortalDialog(null)
-
-  const openStripePortal = async () => {
-    setPortalDialog({ stage: 'loading' })
-    try {
-      const { data } = await supabase.auth.getSession()
-      const token = data?.session?.access_token
-      if (!token) throw new Error('Session expirée. Reconnecte-toi.')
-
-      const response = await fetch('/api/stripe-portal', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          returnUrl: `${window.location.origin}/settings`,
-        }),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.url) {
-        throw new Error(payload?.error || `Erreur ${response.status}`)
-      }
-      window.location.href = payload.url
-    } catch (e: any) {
-      setPortalDialog({
-        stage: 'error',
-        message: e?.message || 'Impossible d\'ouvrir le portail Stripe.',
-      })
-    }
+  const openStripePortal = () => {
+    window.location.href = STRIPE_PORTAL_URL
   }
 
   // Plan effectif: priorité cache local, sinon DB, sinon inférence basique
@@ -156,53 +127,6 @@ export default function AppSettings() {
       <p className="text-center text-xs text-text-secondary pb-4">
         Un problème ? <a href="mailto:support@gomytho.com" className="text-lime underline">support@gomytho.com</a>
       </p>
-
-      {/* Dialog ouverture portail Stripe */}
-      {portalDialog && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(0,0,0,0.7)' }}
-          onClick={portalDialog.stage === 'loading' ? undefined : closePortalDialog}
-        >
-          <div
-            className="rounded-2xl p-6 max-w-sm w-full"
-            style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.08)' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {portalDialog.stage === 'loading' && (
-              <div className="flex flex-col items-center py-4">
-                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mb-4" />
-                <p className="text-sm text-text-secondary">Ouverture du portail Stripe…</p>
-              </div>
-            )}
-
-            {portalDialog.stage === 'error' && (
-              <>
-                <div className="text-3xl mb-3">❌</div>
-                <h2 className="text-lg font-black text-white mb-2">
-                  Portail indisponible
-                </h2>
-                <p className="text-sm text-text-secondary mb-5">{portalDialog.message}</p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={closePortalDialog}
-                    className="flex-1 py-3 rounded-xl text-sm font-bold transition-all active:scale-95"
-                    style={{ background: 'rgba(255,255,255,0.06)', color: '#fff' }}
-                  >
-                    Fermer
-                  </button>
-                  <a
-                    href="mailto:support@gomytho.com"
-                    className="flex-1 py-3 rounded-xl text-sm font-bold text-center transition-all active:scale-95 bg-lime text-primary-bg"
-                  >
-                    Support
-                  </a>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
