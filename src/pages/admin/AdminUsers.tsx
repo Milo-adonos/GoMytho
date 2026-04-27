@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import LiveBadge from '@/components/LiveBadge'
 
 interface User {
   id: string; email: string; plan: string; subscription_status: string
@@ -26,23 +27,45 @@ export default function AdminUsers() {
   const [users, setUsers] = useState<User[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [planFilter, setPlanFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [sortKey, setSortKey] = useState<keyof User>('created_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const inFlightRef = useRef(false)
 
-  const fetchUsers = () => {
-    setLoading(true)
-    const params = new URLSearchParams({ page: String(page), limit: '50', search, plan: planFilter, status: statusFilter })
-    fetch(`/api/admin/users?${params}`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => { setUsers(d.users || []); setTotal(d.total || 0); setLoading(false) })
-      .catch(() => setLoading(false))
-  }
+  const fetchUsers = useCallback(async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    if (users.length === 0) setLoading(true)
+    else setRefreshing(true)
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: '50', search, plan: planFilter, status: statusFilter })
+      const r = await fetch(`/api/admin/users?${params}`, { credentials: 'include' })
+      const d = await r.json()
+      setUsers(d.users || [])
+      setTotal(d.total || 0)
+      setLastUpdatedAt(Date.now())
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+      inFlightRef.current = false
+    }
+  }, [page, search, planFilter, statusFilter, users.length])
 
-  useEffect(() => { fetchUsers() }, [page, planFilter, statusFilter])
+  useEffect(() => { void fetchUsers() }, [page, planFilter, statusFilter])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchUsers()
+    }, 10000)
+    return () => clearInterval(id)
+  }, [fetchUsers])
 
   const handleSort = (key: keyof User) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -60,8 +83,9 @@ export default function AdminUsers() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-xl font-black text-white">Utilisateurs <span className="text-text-secondary font-normal text-base">({total})</span></h1>
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={fetchUsers} />
       </div>
 
       {/* Filtres */}

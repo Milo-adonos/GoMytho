@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts'
+import { useAutoRefresh } from '@/hooks/useAutoRefresh'
+import LiveBadge from '@/components/LiveBadge'
 
 interface DashboardData {
   totalRevenue: number
@@ -22,6 +23,12 @@ interface DashboardData {
   dailyMythos: { date: string; mythos: number }[]
 }
 
+async function fetchDashboard(): Promise<DashboardData> {
+  const res = await fetch('/api/admin/dashboard', { credentials: 'include' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
+}
+
 function MetricCard({ icon, label, value, sub, accent }: {
   icon: string; label: string; value: string; sub: string; accent: string
 }) {
@@ -38,18 +45,9 @@ function MetricCard({ icon, label, value, sub, accent }: {
 }
 
 export default function AdminDashboard() {
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  const fetchData = () => {
-    setLoading(true)
-    fetch('/api/admin/dashboard', { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
-  }
-
-  useEffect(() => { fetchData() }, [])
+  const { data, loading, refreshing, lastUpdatedAt, refresh } = useAutoRefresh(fetchDashboard, {
+    intervalMs: 10000,
+  })
 
   if (loading) {
     return (
@@ -64,18 +62,14 @@ export default function AdminDashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-xl font-black text-white">Vue d'ensemble</h1>
           <p className="text-xs text-text-secondary mt-0.5">{new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
         </div>
-        <button onClick={fetchData} className="px-4 py-2 rounded-xl text-xs font-bold text-lime border transition-all hover:bg-lime/10" style={{ borderColor: 'rgba(198,255,60,0.3)' }}>
-          ↻ Rafraîchir
-        </button>
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={refresh} />
       </div>
 
-      {/* Metric cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <MetricCard icon="💰" label="CA Total" value={fmt(data.totalRevenue)} sub={`+${fmt(data.revenue30d)} ces 30 jours`} accent="#C6FF3C" />
         <MetricCard icon="📈" label="Bénéfice net" value={fmt(data.netProfit)} sub={`Marge : ${data.margin.toFixed(1)}%`} accent="#4ade80" />
@@ -90,7 +84,6 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {/* Charts */}
       <div className="grid lg:grid-cols-2 gap-4">
         <div className="rounded-2xl p-5" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>
           <p className="text-sm font-bold text-white mb-4">Revenus quotidiens (30j)</p>

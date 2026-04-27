@@ -75,6 +75,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case 'mythos': return await handleMythos(req, res)
       case 'users': return await handleUsers(req, res)
       case 'settings': return await handleSettings(req, res)
+      case 'migrate': return await handleMigrate(res)
       default:
         return res.status(404).json({ error: 'Action inconnue' })
     }
@@ -370,4 +371,137 @@ async function handleSettings(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true })
   }
   return res.status(405).json({ error: 'Méthode non autorisée' })
+}
+
+// ─── Backfill historique : Storage manifests → table SQL public.mythos ───────
+//
+// Pour chaque manifeste {uid}/index.json présent dans le bucket :
+//   1. Si l'utilisateur existe en DB et est resté à plan='free'/inactive
+//      (ancien flow buggé) ET qu'il a au moins 1 mytho → on le passe en
+//      plan='monthly' / subscription_status='active' (estimation raisonnable).
+//   2. Pour chaque mytho du manifeste, on upsert la ligne en SQL avec une
+//      URL signée 7 jours.
+//
+// Ce endpoint peut être rejoué sans risque (idempotent grâce aux upsert).
+async function handleMigrate(res: VercelResponse) {
+  const supabase = getSupabase()
+  if (!supabase) return res.status(500).json({ error: 'Supabase non configuré' })
+
+  const bucket = String(process.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
+  const SIGNED_URL_TTL = 60 * 60 * 24 * 7
+
+  let usersFixed = 0
+  let mythosImported = 0
+  let mythosSkipped = 0
+  const errors: string[] = []
+
+  try {
+    // 1. Lister tous les "dossiers" (= UID) dans le bucket
+    const { data: folders, error: listErr } = await supabase.storage.from(bucket).list('', { limit: 1000 })
+    if (listErr) {
+      return res.status(500).json({ error: `Lecture bucket impossible: ${listErr.message}` })
+    }
+
+    for (const folder of folders || []) {
+      // On ne traite que les "vrais" dossiers (UID Supabase, pas de fichier à la racine)
+      if (!folder.name || folder.name.includes('.')) continue
+      const uid = folder.name
+
+      // 2. Télécharger le manifeste de cet utilisateur
+      const manifestPath = `${uid}/index.json`
+      const { data: manifestBlob, error: dlErr } = await supabase.storage.from(bucket).download(manifestPath)
+      if (dlErr || !manifestBlob) continue
+
+      let manifest: { entries?: any[] } = {}
+      try {
+        manifest = JSON.parse(await manifestBlob.text())
+      } catch {
+        continue
+      }
+      const entries = Array.isArray(manifest.entries) ? manifest.entries : []
+      if (entries.length === 0) continue
+
+      // 3. Reconstituer chaque mytho dans public.mythos
+      for (const entry of entries) {
+        if (!entry?.id || !entry?.image_path || !entry?.prompt) {
+          mythosSkipped++
+          continue
+        }
+        try {
+          let imageUrl: string | null = null
+          if (/^https?:\/\//.test(entry.image_path)) {
+            imageUrl = entry.image_path
+          } else {
+            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(entry.image_path, SIGNED_URL_TTL)
+            imageUrl = signed?.signedUrl || null
+            if (!imageUrl) {
+              const { data: pub } = supabase.storage.from(bucket).getPublicUrl(entry.image_path)
+              imageUrl = pub?.publicUrl || null
+            }
+          }
+          if (!imageUrl) { mythosSkipped++; continue }
+
+          const { error: upErr } = await supabase.from('mythos').upsert(
+            [{
+              id: entry.id,
+              user_id: uid,
+              image_url: imageUrl,
+              prompt: String(entry.prompt),
+              created_at: entry.created_at || new Date().toISOString(),
+            }],
+            { onConflict: 'id' }
+          )
+          if (upErr) {
+            mythosSkipped++
+            errors.push(`mytho ${entry.id}: ${upErr.message}`)
+          } else {
+            mythosImported++
+          }
+        } catch (e: any) {
+          mythosSkipped++
+          errors.push(`mytho ${entry.id}: ${e?.message || 'erreur inconnue'}`)
+        }
+      }
+
+      // 4. Si le user a des mythos mais est resté en plan='free' / inactive,
+      //    on l'active avec un plan mensuel par défaut (estimation prudente).
+      try {
+        const { data: dbUser } = await supabase
+          .from('users')
+          .select('id, plan, subscription_status, credits_remaining')
+          .eq('id', uid)
+          .single()
+
+        if (dbUser) {
+          const isUninitialized =
+            dbUser.subscription_status !== 'active' ||
+            dbUser.plan === 'free' ||
+            (dbUser.credits_remaining ?? 0) === 0
+
+          if (isUninitialized) {
+            const remaining = Math.max(560 - entries.length * 8, 0)
+            await supabase.from('users').update({
+              plan: 'monthly',
+              subscription_status: 'active',
+              credits_remaining: remaining,
+            }).eq('id', uid)
+            usersFixed++
+          }
+        }
+      } catch (e: any) {
+        errors.push(`user ${uid}: ${e?.message || 'erreur inconnue'}`)
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      usersFixed,
+      mythosImported,
+      mythosSkipped,
+      foldersScanned: (folders || []).length,
+      errors: errors.slice(0, 20),
+    })
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || 'Migration échouée' })
+  }
 }

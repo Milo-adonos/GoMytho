@@ -86,6 +86,42 @@ async function signUrl(adminClient: any, bucket: string, path: string): Promise<
   return data.signedUrl
 }
 
+// ─── Mirror SQL : insère/supprime aussi dans public.mythos ───────────────────
+// Le panel admin agrège ses statistiques depuis cette table. On garde le
+// manifeste Storage comme source de vérité côté client, mais on duplique
+// les métadonnées en SQL pour les requêtes admin (count, joins users, etc.).
+async function mirrorInsertSql(
+  adminClient: any,
+  bucket: string,
+  uid: string,
+  entry: ManifestEntry
+): Promise<void> {
+  try {
+    const imageUrl = await signUrl(adminClient, bucket, entry.image_path)
+    if (!imageUrl) return
+    await adminClient.from('mythos').upsert(
+      [{
+        id: entry.id,
+        user_id: uid,
+        image_url: imageUrl,
+        prompt: entry.prompt,
+        created_at: entry.created_at,
+      }],
+      { onConflict: 'id' }
+    )
+  } catch (err) {
+    console.warn('[mythos-sync] mirror SQL insert failed (non bloquant):', err)
+  }
+}
+
+async function mirrorDeleteSql(adminClient: any, id: string): Promise<void> {
+  try {
+    await adminClient.from('mythos').delete().eq('id', id)
+  } catch (err) {
+    console.warn('[mythos-sync] mirror SQL delete failed (non bloquant):', err)
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const anonKey = process.env.VITE_SUPABASE_ANON_KEY
@@ -132,6 +168,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         manifest.entries = [newEntry, ...manifest.entries].slice(0, 500)
         await writeManifest(adminClient, bucket, uid, manifest)
         const image_url = await signUrl(adminClient, bucket, newEntry.image_path)
+        // Mirror SQL pour les stats admin (non bloquant)
+        await mirrorInsertSql(adminClient, bucket, uid, newEntry)
         return res.status(200).json({ entry: { ...newEntry, image_url } })
       }
 
@@ -143,6 +181,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (entryToDelete?.image_path && !/^https?:\/\//.test(entryToDelete.image_path)) {
           await adminClient.storage.from(bucket).remove([entryToDelete.image_path]).catch(() => {})
         }
+        await mirrorDeleteSql(adminClient, id)
         return res.status(200).json({ ok: true })
       }
 

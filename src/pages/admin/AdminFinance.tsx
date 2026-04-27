@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
+import { useAutoRefresh } from '@/hooks/useAutoRefresh'
+import LiveBadge from '@/components/LiveBadge'
 
 interface FinanceData {
   currentMonth: {
@@ -14,16 +15,16 @@ interface FinanceData {
   topClients: { rank: number; email: string; plan: string; revenue: number; net: number }[]
 }
 
-export default function AdminFinance() {
-  const [data, setData] = useState<FinanceData | null>(null)
-  const [loading, setLoading] = useState(true)
+async function fetchFinance(): Promise<FinanceData> {
+  const res = await fetch('/api/admin/finance', { credentials: 'include' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
+}
 
-  useEffect(() => {
-    fetch('/api/admin/finance', { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
+export default function AdminFinance() {
+  const { data, loading, refreshing, lastUpdatedAt, refresh } = useAutoRefresh(fetchFinance, {
+    intervalMs: 10000,
+  })
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-lime" /></div>
   if (!data) return <p className="text-text-secondary">Erreur de chargement</p>
@@ -48,7 +49,10 @@ export default function AdminFinance() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-black text-white">Finances</h1>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h1 className="text-xl font-black text-white">Finances</h1>
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={refresh} />
+      </div>
 
       {/* Récap mois */}
       <div className="rounded-2xl overflow-hidden" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>

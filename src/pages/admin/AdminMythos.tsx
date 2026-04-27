@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import LiveBadge from '@/components/LiveBadge'
 
 interface Mytho {
   id: string; user_email: string; prompt: string; image_url: string
@@ -17,24 +18,48 @@ export default function AdminMythos() {
   const [mythos, setMythos] = useState<Mytho[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Mytho | null>(null)
+  const inFlightRef = useRef(false)
+
+  const fetchMythos = useCallback(async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    if (mythos.length === 0) setLoading(true)
+    else setRefreshing(true)
+    try {
+      const r = await fetch(`/api/admin/mythos?page=${page}&limit=100`, { credentials: 'include' })
+      const d = await r.json()
+      setMythos(d.mythos || [])
+      setTotal(d.total || 0)
+      setLastUpdatedAt(Date.now())
+    } catch { /* ignore */ }
+    finally {
+      setLoading(false)
+      setRefreshing(false)
+      inFlightRef.current = false
+    }
+  }, [page, mythos.length])
+
+  useEffect(() => { void fetchMythos() }, [page])
 
   useEffect(() => {
-    setLoading(true)
-    fetch(`/api/admin/mythos?page=${page}&limit=100`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => { setMythos(d.mythos || []); setTotal(d.total || 0); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [page])
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchMythos()
+    }, 10000)
+    return () => clearInterval(id)
+  }, [fetchMythos])
 
   const thCls = "px-4 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-text-secondary"
   const tdCls = "px-4 py-3 text-sm"
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-xl font-black text-white">Analyses <span className="text-text-secondary font-normal text-base">({total})</span></h1>
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={fetchMythos} />
       </div>
 
       <div className="rounded-2xl overflow-hidden" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>
