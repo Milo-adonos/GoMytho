@@ -5,6 +5,23 @@ type AspectRatio = '9:16' | '16:9'
 
 const KIE_ENDPOINT = 'https://api.kie.ai/api/v1/jobs/createTask'
 
+async function toDataUrlFromUrl(url: string): Promise<string | null> {
+  try {
+    if (!url) return null
+    if (url.startsWith('data:image/')) return url
+    const response = await axios.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      maxRedirects: 5,
+    })
+    const contentType = String(response.headers['content-type'] || 'image/jpeg')
+    const base64 = Buffer.from(response.data).toString('base64')
+    return `data:${contentType};base64,${base64}`
+  } catch {
+    return null
+  }
+}
+
 function extractImageUrlFromAny(input: unknown): string | null {
   const seen = new WeakSet<object>()
   const queue: unknown[] = [input]
@@ -161,7 +178,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const immediateImageUrl = extractImageUrlFromAny(data)
     if (immediateImageUrl) {
-      return res.status(200).json({ imageUrl: immediateImageUrl, immediate: true })
+      const previewDataUrl = await toDataUrlFromUrl(immediateImageUrl)
+      return res.status(200).json({ imageUrl: immediateImageUrl, previewDataUrl, immediate: true })
     }
 
     const providerCode = Number(data?.code ?? data?.statusCode ?? 200)
@@ -224,7 +242,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
         const imageUrlOut = maybeUrl || bestEffortUrl
-        if (imageUrlOut) return res.status(200).json({ imageUrl: imageUrlOut })
+        if (imageUrlOut) {
+          const previewDataUrl = await toDataUrlFromUrl(imageUrlOut)
+          return res.status(200).json({ imageUrl: imageUrlOut, previewDataUrl })
+        }
         successWithoutUrlCount += 1
         if (successWithoutUrlCount < 15) continue
         return res.status(502).json({ error: 'Image URL not found', raw: normalized })

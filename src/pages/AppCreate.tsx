@@ -8,6 +8,7 @@ import AspectRatioSelector from '@/components/AspectRatioSelector'
 
 const CREDITS_PER_IMAGE = 8
 const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
+const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
 
 export default function AppCreate() {
   const navigate = useNavigate()
@@ -229,13 +230,19 @@ export default function AppCreate() {
       setStep('Stabilisation du résultat...')
       const stableUrlRaw = await persistGeneratedImage(url, activeUser.id)
       const stableUrl = normalizeStorageUrl(stableUrlRaw)
-      setResultUrl(stableUrl)
       const previewDataUrl = await urlToDataUrl(url) || await urlToDataUrl(stableUrl)
+      if (!previewDataUrl) {
+        throw new Error('Impossible de copier localement l’image générée')
+      }
+      // Affichage prioritaire 100% local (copie de l'image IA) pour éviter tout 404 distant.
+      setResultUrl(previewDataUrl)
       setResultPreviewDataUrl(previewDataUrl)
       saveLocalCreation(activeUser.id, stableUrl, prompt, previewDataUrl)
 
       // Sauvegarde DB NON bloquante
-      const insertRes = await supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: stableUrl, prompt }])
+      const insertRes = USE_MYTHOS_TABLE
+        ? await supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: stableUrl, prompt }])
+        : { error: null as { message?: string } | null }
       let updateErrorMessage: string | undefined
       if (USE_USERS_TABLE) {
         const updateRes = await supabase.from('users').update({ credits_remaining: availableCredits - CREDITS_PER_IMAGE }).eq('id', activeUser.id)

@@ -3,6 +3,8 @@ import { useNavigate, useOutletContext } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, Mytho, User } from '@/lib/supabase'
 
+const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
+
 type LocalMytho = Mytho & {
   preview_data_url?: string
 }
@@ -64,6 +66,11 @@ export default function AppCreations() {
     if (!user) return
     setLoading(true)
     const localList = loadLocalMythos(user.id)
+    if (!USE_MYTHOS_TABLE) {
+      setMythos(localList)
+      setLoading(false)
+      return
+    }
     const fetchMythos = async () => {
       try {
         const { data } = await supabase.from('mythos').select('*').eq('user_id', user.id)
@@ -111,6 +118,15 @@ export default function AppCreations() {
             saveLocalMythos(user.id, next)
             return next
           })
+          // Si une image distante a déjà été marquée "failed",
+          // on la réactive dès qu'un preview local est disponible.
+          setFailedImages((prev) => {
+            const next = { ...prev }
+            updates.forEach((u) => {
+              if (u.preview && next[u.key]) delete next[u.key]
+            })
+            return next
+          })
         })()
         setLoading(false)
       } catch {
@@ -124,7 +140,9 @@ export default function AppCreations() {
   }, [user?.id])
 
   const handleDelete = async (id: string) => {
-    await supabase.from('mythos').delete().eq('id', id)
+    if (USE_MYTHOS_TABLE) {
+      await supabase.from('mythos').delete().eq('id', id)
+    }
     setMythos(m => {
       const next = m.filter(x => x.id !== id)
       if (user?.id) saveLocalMythos(user.id, next)
@@ -232,7 +250,7 @@ export default function AppCreations() {
             onClick={() => setSelected(m)}
           >
             <div className="aspect-square bg-secondary-bg relative">
-              {(m.preview_data_url || m.image_url) && !failedImages[itemKey] ? (
+              {(m.preview_data_url || (!m.preview_data_url && m.image_url && !failedImages[itemKey])) ? (
                 <img
                   src={m.preview_data_url || m.image_url}
                   alt={m.prompt}
@@ -286,7 +304,7 @@ export default function AppCreations() {
               style={{ background: '#141826', border: '1px solid rgba(198,255,60,0.15)' }}
               onClick={e => e.stopPropagation()}
             >
-              {(selected.preview_data_url || selected.image_url) && !failedImages[selected.id || selected.image_url] && (
+              {(selected.preview_data_url || (!selected.preview_data_url && selected.image_url && !failedImages[selected.id || selected.image_url])) && (
                 <img
                   src={selected.preview_data_url || selected.image_url}
                   alt={selected.prompt}

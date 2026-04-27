@@ -8,11 +8,51 @@ import { generateImage, uploadToSupabase, persistGeneratedImage } from '@/lib/ki
 import type { AspectRatio } from '@/lib/kie-api'
 
 const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
+const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
 
 const PLAN_CONFIG = {
   weekly:  { credits: 160, label: 'hebdomadaire' },  // 20 images × 8 crédits
   monthly: { credits: 560, label: 'mensuel' },        // 70 images × 8 crédits
   free:    { credits: 3,   label: 'gratuit' },
+}
+
+function normalizeStorageUrl(url: string) {
+  if (!url) return url
+  return url
+    .replace('/object/public/mythos%20/', '/object/public/mythos/')
+    .replace('/object/public/mythos%2520/', '/object/public/mythos/')
+}
+
+async function toDataUrl(url: string): Promise<string | null> {
+  if (!url) return null
+  if (url.startsWith('data:image/')) return url
+  try {
+    const response = await fetch('/api/image-copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl: url }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) return null
+    return typeof payload?.dataUrl === 'string' ? payload.dataUrl : null
+  } catch {
+    return null
+  }
+}
+
+function saveLocalCreation(userId: string, imageUrl: string, prompt: string, previewDataUrl?: string | null) {
+  const key = `gomytho_creations_${userId}`
+  const raw = localStorage.getItem(key)
+  const list = raw ? JSON.parse(raw) as Array<{ id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }> : []
+  const entry = {
+    id: `local-${Date.now()}`,
+    user_id: userId,
+    image_url: imageUrl,
+    prompt,
+    created_at: new Date().toISOString(),
+    preview_data_url: previewDataUrl || undefined,
+  }
+  localStorage.setItem(key, JSON.stringify([entry, ...list].slice(0, 200)))
 }
 
 export default function Signup() {
@@ -93,12 +133,16 @@ export default function Signup() {
               (s) => setGenStep(s)
             )
 
-            const stableUrl = await persistGeneratedImage(resultUrl, userId)
+            const stableUrl = normalizeStorageUrl(await persistGeneratedImage(resultUrl, userId))
+            const previewDataUrl = await toDataUrl(resultUrl) || await toDataUrl(stableUrl)
 
             setGenStep('Sauvegarde...')
-            await supabase.from('mythos').insert([{
-              user_id: userId, image_url: stableUrl, prompt: pendingPrompt
-            }])
+            if (USE_MYTHOS_TABLE) {
+              await supabase.from('mythos').insert([{
+                user_id: userId, image_url: stableUrl, prompt: pendingPrompt
+              }])
+            }
+            saveLocalCreation(userId, stableUrl, pendingPrompt, previewDataUrl)
 
             // Nettoyer
             localStorage.removeItem('gomytho_pending_image')

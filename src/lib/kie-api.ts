@@ -212,6 +212,10 @@ export async function generateMytho(
     })
     const payload = await response.json().catch(() => ({}))
     if (response.ok) {
+      if (payload?.previewDataUrl && typeof payload.previewDataUrl === 'string') {
+        onProgress?.('Mytho prêt !')
+        return payload.previewDataUrl as string
+      }
       if (payload?.imageUrl) {
         onProgress?.('Mytho prêt !')
         return payload.imageUrl as string

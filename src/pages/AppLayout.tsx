@@ -6,8 +6,48 @@ import type { AspectRatio } from '@/lib/kie-api'
 
 const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
 const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
+const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
 
 export interface AppUser extends User {}
+
+function normalizeStorageUrl(url: string) {
+  if (!url) return url
+  return url
+    .replace('/object/public/mythos%20/', '/object/public/mythos/')
+    .replace('/object/public/mythos%2520/', '/object/public/mythos/')
+}
+
+async function toDataUrl(url: string): Promise<string | null> {
+  if (!url) return null
+  if (url.startsWith('data:image/')) return url
+  try {
+    const response = await fetch('/api/image-copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl: url }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) return null
+    return typeof payload?.dataUrl === 'string' ? payload.dataUrl : null
+  } catch {
+    return null
+  }
+}
+
+function saveLocalCreation(userId: string, imageUrl: string, prompt: string, previewDataUrl?: string | null) {
+  const key = `gomytho_creations_${userId}`
+  const raw = localStorage.getItem(key)
+  const list = raw ? JSON.parse(raw) as Array<{ id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }> : []
+  const entry = {
+    id: `local-${Date.now()}`,
+    user_id: userId,
+    image_url: imageUrl,
+    prompt,
+    created_at: new Date().toISOString(),
+    preview_data_url: previewDataUrl || undefined,
+  }
+  localStorage.setItem(key, JSON.stringify([entry, ...list].slice(0, 200)))
+}
 
 async function tryAutoGenerate(userId: string) {
   const pendingImage = localStorage.getItem('gomytho_pending_image')
@@ -23,8 +63,12 @@ async function tryAutoGenerate(userId: string) {
       { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
       () => {}
     )
-    const stableUrl = await persistGeneratedImage(resultUrl, userId)
-    await supabase.from('mythos').insert([{ user_id: userId, image_url: stableUrl, prompt: pendingPrompt }])
+    const stableUrl = normalizeStorageUrl(await persistGeneratedImage(resultUrl, userId))
+    const previewDataUrl = await toDataUrl(resultUrl) || await toDataUrl(stableUrl)
+    if (USE_MYTHOS_TABLE) {
+      await supabase.from('mythos').insert([{ user_id: userId, image_url: stableUrl, prompt: pendingPrompt }])
+    }
+    saveLocalCreation(userId, stableUrl, pendingPrompt, previewDataUrl)
     localStorage.removeItem('gomytho_pending_image')
     localStorage.removeItem('gomytho_pending_prompt')
     localStorage.removeItem('gomytho_pending_ratio')
