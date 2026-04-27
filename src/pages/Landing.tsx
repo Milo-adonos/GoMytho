@@ -172,13 +172,13 @@ export default function Landing() {
           <span className="text-2xl font-black text-lime" style={{ textShadow: '0 0 20px rgba(198,255,60,0.4)' }}>
             GoMytho
           </span>
-          <button
-            onClick={() => navigate('/login')}
-            className="text-lime text-sm font-bold px-4 py-2 rounded-full border active:scale-95 transition-all"
-            style={{ borderColor: 'rgba(198,255,60,0.3)', background: 'rgba(198,255,60,0.06)' }}
+          <a
+            href="/login"
+            className="text-lime text-sm font-bold px-4 py-2 rounded-full border transition-all active:scale-95"
+            style={{ borderColor: 'rgba(198,255,60,0.4)', background: 'rgba(198,255,60,0.08)' }}
           >
-            Se connecter
-          </button>
+            Se connecter →
+          </a>
         </div>
       </header>
 
