@@ -172,6 +172,47 @@ function adminDevApiPlugin() {
           return
         }
 
+        if (req.method === 'POST' && req.url === '/api/image-copy') {
+          let body = ''
+          req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+          req.on('end', async () => {
+            try {
+              const { imageUrl } = JSON.parse(body || '{}')
+              const target = String(imageUrl || '').trim()
+              if (!/^https?:\/\//i.test(target) && !target.startsWith('data:image/')) {
+                res.statusCode = 400
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ error: 'Invalid imageUrl' }))
+                return
+              }
+
+              if (target.startsWith('data:image/')) {
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ dataUrl: target }))
+                return
+              }
+
+              const fetched = await fetch(target)
+              if (!fetched.ok) {
+                res.statusCode = 502
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ error: `Fetch failed: ${fetched.status}` }))
+                return
+              }
+              const contentType = fetched.headers.get('content-type') || 'image/jpeg'
+              const arr = await fetched.arrayBuffer()
+              const base64 = Buffer.from(arr).toString('base64')
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ dataUrl: `data:${contentType};base64,${base64}` }))
+            } catch {
+              res.statusCode = 500
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Image copy failed' }))
+            }
+          })
+          return
+        }
+
         if (req.url?.startsWith('/api/admin/')) {
           const cookies = req.headers.cookie || ''
           if (!cookies.includes('admin_token=dev_token_valid')) {

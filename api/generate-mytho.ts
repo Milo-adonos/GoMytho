@@ -62,9 +62,55 @@ function extractImageUrlFromAny(input: unknown): string | null {
           if (normalized) return normalized
         }
       }
+      const base64Keys = ['b64_json', 'base64', 'imageBase64', 'resultBase64']
+      for (const k of base64Keys) {
+        const v = obj[k]
+        if (typeof v === 'string' && v.length > 1000) {
+          return v.startsWith('data:image/')
+            ? v
+            : `data:image/jpeg;base64,${v}`
+        }
+      }
       Object.values(obj).forEach((v) => queue.push(v))
     }
   }
+  return null
+}
+
+function extractTaskIdFromAny(input: unknown): string | null {
+  const seen = new WeakSet<object>()
+  const queue: unknown[] = [input]
+  const idRegex = /\b(task_[a-zA-Z0-9_-]{6,}|job_[a-zA-Z0-9_-]{6,})\b/
+
+  while (queue.length) {
+    const current = queue.shift()
+    if (!current) continue
+
+    if (typeof current === 'string') {
+      try { queue.push(JSON.parse(current)) } catch {}
+      const m = current.match(idRegex)
+      if (m?.[1]) return m[1]
+      continue
+    }
+
+    if (Array.isArray(current)) {
+      current.forEach((v) => queue.push(v))
+      continue
+    }
+
+    if (typeof current === 'object') {
+      const obj = current as Record<string, unknown>
+      if (seen.has(obj)) continue
+      seen.add(obj)
+      const keys = ['task_id', 'taskId', 'id', 'job_id', 'jobId', 'record_id', 'recordId']
+      for (const k of keys) {
+        const v = obj[k]
+        if (typeof v === 'string' && v.trim()) return v.trim()
+      }
+      Object.values(obj).forEach((v) => queue.push(v))
+    }
+  }
+
   return null
 }
 
@@ -113,11 +159,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       timeout: 60000,
     })
 
-    const taskId: string =
-      data?.task_id || data?.id || data?.taskId || data?.data?.task_id || data?.data?.id || data?.data?.taskId
+    const immediateImageUrl = extractImageUrlFromAny(data)
+    if (immediateImageUrl) {
+      return res.status(200).json({ imageUrl: immediateImageUrl, immediate: true })
+    }
+
+    const providerCode = Number(data?.code ?? data?.statusCode ?? 200)
+    const providerMsg = String(data?.msg || data?.message || data?.error || '').trim()
+    if (providerCode !== 200) {
+      const isCreditError =
+        providerCode === 402 ||
+        /credits?\s+insufficient|balance.*enough|top up/i.test(providerMsg)
+      if (isCreditError) {
+        return res.status(402).json({
+          error: 'Kie credits insufficient',
+          message: 'Crédits Kie insuffisants. Recharge le solde API Kie pour générer.',
+          providerCode,
+          providerMsg,
+        })
+      }
+      return res.status(502).json({
+        error: 'Kie createTask failed',
+        message: providerMsg || `provider error ${providerCode}`,
+        providerCode,
+      })
+    }
+
+    const taskId = extractTaskIdFromAny(data)
 
     if (!taskId) {
-      return res.status(502).json({ error: `Kie task_id missing`, raw: data })
+      return res.status(502).json({
+        error: `Kie task_id missing`,
+        message: data?.msg || data?.message || data?.error || 'unknown error',
+        raw: data,
+      })
     }
 
     const maxAttempts = 120
@@ -166,7 +241,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(504).json({ error: 'Timeout waiting for Kie task result', taskId })
   } catch (error: any) {
-    console.error('generate-mytho api error:', error?.message || error)
-    return res.status(500).json({ error: error?.message || 'Server generation error' })
+    const status = error?.response?.status
+    const providerData = error?.response?.data
+    console.error('generate-mytho api error:', {
+      message: error?.message || error,
+      status,
+      providerData,
+    })
+    return res.status(500).json({
+      error: error?.message || 'Server generation error',
+      status,
+      providerData,
+    })
   }
 }

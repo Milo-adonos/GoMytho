@@ -34,24 +34,118 @@ export default function AppCreate() {
       }
     }
   }, [searchParams])
+
+  useEffect(() => {
+    return () => {
+      if (imagePreview?.startsWith('blob:')) {
+        URL.revokeObjectURL(imagePreview)
+      }
+    }
+  }, [imagePreview])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isConverting, setIsConverting] = useState(false)
   const [step, setStep] = useState('')
   const [resultUrl, setResultUrl] = useState<string | null>(null)
+  const [resultPreviewDataUrl, setResultPreviewDataUrl] = useState<string | null>(null)
+
+  const normalizeStorageUrl = (url: string) => {
+    if (!url) return url
+    return url
+      .replace('/object/public/mythos%20/', '/object/public/mythos/')
+      .replace('/object/public/mythos%2520/', '/object/public/mythos/')
+  }
+
+  const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
+    const res = await fetch(dataUrl)
+    return res.blob()
+  }
+
+  const downloadBlob = async (blob: Blob, filename: string) => {
+    const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
+    const canShare = typeof navigator !== 'undefined' && 'canShare' in navigator && (navigator as any).canShare?.({ files: [file] })
+    if (canShare && 'share' in navigator) {
+      await (navigator as any).share({ files: [file], title: 'GoMytho', text: 'Ton mytho est prêt' })
+      return
+    }
+    const objectUrl = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(objectUrl)
+  }
+
+  const forceDownload = async (
+    url: string,
+    previewDataUrl?: string | null,
+    filename = `mytho-${Date.now()}.jpg`
+  ) => {
+    if (!url && !previewDataUrl) return
+    try {
+      if (previewDataUrl?.startsWith('data:image/')) {
+        const blob = await dataUrlToBlob(previewDataUrl)
+        await downloadBlob(blob, filename)
+        return
+      }
+      const response = await fetch(url, { mode: 'cors' })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      await downloadBlob(blob, filename)
+    } catch (error) {
+      console.error('download failed', error)
+      alert('Le fichier n’est plus disponible au téléchargement (404). Regénère un nouveau mytho.')
+    }
+  }
 
   const cachedCreditsRaw = Number(localStorage.getItem('gomytho_user_credits') || 0)
   const cachedCredits = Number.isFinite(cachedCreditsRaw) ? cachedCreditsRaw : 0
   const credits = Math.max(user?.credits_remaining ?? 0, cachedCredits)
   const canGenerate = !!image && !!prompt.trim() && !isGenerating && !isConverting
 
-  const saveLocalCreation = (userId: string, imageUrl: string, userPrompt: string) => {
+  const urlToDataUrl = async (url: string): Promise<string | null> => {
+    try {
+      if (url.startsWith('data:image/')) return url
+      const response = await fetch(url, { mode: 'cors' })
+      if (!response.ok) return null
+      const blob = await response.blob()
+      return await new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : null)
+        reader.onerror = () => resolve(null)
+        reader.readAsDataURL(blob)
+      })
+    } catch {
+      try {
+        const proxyRes = await fetch('/api/image-copy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageUrl: url }),
+        })
+        const payload = await proxyRes.json().catch(() => ({}))
+        if (!proxyRes.ok) return null
+        return typeof payload?.dataUrl === 'string' ? payload.dataUrl : null
+      } catch {
+        return null
+      }
+    }
+  }
+
+  const saveLocalCreation = (
+    userId: string,
+    imageUrl: string,
+    userPrompt: string,
+    previewDataUrl?: string | null
+  ) => {
     const key = `gomytho_creations_${userId}`
     const raw = localStorage.getItem(key)
-    const list = raw ? JSON.parse(raw) as Array<{ id: string; user_id: string; image_url: string; prompt: string; created_at: string }> : []
+    const list = raw ? JSON.parse(raw) as Array<{ id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }> : []
     const entry = {
       id: `local-${Date.now()}`,
       user_id: userId,
       image_url: imageUrl,
+      preview_data_url: previewDataUrl || undefined,
       prompt: userPrompt,
       created_at: new Date().toISOString(),
     }
@@ -63,8 +157,9 @@ export default function AppCreate() {
     setIsConverting(true)
     try {
       const { file: jpeg, preview } = await convertToJpeg(file)
+      const safePreview = preview || URL.createObjectURL(jpeg || file)
       setImage(jpeg)
-      setImagePreview(preview)
+      setImagePreview(safePreview)
     } finally {
       setIsConverting(false)
     }
@@ -77,6 +172,7 @@ export default function AppCreate() {
     }
     setIsGenerating(true)
     setResultUrl(null)
+    setResultPreviewDataUrl(null)
     try {
       let activeUser = user
       if (!activeUser) {
@@ -131,9 +227,12 @@ export default function AppCreate() {
       }
 
       setStep('Stabilisation du résultat...')
-      const stableUrl = await persistGeneratedImage(url, activeUser.id)
+      const stableUrlRaw = await persistGeneratedImage(url, activeUser.id)
+      const stableUrl = normalizeStorageUrl(stableUrlRaw)
       setResultUrl(stableUrl)
-      saveLocalCreation(activeUser.id, stableUrl, prompt)
+      const previewDataUrl = await urlToDataUrl(url) || await urlToDataUrl(stableUrl)
+      setResultPreviewDataUrl(previewDataUrl)
+      saveLocalCreation(activeUser.id, stableUrl, prompt, previewDataUrl)
 
       // Sauvegarde DB NON bloquante
       const insertRes = await supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: stableUrl, prompt }])
@@ -149,8 +248,7 @@ export default function AppCreate() {
       setUser({ ...activeUser, credits_remaining: availableCredits - CREDITS_PER_IMAGE })
       localStorage.setItem('gomytho_user_credits', String(availableCredits - CREDITS_PER_IMAGE))
 
-      // Rediriger vers les résultats après 2 secondes
-      setTimeout(() => { window.location.href = '/resultats' }, 2000)
+      // On reste sur la page pour afficher le résultat et laisser télécharger directement.
     } catch (err: unknown) {
       console.error(err)
       const msg = err instanceof Error ? err.message : 'Erreur inconnue'
@@ -199,16 +297,19 @@ export default function AppCreate() {
 
       {/* Résultat */}
       <AnimatePresence>
-        {resultUrl && (
+        {(resultUrl || resultPreviewDataUrl) && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mb-5 rounded-2xl overflow-hidden" style={{ border: '1.5px solid rgba(198,255,60,0.4)', boxShadow: '0 0 30px rgba(198,255,60,0.15)' }}>
-            <img src={resultUrl} alt="Résultat" className="w-full" />
+            <img src={resultPreviewDataUrl || resultUrl || ''} alt="Résultat" className="w-full" />
             <div className="px-4 pt-3 pb-1 text-center" style={{ background: '#141826' }}>
-              <p className="text-lime text-xs font-bold animate-pulse">✅ Sauvegardé — redirection vers tes résultats...</p>
+              <p className="text-lime text-xs font-bold animate-pulse">✅ Mytho prêt — tu peux le télécharger maintenant</p>
             </div>
             <div className="p-4 flex gap-3" style={{ background: '#141826' }}>
-              <a href={resultUrl} download={`mytho-${Date.now()}.jpg`} className="flex-1 py-3 rounded-xl font-black bg-lime text-primary-bg text-center active:scale-95 transition-all text-sm">
+              <button
+                onClick={() => forceDownload(resultUrl || '', resultPreviewDataUrl)}
+                className="flex-1 py-3 rounded-xl font-black bg-lime text-primary-bg text-center active:scale-95 transition-all text-sm"
+              >
                 ⬇️ Télécharger
-              </a>
+              </button>
               <a href="/resultats" className="flex-1 py-3 rounded-xl font-bold text-sm active:scale-95 transition-all text-center" style={{ background: 'rgba(198,255,60,0.08)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.2)' }}>
                 🎨 Voir tout
               </a>

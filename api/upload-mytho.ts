@@ -40,7 +40,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (authErr || !authData.user) return res.status(401).json({ error: 'Invalid session' })
 
     const { bucketName, fileName, contentType, dataUrl } = req.body || {}
-    if (!bucketName || !fileName || !dataUrl) {
+    const safeBucketName = String(bucketName || 'mythos').trim() || 'mythos'
+    if (!safeBucketName || !fileName || !dataUrl) {
       return res.status(400).json({ error: 'Paramètres manquants' })
     }
 
@@ -50,11 +51,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const mimeType = String(contentType || 'image/jpeg')
 
     let upload = await adminClient.storage
-      .from(bucketName)
+      .from(safeBucketName)
       .upload(forcedPath, buffer, { contentType: mimeType, upsert: false })
 
     if (upload.error && /bucket.*not found/i.test(upload.error.message || '')) {
-      const createBucket = await adminClient.storage.createBucket(bucketName, {
+      const createBucket = await adminClient.storage.createBucket(safeBucketName, {
         public: true,
         fileSizeLimit: '20MB',
       })
@@ -62,7 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(500).json({ error: `Bucket introuvable: ${createBucket.error.message}` })
       }
       upload = await adminClient.storage
-        .from(bucketName)
+        .from(safeBucketName)
         .upload(forcedPath, buffer, { contentType: mimeType, upsert: false })
     }
 
@@ -70,7 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: upload.error.message })
     }
 
-    const { data: publicData } = adminClient.storage.from(bucketName).getPublicUrl(forcedPath)
+    const { data: publicData } = adminClient.storage.from(safeBucketName).getPublicUrl(forcedPath)
     return res.status(200).json({ publicUrl: publicData.publicUrl })
   } catch (error) {
     console.error('upload-mytho error:', error)

@@ -97,6 +97,63 @@ function extractImageUrlFromAny(input: unknown): string | null {
         }
       }
 
+      // Fallback base64 (certaines réponses Kie n'ont pas d'URL, seulement un b64)
+      const base64Keys = ['b64_json', 'base64', 'imageBase64', 'resultBase64']
+      for (const key of base64Keys) {
+        const v = obj[key]
+        if (typeof v === 'string' && v.length > 1000) {
+          return v.startsWith('data:image/')
+            ? v
+            : `data:image/jpeg;base64,${v}`
+        }
+      }
+
+      Object.values(obj).forEach((v) => queue.push(v))
+    }
+  }
+
+  return null
+}
+
+function extractTaskIdFromAny(input: unknown): string | null {
+  const seen = new WeakSet<object>()
+  const queue: unknown[] = [input]
+  const idRegex = /\b(task_[a-zA-Z0-9_-]{6,}|job_[a-zA-Z0-9_-]{6,})\b/
+
+  while (queue.length) {
+    const current = queue.shift()
+    if (!current) continue
+
+    if (typeof current === 'string') {
+      try {
+        const parsed = JSON.parse(current)
+        queue.push(parsed)
+      } catch {
+        // ignore JSON parse errors
+      }
+      const m = current.match(idRegex)
+      if (m?.[1]) return m[1]
+      continue
+    }
+
+    if (Array.isArray(current)) {
+      current.forEach((item) => queue.push(item))
+      continue
+    }
+
+    if (typeof current === 'object') {
+      const obj = current as Record<string, unknown>
+      if (seen.has(obj)) continue
+      seen.add(obj)
+
+      const directKeys = [
+        'task_id', 'taskId', 'id', 'job_id', 'jobId', 'record_id', 'recordId',
+      ]
+      for (const key of directKeys) {
+        const v = obj[key]
+        if (typeof v === 'string' && v.trim()) return v.trim()
+      }
+
       Object.values(obj).forEach((v) => queue.push(v))
     }
   }
@@ -145,6 +202,7 @@ export async function generateMytho(
   onProgress?: (step: string) => void
 ): Promise<string> {
   // 0) Priorité au backend (plus stable que le client navigateur)
+  let shouldFallbackClient = false
   try {
     onProgress?.('Envoi sécurisé...')
     const response = await fetch('/api/generate-mytho', {
@@ -152,15 +210,26 @@ export async function generateMytho(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userPrompt, imageUrl, aspectRatio }),
     })
+    const payload = await response.json().catch(() => ({}))
     if (response.ok) {
-      const payload = await response.json()
       if (payload?.imageUrl) {
         onProgress?.('Mytho prêt !')
         return payload.imageUrl as string
       }
+      throw new Error('Réponse serveur invalide : image manquante')
     }
-  } catch {
-    // fallback client ci-dessous
+    // En local Vite, /api/* peut renvoyer 404 => fallback client.
+    if (response.status === 404) {
+      shouldFallbackClient = true
+    } else {
+      throw new Error(
+        payload?.message ||
+        payload?.error ||
+        `Génération serveur indisponible (${response.status})`
+      )
+    }
+  } catch (err) {
+    if (!shouldFallbackClient) throw err
   }
 
   if (!KIE_API_KEY) throw new Error('Clé API Kie.ai manquante')
@@ -195,16 +264,25 @@ export async function generateMytho(
     timeout: 60000,
   })
 
-  const taskId: string =
-    data?.task_id ||
-    data?.id ||
-    data?.taskId ||
-    data?.data?.task_id ||
-    data?.data?.id ||
-    data?.data?.taskId
+  const immediateImageUrl = extractImageUrlFromAny(data)
+  if (immediateImageUrl) {
+    onProgress?.('Mytho prêt !')
+    return immediateImageUrl
+  }
+
+  const providerCode = Number(data?.code ?? data?.statusCode ?? 200)
+  const providerMsg = String(data?.msg || data?.message || data?.error || '').trim()
+  if (providerCode !== 200) {
+    if (providerCode === 402 || /credits?\s+insufficient|balance.*enough|top up/i.test(providerMsg)) {
+      throw new Error('Kie.ai: crédits API insuffisants. Recharge le solde Kie pour relancer la génération.')
+    }
+    throw new Error(`Kie.ai: ${providerMsg || `erreur provider (${providerCode})`}`)
+  }
+
+  const taskId = extractTaskIdFromAny(data)
 
   if (!taskId) {
-    const apiMsg = data?.message || data?.error || 'task_id introuvable'
+    const apiMsg = data?.msg || data?.message || data?.error || 'task_id introuvable'
     throw new Error(`Kie.ai: ${apiMsg}`)
   }
 
@@ -284,7 +362,7 @@ export async function generateMytho(
 // ─── UPLOAD VERS SUPABASE STORAGE ────────────────────────────────────────────
 export async function uploadToSupabase(file: File, userId: string): Promise<string> {
   const { supabase } = await import('./supabase')
-  const bucketName = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos'
+  const bucketName = String(import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
 
   const fileExt = file.name.split('.').pop() || 'jpg'
   const fileName = `${userId}/${Date.now()}.${fileExt}`
