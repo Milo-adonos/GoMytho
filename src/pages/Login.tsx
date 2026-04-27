@@ -62,10 +62,7 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // /auth/callback est notre URL de redirect centralisée. C'est
-          // la SEULE à devoir figurer dans la "Redirect URLs" allowlist
-          // du dashboard Supabase. Elle redirige ensuite vers /resultats.
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `${window.location.origin}/resultats`,
         },
       })
       if (error) throw error

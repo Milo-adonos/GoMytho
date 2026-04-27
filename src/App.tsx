@@ -7,7 +7,6 @@ const Analyzing = lazy(() => import('./pages/Analyzing'))
 const Unlock = lazy(() => import('./pages/Unlock'))
 const Signup = lazy(() => import('./pages/Signup'))
 const Login = lazy(() => import('./pages/Login'))
-const AuthCallback = lazy(() => import('./pages/AuthCallback'))
 
 // App interne
 const AppLayout = lazy(() => import('./pages/AppLayout'))
@@ -44,7 +43,6 @@ function App() {
         <Route path="/choixoffre" element={<Unlock />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/auth/callback" element={<AuthCallback />} />
 
         {/* App interne — layout avec bottom nav */}
         <Route element={<AppLayout />}>
