@@ -90,30 +90,23 @@ export default function Create() {
             <p className="text-text-secondary">Plus elle est nette, plus le résultat sera bluffant</p>
           </div>
 
-          {/* Zone d'upload — état initial (avant la photo 1) : un seul gros bloc */}
-          {!imagePreview ? (
-            <div
-              onDrop={handleDrop}
-              onDragOver={e => e.preventDefault()}
-              onClick={() => !isConverting && document.getElementById('file-upload')?.click()}
-              className="border-2 border-dashed rounded-3xl p-12 text-center active:scale-95 transition-all duration-200 cursor-pointer mb-8"
-              style={{ borderColor: 'rgba(198,255,60,0.3)', background: 'rgba(20,24,38,0.5)' }}
-            >
-              {isConverting ? (
-                <>
-                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mx-auto mb-3" />
-                  <p className="text-lime font-bold">Traitement de la photo...</p>
-                </>
-              ) : (
-                <>
-                  <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5"
-                    style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.2)' }}>
-                    <span className="text-4xl">📷</span>
-                  </div>
-                  <h3 className="text-xl font-bold mb-2">Clique pour sélectionner ta photo</h3>
-                  <p className="text-text-secondary text-sm">Galerie, caméra — tous formats acceptés</p>
-                </>
-              )}
+          {/* Zone d'upload — grille 2 colonnes (Sujet + Scène) toujours visible */}
+          <div
+            className="mb-6"
+            onDrop={handleDrop}
+            onDragOver={e => e.preventDefault()}
+          >
+            <div className="grid grid-cols-2 gap-3">
+              {/* Carte Photo 1 — Sujet */}
+              <PhotoCard
+                label="Photo 1"
+                sublabel="Sujet"
+                required
+                preview={imagePreview}
+                isConverting={isConverting}
+                onChange={() => { setImage(null); setImagePreview(null) }}
+                onClick={() => !isConverting && document.getElementById('file-upload')?.click()}
+              />
               <input
                 id="file-upload"
                 type="file"
@@ -121,57 +114,37 @@ export default function Create() {
                 onChange={async e => { if (e.target.files?.[0]) await handleFile(e.target.files[0]) }}
                 className="hidden"
               />
-            </div>
-          ) : (
-            // Une fois la photo 1 uploadée → grille 2 colonnes : Sujet + Scène
-            <div className="mb-6">
-              <div className="grid grid-cols-2 gap-3">
-                {/* Carte Photo 1 — Sujet */}
-                <PhotoCard
-                  label="Photo 1"
-                  sublabel="Sujet"
-                  required
-                  preview={imagePreview}
-                  isConverting={false}
-                  onChange={() => { setImage(null); setImagePreview(null) }}
-                  onClick={() => document.getElementById('file-upload')?.click()}
-                />
-                <input
-                  id="file-upload"
-                  type="file"
-                  accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
-                  onChange={async e => { if (e.target.files?.[0]) await handleFile(e.target.files[0]) }}
-                  className="hidden"
-                />
 
-                {/* Carte Photo 2 — Scène (optionnelle) */}
-                <PhotoCard
-                  label="Photo 2"
-                  sublabel="Scène"
-                  optional
-                  preview={imagePreview2}
-                  isConverting={isConverting2}
-                  onChange={removeImage2}
-                  onClick={() => !isConverting2 && document.getElementById('file-upload-2')?.click()}
-                />
-                <input
-                  id="file-upload-2"
-                  type="file"
-                  accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
-                  onChange={async e => { if (e.target.files?.[0]) await handleFile2(e.target.files[0]) }}
-                  className="hidden"
-                />
-              </div>
-
-              {/* Légende sous les deux cartes */}
-              <p className="mt-3 text-center text-xs text-text-secondary leading-relaxed">
-                {imagePreview2
-                  ? <>✨ <span className="text-lime font-semibold">Mode fusion activé</span> · l'IA placera ton sujet dans la scène</>
-                  : <>Ajoute une 2<sup>e</sup> photo pour fusionner — ex&nbsp;: <em>"Mets cet homme sur cette plage"</em></>
-                }
-              </p>
+              {/* Carte Photo 2 — Scène (optionnelle) */}
+              <PhotoCard
+                label="Photo 2"
+                sublabel="Scène"
+                optional
+                preview={imagePreview2}
+                isConverting={isConverting2}
+                onChange={removeImage2}
+                onClick={() => !isConverting2 && document.getElementById('file-upload-2')?.click()}
+              />
+              <input
+                id="file-upload-2"
+                type="file"
+                accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                onChange={async e => { if (e.target.files?.[0]) await handleFile2(e.target.files[0]) }}
+                className="hidden"
+              />
             </div>
-          )}
+
+            {/* Légende sous les deux cartes */}
+            <p className="mt-3 text-center text-xs text-text-secondary leading-relaxed">
+              {imagePreview2 ? (
+                <>✨ <span className="text-lime font-semibold">Mode fusion activé</span> · l'IA placera ton sujet dans la scène</>
+              ) : imagePreview ? (
+                <>Ajoute une 2<sup>e</sup> photo pour fusionner — ex&nbsp;: <em>"Mets cet homme sur cette plage"</em></>
+              ) : (
+                <>La <strong>Photo 1</strong> est ton sujet · la <strong>Photo 2</strong> (optionnelle) est la scène où le placer</>
+              )}
+            </p>
+          </div>
 
           {imagePreview && (
             <>

@@ -298,30 +298,21 @@ export default function AppCreate() {
         )}
       </AnimatePresence>
 
-      {/* Upload — état initial (avant photo 1) : un gros bloc cliquable */}
-      {!imagePreview ? (
-        <div
-          onClick={() => !isConverting && document.getElementById('file-upload-app')?.click()}
-          className="rounded-2xl p-10 text-center cursor-pointer active:scale-95 transition-all mb-5"
-          style={{ background: 'rgba(20,24,38,0.5)', border: '2px dashed rgba(198,255,60,0.2)' }}
-        >
-          {isConverting ? (
-            <>
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mx-auto mb-3" />
-              <p className="text-lime font-bold text-sm">Traitement de la photo...</p>
-            </>
-          ) : (
-            <>
-              <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl"
-                style={{ background: 'rgba(198,255,60,0.08)' }}
-              >
-                📷
-              </div>
-              <p className="font-bold mb-1">Sélectionne ta photo</p>
-              <p className="text-xs text-text-secondary">Galerie, caméra — tous formats acceptés</p>
-            </>
-          )}
+      {/* Upload — grille 2 colonnes Sujet + Scène (toujours affichée) */}
+      <div className="mb-5">
+        <div className="grid grid-cols-2 gap-3">
+          <PhotoCard
+            label="Photo 1"
+            sublabel="Sujet"
+            required
+            preview={imagePreview}
+            isConverting={isConverting}
+            onChange={() => {
+              setImage(null)
+              setImagePreview(null)
+            }}
+            onClick={() => !isConverting && document.getElementById('file-upload-app')?.click()}
+          />
           <input
             id="file-upload-app"
             type="file"
@@ -331,64 +322,39 @@ export default function AppCreate() {
               if (e.target.files?.[0]) await handleFile(e.target.files[0])
             }}
           />
-        </div>
-      ) : (
-        // Une fois la photo 1 uploadée : grille 2 colonnes Sujet + Scène
-        <div className="mb-5">
-          <div className="grid grid-cols-2 gap-3">
-            <PhotoCard
-              label="Photo 1"
-              sublabel="Sujet"
-              required
-              preview={imagePreview}
-              isConverting={false}
-              onChange={() => {
-                setImage(null)
-                setImagePreview(null)
-              }}
-              onClick={() => document.getElementById('file-upload-app')?.click()}
-            />
-            <input
-              id="file-upload-app"
-              type="file"
-              accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
-              className="hidden"
-              onChange={async (e) => {
-                if (e.target.files?.[0]) await handleFile(e.target.files[0])
-              }}
-            />
 
-            <PhotoCard
-              label="Photo 2"
-              sublabel="Scène"
-              optional
-              preview={imagePreview2}
-              isConverting={isConverting2}
-              onChange={removeImage2}
-              onClick={() => !isConverting2 && document.getElementById('file-upload-app-2')?.click()}
-            />
-            <input
-              id="file-upload-app-2"
-              type="file"
-              accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
-              className="hidden"
-              onChange={async (e) => {
-                if (e.target.files?.[0]) await handleFile2(e.target.files[0])
-              }}
-            />
-          </div>
-
-          <p className="mt-3 text-center text-[11px] text-text-secondary leading-relaxed">
-            {imagePreview2 ? (
-              <>
-                ✨ <span className="text-lime font-semibold">Mode fusion activé</span> · l'IA placera ton sujet dans la scène
-              </>
-            ) : (
-              <>Ajoute une 2<sup>e</sup> photo pour fusionner — ex&nbsp;: <em>"Mets cet homme sur cette plage"</em></>
-            )}
-          </p>
+          <PhotoCard
+            label="Photo 2"
+            sublabel="Scène"
+            optional
+            preview={imagePreview2}
+            isConverting={isConverting2}
+            onChange={removeImage2}
+            onClick={() => !isConverting2 && document.getElementById('file-upload-app-2')?.click()}
+          />
+          <input
+            id="file-upload-app-2"
+            type="file"
+            accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+            className="hidden"
+            onChange={async (e) => {
+              if (e.target.files?.[0]) await handleFile2(e.target.files[0])
+            }}
+          />
         </div>
-      )}
+
+        <p className="mt-3 text-center text-[11px] text-text-secondary leading-relaxed">
+          {imagePreview2 ? (
+            <>
+              ✨ <span className="text-lime font-semibold">Mode fusion activé</span> · l'IA placera ton sujet dans la scène
+            </>
+          ) : imagePreview ? (
+            <>Ajoute une 2<sup>e</sup> photo pour fusionner — ex&nbsp;: <em>"Mets cet homme sur cette plage"</em></>
+          ) : (
+            <>La <strong>Photo 1</strong> est ton sujet · la <strong>Photo 2</strong> (optionnelle) est la scène où le placer</>
+          )}
+        </p>
+      </div>
 
       {/* Format */}
       <div className="mb-4">
