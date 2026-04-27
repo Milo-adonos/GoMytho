@@ -13,7 +13,12 @@ export default function LoadingAnimation({ text, progress }: LoadingAnimationPro
         transition={{ duration: 2, repeat: Infinity }}
         className="mb-12"
       >
-        <h1 className="text-6xl font-black text-lime font-display">GoMytho.com</h1>
+        <h1
+          className="font-black text-lime font-display whitespace-nowrap leading-none"
+          style={{ fontSize: 'clamp(36px, 13vw, 72px)' }}
+        >
+          GoMytho.com
+        </h1>
       </motion.div>
 
       <div className="w-full max-w-md mb-6">
