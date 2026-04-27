@@ -74,7 +74,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Revenus par jour (nouveaux abonnés)
-    ;(newUsers30d || []).forEach(u => {
+    const newUsersList = newUsers30d || []
+    newUsersList.forEach(u => {
       const day = u.created_at.split('T')[0]
       if (dailyMap[day] !== undefined) {
         dailyMap[day].revenue += u.plan === 'weekly' ? WEEKLY_PRICE : MONTHLY_PRICE
@@ -82,7 +83,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
 
     // Mythos par jour
-    ;(mythos30d || []).forEach(m => {
+    const mythosList = mythos30d || []
+    mythosList.forEach(m => {
       const day = m.created_at.split('T')[0]
       if (dailyMap[day] !== undefined) {
         dailyMap[day].mythos += 1

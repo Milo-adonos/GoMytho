@@ -71,8 +71,10 @@ async function getDashboardData() {
     const churnRate = totalActiveUsers > 0 ? ((cancelledCount || 0) / totalActiveUsers) * 100 : 0
     const dailyMap: Record<string, { revenue: number; mythos: number }> = {}
     for (let i = 29; i >= 0; i--) { const d = new Date(now); d.setDate(now.getDate() - i); dailyMap[d.toISOString().split('T')[0]] = { revenue: 0, mythos: 0 } }
-    ;(newUsers30d || []).forEach((u: any) => { const day = u.created_at.split('T')[0]; if (dailyMap[day]) dailyMap[day].revenue += u.plan === 'weekly' ? WEEKLY_PRICE : MONTHLY_PRICE })
-    ;(mythos30d || []).forEach((m: any) => { const day = m.created_at.split('T')[0]; if (dailyMap[day]) dailyMap[day].mythos += 1 })
+    const newUsersList = newUsers30d || []
+    newUsersList.forEach((u: any) => { const day = u.created_at.split('T')[0]; if (dailyMap[day]) dailyMap[day].revenue += u.plan === 'weekly' ? WEEKLY_PRICE : MONTHLY_PRICE })
+    const mythosList = mythos30d || []
+    mythosList.forEach((m: any) => { const day = m.created_at.split('T')[0]; if (dailyMap[day]) dailyMap[day].mythos += 1 })
     const dailyChartData = Object.entries(dailyMap).map(([date, v]) => ({ date, ...v }))
     return { totalRevenue: +totalRevenue.toFixed(2), revenue30d: +revenue30d.toFixed(2), revenueGrowth: +revenueGrowth.toFixed(1), totalCost: +totalCost.toFixed(2), totalMythos, netProfit: +netProfit.toFixed(2), margin: +margin.toFixed(1), activeSubscribers: activeUsers.length, weeklySubscribers: weeklyUsers.length, monthlySubscribers: monthlyUsers.length, newSubscribers30d: (newUsers30d || []).length, newSubscribersGrowth: +revenueGrowth.toFixed(1), churnRate: +churnRate.toFixed(1), churnCount: cancelledCount || 0, dailyRevenue: dailyChartData, dailyMythos: dailyChartData }
   } catch (e) { console.error('[DEV] dashboard error:', e); return buildEmptyDashboard() }
@@ -159,6 +161,14 @@ function adminDevApiPlugin() {
           res.setHeader('Set-Cookie', `admin_token=; Path=/; Max-Age=0`)
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ success: true }))
+          return
+        }
+
+        if (req.method === 'POST' && req.url === '/api/stripe-portal') {
+          res.setHeader('Content-Type', 'application/json')
+          // En local, simule l'URL de portail Stripe
+          const url = process.env.VITE_STRIPE_PORTAL_URL || 'https://billing.stripe.com/p/login'
+          res.end(JSON.stringify({ url }))
           return
         }
 

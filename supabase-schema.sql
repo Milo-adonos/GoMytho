@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     email TEXT NOT NULL UNIQUE,
     stripe_customer_id TEXT,
     subscription_status TEXT DEFAULT 'inactive' CHECK (subscription_status IN ('active', 'inactive', 'cancelled')),
+    plan TEXT DEFAULT 'free' CHECK (plan IN ('weekly', 'monthly', 'free')),
     credits_remaining INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -42,6 +43,11 @@ CREATE POLICY "Users can update their own data"
     FOR UPDATE
     USING (auth.uid() = id);
 
+CREATE POLICY "Users can insert their own data"
+    ON public.users
+    FOR INSERT
+    WITH CHECK (auth.uid() = id);
+
 -- Policies pour mythos
 CREATE POLICY "Users can view their own mythos"
     ON public.mythos
@@ -59,20 +65,36 @@ CREATE POLICY "Users can delete their own mythos"
     USING (auth.uid() = user_id);
 
 -- Storage bucket pour les images
--- À créer manuellement dans l'interface Supabase Storage :
--- 1. Créer un bucket nommé "mythos"
--- 2. Le rendre public
--- 3. Configurer les policies suivantes :
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('mythos', 'mythos', true)
+ON CONFLICT (id) DO NOTHING;
 
--- Policy pour upload (INSERT)
--- Autoriser les utilisateurs authentifiés à uploader dans leur propre dossier
--- Pattern: {user_id}/*
+-- Policy upload: l'utilisateur upload dans son dossier {uid}/...
+CREATE POLICY IF NOT EXISTS "Authenticated users can upload own mythos"
+ON storage.objects
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  bucket_id = 'mythos'
+  AND split_part(name, '/', 1) = auth.uid()::text
+);
 
--- Policy pour lecture (SELECT)
--- Autoriser tout le monde à lire les images publiques
+-- Policy lecture publique
+CREATE POLICY IF NOT EXISTS "Public can read mythos"
+ON storage.objects
+FOR SELECT
+TO public
+USING (bucket_id = 'mythos');
 
--- Policy pour suppression (DELETE)
--- Autoriser les utilisateurs à supprimer uniquement leurs propres images
+-- Policy suppression: uniquement son dossier
+CREATE POLICY IF NOT EXISTS "Users can delete own mythos"
+ON storage.objects
+FOR DELETE
+TO authenticated
+USING (
+  bucket_id = 'mythos'
+  AND split_part(name, '/', 1) = auth.uid()::text
+);
 
 -- Fonction pour nettoyer les anciennes images (optionnel, à scheduler)
 CREATE OR REPLACE FUNCTION clean_old_mythos()
@@ -93,6 +115,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- Sécurise la création du trigger (évite doublon)
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW

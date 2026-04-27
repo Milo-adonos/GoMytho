@@ -88,10 +88,21 @@ export async function generateMytho(
       Authorization: `Bearer ${KIE_API_KEY}`,
       'Content-Type': 'application/json',
     },
+    timeout: 60000,
   })
 
-  const taskId: string = data.task_id || data.id
-  if (!taskId) throw new Error('Kie.ai n\'a pas retourné de task_id')
+  const taskId: string =
+    data?.task_id ||
+    data?.id ||
+    data?.taskId ||
+    data?.data?.task_id ||
+    data?.data?.id ||
+    data?.data?.taskId
+
+  if (!taskId) {
+    const apiMsg = data?.message || data?.error || 'task_id introuvable'
+    throw new Error(`Kie.ai: ${apiMsg}`)
+  }
 
   // ─── POLLING — toutes les 2s, timeout 2 minutes ───────────────────────────
   const maxAttempts = 60 // 60 × 2s = 120s = 2 minutes
@@ -105,17 +116,23 @@ export async function generateMytho(
     try {
       const { data: result } = await axios.get(
         `https://api.kie.ai/api/v1/jobs/${taskId}`,
-        { headers: { Authorization: `Bearer ${KIE_API_KEY}` } }
+        {
+          headers: { Authorization: `Bearer ${KIE_API_KEY}` },
+          timeout: 30000,
+        }
       )
 
-      const status: string = result.status
+      const normalized = result?.data || result
+      const status: string = normalized?.status || normalized?.task_status || normalized?.state
 
       if (status === 'completed' || status === 'succeeded' || status === 'success') {
         const imageUrl =
-          result.output?.image_url ||
-          result.output?.[0]?.url ||
-          result.result?.url ||
-          result.output_url
+          normalized?.output?.image_url ||
+          normalized?.output?.[0]?.url ||
+          normalized?.result?.url ||
+          normalized?.output_url ||
+          normalized?.data?.output?.image_url ||
+          normalized?.data?.result?.url
 
         if (!imageUrl) throw new Error('Image générée introuvable dans la réponse')
 
@@ -124,7 +141,7 @@ export async function generateMytho(
       }
 
       if (status === 'failed' || status === 'error') {
-        throw new Error(`La génération a échoué : ${result.error || 'raison inconnue'}`)
+        throw new Error(`La génération a échoué : ${normalized?.error || normalized?.message || 'raison inconnue'}`)
       }
 
       // statuts intermédiaires : 'pending', 'processing', 'running' → on continue
@@ -140,21 +157,82 @@ export async function generateMytho(
 // ─── UPLOAD VERS SUPABASE STORAGE ────────────────────────────────────────────
 export async function uploadToSupabase(file: File, userId: string): Promise<string> {
   const { supabase } = await import('./supabase')
+  const bucketName = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos'
 
   const fileExt = file.name.split('.').pop() || 'jpg'
   const fileName = `${userId}/${Date.now()}.${fileExt}`
 
-  const { error } = await supabase.storage
-    .from('mythos')
-    .upload(fileName, file, { contentType: file.type })
+  const doUpload = async () => {
+    return supabase.storage
+      .from(bucketName)
+      .upload(fileName, file, { contentType: file.type, upsert: false })
+  }
+
+  let { error } = await doUpload()
+
+  // Bucket manquant: essayer de le créer puis retenter une fois
+  if (error && /bucket.*not found/i.test(error.message || '')) {
+    const { error: createErr } = await supabase.storage.createBucket(bucketName, {
+      public: true,
+      fileSizeLimit: '20MB',
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'],
+    })
+
+    if (!createErr) {
+      const retry = await doUpload()
+      error = retry.error
+    } else {
+      throw new Error(
+        `Bucket Supabase introuvable (${bucketName}). Crée un bucket public nommé "${bucketName}" dans Supabase Storage.`
+      )
+    }
+  }
+
+  // Policy RLS ou autres blocages Storage côté client:
+  // fallback vers upload serveur (service role) pour éviter le blocage utilisateur.
+  if (error && /(row-level security|not allowed|permission|unauthorized|forbidden)/i.test(error.message || '')) {
+    const { data: sessionData } = await supabase.auth.getSession()
+    const token = sessionData?.session?.access_token
+    if (!token) throw new Error('Session utilisateur introuvable pour upload serveur.')
+
+    const dataUrl = await fileToDataUrl(file)
+    const response = await fetch('/api/upload-mytho', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        bucketName,
+        fileName,
+        contentType: file.type || 'image/jpeg',
+        dataUrl,
+      }),
+    })
+
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || !payload?.publicUrl) {
+      throw new Error(payload?.error || 'Upload serveur échoué')
+    }
+    return payload.publicUrl as string
+  }
 
   if (error) throw error
 
   const { data: { publicUrl } } = supabase.storage
-    .from('mythos')
+    .from(bucketName)
     .getPublicUrl(fileName)
 
   return publicUrl
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('Impossible de lire le fichier'))
+    reader.readAsDataURL(file)
+  })
 }
 
 // Compatibilité avec l'ancien nom

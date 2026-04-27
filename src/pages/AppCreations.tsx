@@ -10,19 +10,58 @@ export default function AppCreations() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Mytho | null>(null)
 
+  const loadLocalMythos = (userId: string) => {
+    const key = `gomytho_creations_${userId}`
+    const raw = localStorage.getItem(key)
+    if (!raw) return [] as Mytho[]
+    try {
+      return JSON.parse(raw) as Mytho[]
+    } catch {
+      return [] as Mytho[]
+    }
+  }
+
+  const saveLocalMythos = (userId: string, list: Mytho[]) => {
+    const key = `gomytho_creations_${userId}`
+    localStorage.setItem(key, JSON.stringify(list))
+  }
+
   useEffect(() => {
     if (!user) return
     setLoading(true)
-    supabase.from('mythos').select('*').eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .then(({ data }) => { setMythos(data || []); setLoading(false) })
+    const localList = loadLocalMythos(user.id)
+    const fetchMythos = async () => {
+      try {
+        const { data } = await supabase.from('mythos').select('*').eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+        const dbList = data || []
+        const mergedByUrl = new Map<string, Mytho>()
+        dbList.forEach((m: Mytho) => mergedByUrl.set(m.image_url, m))
+        localList.forEach((m: Mytho) => {
+          if (!mergedByUrl.has(m.image_url)) mergedByUrl.set(m.image_url, m)
+        })
+        const merged = Array.from(mergedByUrl.values())
+          .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
+        setMythos(merged)
+        saveLocalMythos(user.id, merged)
+        setLoading(false)
+      } catch {
+        setMythos(localList)
+        setLoading(false)
+      }
+    }
+    fetchMythos()
   // Refetch à chaque fois que la page est montée (user.id stable, Date.now() force le refresh)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id])
 
   const handleDelete = async (id: string) => {
     await supabase.from('mythos').delete().eq('id', id)
-    setMythos(m => m.filter(x => x.id !== id))
+    setMythos(m => {
+      const next = m.filter(x => x.id !== id)
+      if (user?.id) saveLocalMythos(user.id, next)
+      return next
+    })
     setSelected(null)
   }
 

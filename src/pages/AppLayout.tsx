@@ -31,6 +31,19 @@ async function tryAutoGenerate(userId: string) {
   } catch { /* échec silencieux */ }
 }
 
+async function waitForSession(maxAttempts = 20, delayMs = 250) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    try {
+      const { data } = await supabase.auth.getSession()
+      if (data?.session) return data.session
+    } catch {
+      // ignore and retry
+    }
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return null
+}
+
 export default function AppLayout() {
   const [searchParams] = useSearchParams()
   const [user, setUser] = useState<AppUser | null>(null)
@@ -40,20 +53,7 @@ export default function AppLayout() {
   useEffect(() => {
     const init = async () => {
       // ── 1. Vérifier la session auth (CRITIQUE) ──────────────────────────
-      let session = null
-      try {
-        const { data } = await supabase.auth.getSession()
-        session = data?.session
-
-        // Attendre si le callback OAuth est en cours de traitement
-        if (!session) {
-          await new Promise(r => setTimeout(r, 600))
-          const { data: data2 } = await supabase.auth.getSession()
-          session = data2?.session
-        }
-      } catch {
-        // Impossible de vérifier la session
-      }
+      const session = await waitForSession()
 
       if (!session) {
         window.location.href = '/login'
@@ -75,6 +75,8 @@ export default function AppLayout() {
 
         if (dbUser) {
           setUser(dbUser)
+          localStorage.setItem('gomytho_user_plan', dbUser.plan || 'monthly')
+          localStorage.setItem('gomytho_user_credits', String(dbUser.credits_remaining ?? 0))
           if (hasPending) { setAutoGen(true); tryAutoGenerate(authUser.id).finally(() => setAutoGen(false)) }
         } else {
           // Nouveau profil (premier login Google, etc.)
@@ -92,16 +94,20 @@ export default function AppLayout() {
           }
           supabase.from('users').upsert([newUser], { onConflict: 'id' }).then(() => {})
           setUser(newUser as any)
+          localStorage.setItem('gomytho_user_plan', plan)
+          localStorage.setItem('gomytho_user_credits', String(PLAN_CREDITS[plan]))
           if (hasPending) { setAutoGen(true); tryAutoGenerate(authUser.id).finally(() => setAutoGen(false)) }
         }
       } catch {
         // DB inaccessible → on affiche quand même l'app avec les infos auth de base
+        const cachedPlan = (localStorage.getItem('gomytho_user_plan') as 'weekly' | 'monthly' | null) || 'monthly'
+        const cachedCredits = Number(localStorage.getItem('gomytho_user_credits') || 0)
         setUser({
           id: authUser.id,
           email: authUser.email!,
-          credits_remaining: 0,
+          credits_remaining: Number.isFinite(cachedCredits) ? cachedCredits : 0,
           subscription_status: 'active',
-          plan: 'monthly',
+          plan: cachedPlan,
           created_at: new Date().toISOString(),
         } as any)
       }

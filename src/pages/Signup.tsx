@@ -51,6 +51,10 @@ export default function Signup() {
           plan,
         }], { onConflict: 'id' })
 
+        // Cache local pour éviter les incohérences d'affichage si la DB tarde
+        localStorage.setItem('gomytho_user_plan', plan)
+        localStorage.setItem('gomytho_user_credits', String(credits))
+
         // Nettoyer le plan sauvegardé
         localStorage.removeItem('gomytho_pending_plan')
 

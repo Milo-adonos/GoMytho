@@ -56,9 +56,12 @@ function App() {
         <Route path="/analyzing" element={<Navigate to="/chargementmytho" replace />} />
         <Route path="/unlock" element={<Navigate to="/choixoffre" replace />} />
         <Route path="/app" element={<Navigate to="/resultats" replace />} />
+        <Route path="/app/dashboard" element={<Navigate to="/makemytho" replace />} />
         <Route path="/app/new" element={<Navigate to="/makemytho" replace />} />
         <Route path="/app/settings" element={<Navigate to="/settings" replace />} />
         <Route path="/app/creations" element={<Navigate to="/resultats" replace />} />
+        <Route path="/dashboard" element={<Navigate to="/makemytho" replace />} />
+        <Route path="/creations" element={<Navigate to="/resultats" replace />} />
 
         {/* Admin */}
         <Route path="/admin-login" element={<AdminLogin />} />

@@ -3,18 +3,53 @@ import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_PORTAL_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
 const STRIPE_PORTAL_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
-const STRIPE_CANCEL_URL = import.meta.env.VITE_STRIPE_PORTAL_URL || 'https://billing.stripe.com/p/login/eVa3fJ9EQ8L4'
+const STRIPE_CANCEL_URL = import.meta.env.VITE_STRIPE_PORTAL_URL || 'https://billing.stripe.com/p/login'
 
 export default function AppSettings() {
   const navigate = useNavigate()
   const { user } = useOutletContext<{ user: User | null }>()
+
+  const openStripePortal = async () => {
+    try {
+      const { data } = await supabase.auth.getSession()
+      const token = data?.session?.access_token
+      if (!token) throw new Error('No session token')
+
+      const response = await fetch('/api/stripe-portal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          returnUrl: `${window.location.origin}/settings`,
+        }),
+      })
+
+      if (!response.ok) throw new Error('Portal API error')
+      const payload = await response.json()
+      if (!payload?.url) throw new Error('Missing portal URL')
+
+      window.location.href = payload.url
+    } catch {
+      // Fallback si API indisponible en local ou config incomplète
+      window.location.href = STRIPE_CANCEL_URL
+    }
+  }
+
+  // Plan effectif: priorité cache local, sinon DB, sinon inférence basique
+  const cachedPlan = localStorage.getItem('gomytho_user_plan') as 'weekly' | 'monthly' | null
+  const inferredPlan =
+    cachedPlan ||
+    (user?.plan as 'weekly' | 'monthly' | undefined) ||
+    ((user?.credits_remaining ?? 0) <= 160 ? 'weekly' : 'monthly')
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
     navigate('/')
   }
 
-  const planLabel = user?.plan === 'weekly' ? 'Hebdo' : user?.plan === 'monthly' ? 'Mensuel' : 'Gratuit'
+  const planLabel = inferredPlan === 'weekly' ? 'Hebdo' : inferredPlan === 'monthly' ? 'Mensuel' : 'Gratuit'
   const planColor = user?.subscription_status === 'active' ? '#C6FF3C' : '#8A8FA0'
 
   const menuItems = [
@@ -22,21 +57,21 @@ export default function AppSettings() {
       icon: '📈',
       label: 'Passer au Mensuel',
       sub: '70 images / mois · 9,90€',
-      action: () => window.open(STRIPE_PORTAL_MENSUEL, '_blank'),
-      show: user?.plan !== 'monthly',
+      action: () => { localStorage.setItem('gomytho_pending_plan', 'monthly'); window.location.href = STRIPE_PORTAL_MENSUEL },
+      show: inferredPlan !== 'monthly',
     },
     {
       icon: '📉',
       label: 'Passer à l\'Hebdo',
       sub: '20 images / semaine · 2,99€',
-      action: () => window.open(STRIPE_PORTAL_HEBDO, '_blank'),
-      show: user?.plan !== 'weekly',
+      action: () => { localStorage.setItem('gomytho_pending_plan', 'weekly'); window.location.href = STRIPE_PORTAL_HEBDO },
+      show: inferredPlan !== 'weekly',
     },
     {
       icon: '❌',
       label: 'Annuler l\'abonnement',
       sub: 'Gérer via le portail Stripe',
-      action: () => window.open(STRIPE_CANCEL_URL, '_blank'),
+      action: openStripePortal,
       show: user?.subscription_status === 'active',
       danger: true,
     },
@@ -74,7 +109,7 @@ export default function AppSettings() {
         </div>
         <div className="mt-3 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(198,255,60,0.1)' }}>
           <div className="h-full rounded-full bg-lime transition-all"
-            style={{ width: `${Math.min(100, ((user?.credits_remaining ?? 0) / (user?.plan === 'monthly' ? 610 : 140)) * 100)}%` }} />
+            style={{ width: `${Math.min(100, ((user?.credits_remaining ?? 0) / (inferredPlan === 'monthly' ? 560 : 160)) * 100)}%` }} />
         </div>
       </div>
 

@@ -5,6 +5,15 @@ import { supabase } from '@/lib/supabase'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 
+async function waitForSession(maxAttempts = 12, delayMs = 250) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const { data } = await supabase.auth.getSession()
+    if (data?.session) return data.session
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return null
+}
+
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -32,7 +41,12 @@ export default function Login() {
         return
       }
 
-      // Connexion réussie → redirection inconditionnelle
+      // Connexion réussie → attendre que la session soit réellement persistée
+      const session = await waitForSession()
+      if (!session) {
+        setError('Connexion réussie, mais session non détectée. Réessaie une fois.')
+        return
+      }
       window.location.href = '/resultats'
     } catch {
       setError('Une erreur est survenue. Réessaie.')

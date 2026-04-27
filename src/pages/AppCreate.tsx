@@ -38,8 +38,24 @@ export default function AppCreate() {
   const [step, setStep] = useState('')
   const [resultUrl, setResultUrl] = useState<string | null>(null)
 
-  const credits = user?.credits_remaining ?? 0
-  const canGenerate = !!image && !!prompt.trim() && credits >= CREDITS_PER_IMAGE && !isGenerating
+  const cachedCreditsRaw = Number(localStorage.getItem('gomytho_user_credits') || 0)
+  const cachedCredits = Number.isFinite(cachedCreditsRaw) ? cachedCreditsRaw : 0
+  const credits = Math.max(user?.credits_remaining ?? 0, cachedCredits)
+  const canGenerate = !!image && !!prompt.trim() && !isGenerating && !isConverting
+
+  const saveLocalCreation = (userId: string, imageUrl: string, userPrompt: string) => {
+    const key = `gomytho_creations_${userId}`
+    const raw = localStorage.getItem(key)
+    const list = raw ? JSON.parse(raw) as Array<{ id: string; user_id: string; image_url: string; prompt: string; created_at: string }> : []
+    const entry = {
+      id: `local-${Date.now()}`,
+      user_id: userId,
+      image_url: imageUrl,
+      prompt: userPrompt,
+      created_at: new Date().toISOString(),
+    }
+    localStorage.setItem(key, JSON.stringify([entry, ...list].slice(0, 200)))
+  }
 
   const handleFile = async (file: File) => {
     setResultUrl(null)
@@ -54,33 +70,102 @@ export default function AppCreate() {
   }
 
   const handleGenerate = async () => {
-    if (!image || !prompt || !user) return
+    if (!image || !prompt.trim()) {
+      alert('Ajoute une photo et un prompt avant de générer.')
+      return
+    }
     setIsGenerating(true)
     setResultUrl(null)
     try {
-      setStep('Upload de ta photo...')
-      const publicUrl = await uploadToSupabase(image, user.id)
+      let activeUser = user
+      if (!activeUser) {
+        const { data: sessionData } = await supabase.auth.getSession()
+        const sessionUser = sessionData?.session?.user
+        if (!sessionUser) {
+          alert('Session expirée. Reconnecte-toi.')
+          window.location.href = '/login'
+          return
+        }
+        activeUser = {
+          id: sessionUser.id,
+          email: sessionUser.email || '',
+          credits_remaining: credits,
+          created_at: new Date().toISOString(),
+          subscription_status: 'active',
+          plan: (localStorage.getItem('gomytho_user_plan') as 'weekly' | 'monthly' | 'free') || 'monthly',
+        }
+        setUser(activeUser as User)
+      }
 
-      const url = await generateImage(
-        { userPrompt: prompt, imageUrl: publicUrl, aspectRatio },
-        (s) => setStep(s)
-      )
+      // Lire les crédits les plus fiables (DB > contexte > cache)
+      let availableCredits = credits
+      try {
+        const { data: dbProfile } = await supabase
+          .from('users')
+          .select('credits_remaining')
+          .eq('id', activeUser.id)
+          .maybeSingle()
+        if (typeof dbProfile?.credits_remaining === 'number') {
+          availableCredits = dbProfile.credits_remaining
+        }
+      } catch {
+        // ignore, on garde le fallback local
+      }
+
+      if (availableCredits < CREDITS_PER_IMAGE) {
+        alert('Crédits insuffisants pour générer ce mytho.')
+        navigate('/settings')
+        return
+      }
+
+      setStep('Upload de ta photo...')
+      let url = ''
+      let inputImage = imagePreview || ''
+
+      // 1) Tentative directe avec image locale (évite dépendance Storage)
+      try {
+        if (!inputImage) throw new Error('No local preview')
+        setStep('Envoi direct à l’IA...')
+        url = await generateImage(
+          { userPrompt: prompt, imageUrl: inputImage, aspectRatio },
+          (s) => setStep(s)
+        )
+      } catch {
+        // 2) Fallback upload + URL publique
+        setStep('Upload de ta photo...')
+        const publicUrl = await uploadToSupabase(image, activeUser.id)
+        setStep('Génération IA...')
+        url = await generateImage(
+          { userPrompt: prompt, imageUrl: publicUrl, aspectRatio },
+          (s) => setStep(s)
+        )
+      }
 
       setResultUrl(url)
+      saveLocalCreation(activeUser.id, url, prompt)
 
-      // Sauvegarder en base + déduire crédits
-      await Promise.all([
-        supabase.from('mythos').insert([{ user_id: user.id, image_url: url, prompt }]),
-        supabase.from('users').update({ credits_remaining: credits - CREDITS_PER_IMAGE }).eq('id', user.id),
+      // Sauvegarde DB NON bloquante
+      const [insertRes, updateRes] = await Promise.all([
+        supabase.from('mythos').insert([{ user_id: activeUser.id, image_url: url, prompt }]),
+        supabase.from('users').update({ credits_remaining: availableCredits - CREDITS_PER_IMAGE }).eq('id', activeUser.id),
       ])
+      if (insertRes.error || updateRes.error) {
+        console.warn('DB save warning:', { insertError: insertRes.error?.message, updateError: updateRes.error?.message })
+      }
 
-      setUser({ ...user, credits_remaining: credits - CREDITS_PER_IMAGE })
+      setUser({ ...activeUser, credits_remaining: availableCredits - CREDITS_PER_IMAGE })
+      localStorage.setItem('gomytho_user_credits', String(availableCredits - CREDITS_PER_IMAGE))
 
       // Rediriger vers les résultats après 2 secondes
       setTimeout(() => { window.location.href = '/resultats' }, 2000)
-    } catch (err) {
+    } catch (err: unknown) {
       console.error(err)
-      alert('Erreur lors de la génération. Réessaie.')
+      const msg = err instanceof Error ? err.message : 'Erreur inconnue'
+      if (/bucket supabase introuvable|bucket.*not found/i.test(msg)) {
+        alert(`Configuration Supabase manquante : ${msg}`)
+        return
+      }
+      alert(`Erreur lors de la génération IA (${step || 'initialisation'}) : ${msg}`)
     } finally {
       setIsGenerating(false)
       setStep('')
