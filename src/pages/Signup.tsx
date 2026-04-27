@@ -52,6 +52,7 @@ export default function Signup() {
 
   async function runAutoGeneration(userId: string) {
     const pendingImage = localStorage.getItem('gomytho_pending_image')
+    const pendingImage2 = localStorage.getItem('gomytho_pending_image2')
     const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
     const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
 
@@ -68,12 +69,32 @@ export default function Signup() {
       const blob = await res.blob()
       const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
 
-      setGenStep('Upload de ta photo...')
+      let file2: File | null = null
+      if (pendingImage2) {
+        try {
+          const res2 = await fetch(pendingImage2)
+          const blob2 = await res2.blob()
+          file2 = new File([blob2], 'photo2.jpg', { type: 'image/jpeg' })
+        } catch (e2) {
+          console.warn('[signup] décodage photo 2 échoué:', e2)
+        }
+      }
+
+      setGenStep(file2 ? 'Upload de tes photos...' : 'Upload de ta photo...')
       const publicUrl = await uploadToSupabase(file, userId)
+      let publicUrl2: string | null = null
+      if (file2) {
+        try {
+          publicUrl2 = await uploadToSupabase(file2, userId)
+        } catch (e2) {
+          console.warn('[signup] upload photo 2 échoué:', e2)
+        }
+      }
+      const imageUrls = publicUrl2 ? [publicUrl, publicUrl2] : [publicUrl]
 
       setGenStep('Génération de ton mytho...')
       const { dataUrl } = await generateMytho(
-        { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
+        { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
         (s) => setGenStep(s)
       )
 
@@ -81,6 +102,7 @@ export default function Signup() {
       await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
 
       localStorage.removeItem('gomytho_pending_image')
+      localStorage.removeItem('gomytho_pending_image2')
       localStorage.removeItem('gomytho_pending_prompt')
       localStorage.removeItem('gomytho_pending_ratio')
       window.location.href = '/resultats'

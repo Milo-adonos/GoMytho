@@ -69,13 +69,25 @@ async function toDataUrlFromUrl(url: string): Promise<string | null> {
   }
 }
 
-function enhancePrompt(userPrompt: string): string {
-  return `${userPrompt}.
+function enhancePrompt(userPrompt: string, imageCount: number = 1): string {
+  const compositionBlock = imageCount >= 2 ? `
+
+MULTI-IMAGE COMPOSITION RULES:
+You receive TWO reference images. Image 1 is the SUBJECT source (the person, object or element to insert). Image 2 is the SCENE source (the destination background, environment or photo where the subject must appear).
+Place the subject from image 1 naturally into the scene of image 2, following the user's instruction above.
+Preserve the identity, face, body, clothes details and proportions of the subject from image 1 with maximum fidelity.
+Adapt the subject to the lighting, shadows, color temperature, perspective, depth and grain of image 2 (the scene). The final image MUST look like the subject was really photographed inside that scene, not pasted.
+Reproduce realistic ground contact, occlusions and shadows between the inserted subject and the existing elements of the scene.
+Keep the framing/composition of image 2 as the base unless the user asks otherwise.` : ''
+
+  const sceneRef = imageCount >= 2 ? 'destination scene (image 2)' : 'original photo'
+
+  return `${userPrompt}.${compositionBlock}
 
 CRITICAL REALISM REQUIREMENTS:
 The result MUST look like a real, unmodified smartphone photo, indistinguishable from a genuine photograph.
-Match exact lighting, shadows, perspective, depth of field, image quality and natural imperfections.
-Add realistic shadows and contact points where new elements touch existing surfaces.
+Match exact lighting, shadows, perspective, depth of field, image quality and natural imperfections of the ${sceneRef}.
+Add realistic shadows and contact points where new/inserted elements touch existing surfaces.
 
 TEXT AND BRAND ACCURACY:
 Every letter, number, brand name and logo must be perfectly legible, sharp and 100% accurate. No gibberish, no misspellings.
@@ -91,8 +103,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!apiKey) return res.status(500).json({ error: 'KIE API key missing on server' })
 
   try {
-    const { userPrompt, imageUrl, aspectRatio } = req.body || {}
-    if (!userPrompt || !imageUrl) {
+    const { userPrompt, imageUrl, imageUrls, aspectRatio } = req.body || {}
+
+    // Normalisation : on accepte soit `imageUrls` (array), soit `imageUrl` (legacy).
+    let urls: string[] = []
+    if (Array.isArray(imageUrls)) {
+      urls = imageUrls.filter((u: unknown): u is string => typeof u === 'string' && !!u)
+    }
+    if (urls.length === 0 && typeof imageUrl === 'string' && imageUrl) {
+      urls = [imageUrl]
+    }
+    // Limite haute = 2 (cas image-to-image composition)
+    if (urls.length > 2) urls = urls.slice(0, 2)
+
+    if (!userPrompt || urls.length === 0) {
       return res.status(400).json({ error: 'Missing userPrompt/imageUrl' })
     }
     if (aspectRatio !== '9:16' && aspectRatio !== '16:9') {
@@ -102,8 +126,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const payload = {
       model: 'nano-banana-2',
       input: {
-        prompt: enhancePrompt(String(userPrompt)),
-        image_input: [String(imageUrl)],
+        prompt: enhancePrompt(String(userPrompt), urls.length),
+        image_input: urls,
         aspect_ratio: aspectRatio as AspectRatio,
         resolution: '1K',
         output_format: 'jpg',

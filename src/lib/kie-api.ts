@@ -14,8 +14,21 @@ export type AspectRatio = '9:16' | '16:9'
 
 export interface GenerateMythoParams {
   userPrompt: string
-  imageUrl: string
+  // Une OU deux images :
+  //   - imageUrl seul = édition simple ("ajoute X sur cette photo")
+  //   - imageUrls (2 entrées) = composition ("mets le sujet de l'image 1 dans
+  //     la scène de l'image 2")
+  imageUrl?: string
+  imageUrls?: string[]
   aspectRatio: AspectRatio
+}
+
+function normalizeImageUrls(p: GenerateMythoParams): string[] {
+  if (Array.isArray(p.imageUrls) && p.imageUrls.length > 0) {
+    return p.imageUrls.filter((u): u is string => typeof u === 'string' && !!u)
+  }
+  if (p.imageUrl) return [p.imageUrl]
+  return []
 }
 
 // ─── EXTRACTION CIBLÉE — FORMAT RÉEL DE KIE.AI ───────────────────────────────
@@ -79,15 +92,28 @@ function extractTaskId(rawData: unknown): string | null {
 }
 
 // ─── PROMPT ENHANCER — SAUCE INTERNE INVISIBLE CÔTÉ CLIENT ────────────────────
-export function enhancePrompt(userPrompt: string): string {
-  return `${userPrompt}.
+// `imageCount` permet d'adapter le briefing :
+//   - 1 image  → édition de la photo source
+//   - 2 images → composition (image 1 = sujet, image 2 = scène cible)
+export function enhancePrompt(userPrompt: string, imageCount: number = 1): string {
+  const compositionBlock = imageCount >= 2 ? `
+
+MULTI-IMAGE COMPOSITION RULES:
+You receive TWO reference images. Image 1 is the SUBJECT source (the person, object or element to insert). Image 2 is the SCENE source (the destination background, environment or photo where the subject must appear).
+Place the subject from image 1 naturally into the scene of image 2, following the user's instruction above.
+Preserve the identity, face, body, clothes details and proportions of the subject from image 1 with maximum fidelity.
+Adapt the subject to the lighting, shadows, color temperature, perspective, depth and grain of image 2 (the scene). The final image MUST look like the subject was really photographed inside that scene, not pasted.
+Reproduce realistic ground contact, occlusions and shadows between the inserted subject and the existing elements of the scene.
+Keep the framing/composition of image 2 as the base unless the user asks otherwise.` : ''
+
+  return `${userPrompt}.${compositionBlock}
 
 CRITICAL REALISM REQUIREMENTS:
 The result MUST look like a real, unmodified smartphone photo, indistinguishable from a genuine photograph.
-Match the exact lighting (direction, color temperature, intensity, shadows) of the original photo.
-Match the exact image quality, grain and softness of the original photo (do NOT make added objects sharper than the rest).
+Match the exact lighting (direction, color temperature, intensity, shadows) of the ${imageCount >= 2 ? 'destination scene (image 2)' : 'original photo'}.
+Match the exact image quality, grain and softness of the ${imageCount >= 2 ? 'destination scene (image 2)' : 'original photo'} (do NOT make added/inserted elements sharper than the rest).
 Add realistic shadows, contact points, and reflections where new elements touch existing surfaces.
-Preserve the original photo's perspective, depth of field, and camera angle.
+Preserve the ${imageCount >= 2 ? 'scene (image 2) ' : 'original photo\'s '}perspective, depth of field, and camera angle.
 
 TEXT AND BRAND ACCURACY:
 Every letter, number, brand name and logo must be perfectly legible, sharp and 100% accurate. No gibberish, no misspellings.
@@ -133,16 +159,25 @@ async function urlToDataUrlClient(url: string): Promise<string | null> {
 // ─── GÉNÉRATION PRINCIPALE ────────────────────────────────────────────────────
 // Retourne TOUJOURS un data URL base64 prêt à afficher / télécharger.
 export async function generateMytho(
-  { userPrompt, imageUrl, aspectRatio }: GenerateMythoParams,
+  params: GenerateMythoParams,
   onProgress?: (step: string) => void
 ): Promise<{ remoteUrl: string; dataUrl: string }> {
+  const { userPrompt, aspectRatio } = params
+  const imageUrls = normalizeImageUrls(params)
+  if (imageUrls.length === 0) throw new Error('Aucune photo fournie')
+
   // 1) Backend Vercel — chemin principal
   try {
     onProgress?.('Envoi sécurisé...')
     const response = await fetch('/api/generate-mytho', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userPrompt, imageUrl, aspectRatio }),
+      body: JSON.stringify({
+        userPrompt,
+        imageUrl: imageUrls[0],
+        imageUrls,
+        aspectRatio,
+      }),
     })
     const payload = await response.json().catch(() => ({}))
     if (response.ok && (payload?.imageUrl || payload?.previewDataUrl)) {
@@ -171,12 +206,12 @@ export async function generateMytho(
     throw new Error(`Aspect ratio invalide : ${aspectRatio}`)
   }
 
-  const enhancedPrompt = enhancePrompt(userPrompt)
+  const enhancedPrompt = enhancePrompt(userPrompt, imageUrls.length)
   const payload = {
     model: FIXED_PARAMS.model,
     input: {
       prompt: enhancedPrompt,
-      image_input: [imageUrl],
+      image_input: imageUrls,
       aspect_ratio: aspectRatio,
       resolution: FIXED_PARAMS.resolution,
       output_format: FIXED_PARAMS.output_format,

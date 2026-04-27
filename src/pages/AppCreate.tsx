@@ -44,11 +44,15 @@ export default function AppCreate() {
 
   const [image, setImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
+  // Photo 2 = scène cible (optionnelle, pour image-to-image avec Nano Banana 2)
+  const [image2, setImage2] = useState<File | null>(null)
+  const [imagePreview2, setImagePreview2] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16')
   const [pendingBanner, setPendingBanner] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isConverting, setIsConverting] = useState(false)
+  const [isConverting2, setIsConverting2] = useState(false)
   const [step, setStep] = useState('')
   const [resultDataUrl, setResultDataUrl] = useState<string | null>(null)
 
@@ -72,6 +76,12 @@ export default function AppCreate() {
     }
   }, [imagePreview])
 
+  useEffect(() => {
+    return () => {
+      if (imagePreview2?.startsWith('blob:')) URL.revokeObjectURL(imagePreview2)
+    }
+  }, [imagePreview2])
+
   const cachedCreditsRaw = Number(localStorage.getItem('gomytho_user_credits') || 0)
   const cachedCredits = Number.isFinite(cachedCreditsRaw) ? cachedCreditsRaw : 0
   const credits = Math.max(user?.credits_remaining ?? 0, cachedCredits)
@@ -88,6 +98,24 @@ export default function AppCreate() {
     } finally {
       setIsConverting(false)
     }
+  }
+
+  const handleFile2 = async (file: File) => {
+    setResultDataUrl(null)
+    setIsConverting2(true)
+    try {
+      const { file: jpeg, preview } = await convertToJpeg(file)
+      const safePreview = preview || URL.createObjectURL(jpeg || file)
+      setImage2(jpeg)
+      setImagePreview2(safePreview)
+    } finally {
+      setIsConverting2(false)
+    }
+  }
+
+  const removeImage2 = () => {
+    setImage2(null)
+    setImagePreview2(null)
   }
 
   const handleGenerate = async () => {
@@ -125,14 +153,19 @@ export default function AppCreate() {
         return
       }
 
-      // 1) Upload de la photo source vers Supabase pour obtenir une URL publique
-      setStep('Upload de ta photo...')
+      // 1) Upload de la photo source (et de la 2e photo si présente) vers Supabase
+      setStep(image2 ? 'Upload des photos...' : 'Upload de ta photo...')
       const sourceUrl = await uploadToSupabase(image, activeUser.id)
+      let sourceUrl2: string | null = null
+      if (image2) {
+        sourceUrl2 = await uploadToSupabase(image2, activeUser.id)
+      }
+      const imageUrls = sourceUrl2 ? [sourceUrl, sourceUrl2] : [sourceUrl]
 
       // 2) Génération IA — retourne TOUJOURS un dataUrl base64 prêt à afficher
       setStep('Génération IA...')
       const { dataUrl } = await generateMytho(
-        { userPrompt: prompt, imageUrl: sourceUrl, aspectRatio },
+        { userPrompt: prompt, imageUrls, aspectRatio },
         (s) => setStep(s)
       )
 
@@ -299,7 +332,13 @@ export default function AppCreate() {
           />
         </div>
       ) : (
-        <div className="relative rounded-2xl overflow-hidden mb-5" style={{ border: '1px solid rgba(198,255,60,0.2)' }}>
+        <div className="relative rounded-2xl overflow-hidden mb-3" style={{ border: '1px solid rgba(198,255,60,0.2)' }}>
+          <div
+            className="absolute top-2 left-2 z-10 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider"
+            style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
+          >
+            Photo 1 · Sujet
+          </div>
           <img src={imagePreview} alt="Preview" className="w-full max-h-56 object-cover" />
           <button
             onClick={() => {
@@ -311,6 +350,66 @@ export default function AppCreate() {
           >
             Changer
           </button>
+        </div>
+      )}
+
+      {/* Photo 2 — optionnelle, image-to-image (Nano Banana 2) */}
+      {imagePreview && (
+        <div className="mb-5">
+          {!imagePreview2 ? (
+            <div
+              onClick={() => !isConverting2 && document.getElementById('file-upload-app-2')?.click()}
+              className="rounded-2xl p-5 text-center cursor-pointer active:scale-95 transition-all"
+              style={{ background: 'rgba(20,24,38,0.35)', border: '2px dashed rgba(198,255,60,0.18)' }}
+            >
+              {isConverting2 ? (
+                <>
+                  <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-lime mx-auto mb-2" />
+                  <p className="text-lime font-bold text-xs">Traitement...</p>
+                </>
+              ) : (
+                <>
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-2 text-xl"
+                    style={{ background: 'rgba(198,255,60,0.06)', border: '1px solid rgba(198,255,60,0.15)' }}
+                  >
+                    🪄
+                  </div>
+                  <p className="font-bold text-sm mb-0.5">+ Ajouter une 2<sup>e</sup> photo (optionnel)</p>
+                  <p className="text-[11px] text-text-secondary leading-relaxed">
+                    Pour fusionner deux images. Ex&nbsp;: <em>"Mets cet homme sur cette plage"</em><br />
+                    Photo 1 = le sujet · Photo 2 = la scène
+                  </p>
+                </>
+              )}
+              <input
+                id="file-upload-app-2"
+                type="file"
+                accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                className="hidden"
+                onChange={async (e) => {
+                  if (e.target.files?.[0]) await handleFile2(e.target.files[0])
+                }}
+              />
+            </div>
+          ) : (
+            <div className="relative rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(198,255,60,0.2)' }}>
+              <div
+                className="absolute top-2 left-2 z-10 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider"
+                style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
+              >
+                Photo 2 · Scène
+              </div>
+              <img src={imagePreview2} alt="Preview 2" className="w-full max-h-56 object-cover" />
+              <button
+                onClick={removeImage2}
+                className="absolute top-2 right-2 px-3 py-1.5 rounded-full text-xs font-bold"
+                style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
+              >
+                Retirer
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -327,13 +426,22 @@ export default function AppCreate() {
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder={'Ex : "Mets-moi une Rolex sur le poignet"\n"Ajoute un dinosaure dans le salon"'}
+          placeholder={
+            imagePreview2
+              ? 'Ex (2 photos) : "Mets cet homme sur cette plage"\n"Place ce sac dans cette voiture"'
+              : 'Ex : "Mets-moi une Rolex sur le poignet"\n"Ajoute un dinosaure dans le salon"'
+          }
           rows={3}
           className="w-full rounded-2xl px-4 py-3 text-sm text-text-primary resize-none focus:outline-none transition-all"
           style={{ background: '#141826', border: '1.5px solid rgba(198,255,60,0.15)' }}
           onFocus={(e) => (e.target.style.borderColor = 'rgba(198,255,60,0.5)')}
           onBlur={(e) => (e.target.style.borderColor = 'rgba(198,255,60,0.15)')}
         />
+        {imagePreview2 && (
+          <p className="mt-2 text-[11px] text-text-secondary leading-relaxed">
+            💡 Mode 2 photos&nbsp;: <strong>Photo 1 = le sujet</strong>, <strong>Photo 2 = la scène</strong>. L'IA fusionne les deux.
+          </p>
+        )}
       </div>
 
       {/* CTA */}

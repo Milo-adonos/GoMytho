@@ -7,11 +7,16 @@ import { convertToJpeg } from '@/lib/image-utils'
 
 export default function Create() {
   const navigate = useNavigate()
+  // Image 1 = sujet (obligatoire). Image 2 = scène cible (optionnel, image-to-image).
+  // On ne garde le File que pour l'image 1 (utile pour son nom dans sessionStorage).
+  // L'image 2 ne sert qu'à être persistée en data URL → on stocke uniquement la preview.
   const [image, setImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [imagePreview2, setImagePreview2] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16')
   const [isConverting, setIsConverting] = useState(false)
+  const [isConverting2, setIsConverting2] = useState(false)
 
   const handleFile = async (file: File) => {
     setIsConverting(true)
@@ -19,11 +24,26 @@ export default function Create() {
       const { file: jpeg, preview } = await convertToJpeg(file)
       setImage(jpeg)
       setImagePreview(preview)
-      // Stocker pour génération auto après paiement
       try { localStorage.setItem('gomytho_pending_image', preview) } catch { /* localStorage plein */ }
     } finally {
       setIsConverting(false)
     }
+  }
+
+  const handleFile2 = async (file: File) => {
+    setIsConverting2(true)
+    try {
+      const { preview } = await convertToJpeg(file)
+      setImagePreview2(preview)
+      try { localStorage.setItem('gomytho_pending_image2', preview) } catch { /* localStorage plein */ }
+    } finally {
+      setIsConverting2(false)
+    }
+  }
+
+  const removeImage2 = () => {
+    setImagePreview2(null)
+    try { localStorage.removeItem('gomytho_pending_image2') } catch { /* ignore */ }
   }
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -38,10 +58,20 @@ export default function Create() {
     sessionStorage.setItem('uploadedImageName', image.name)
     sessionStorage.setItem('userPrompt', prompt)
     sessionStorage.setItem('aspectRatio', aspectRatio)
+    if (imagePreview2) {
+      sessionStorage.setItem('uploadedImage2', imagePreview2)
+    } else {
+      sessionStorage.removeItem('uploadedImage2')
+    }
     // Persister aussi dans localStorage (survit au redirect Stripe)
     try {
       localStorage.setItem('gomytho_pending_prompt', prompt)
       localStorage.setItem('gomytho_pending_ratio', aspectRatio)
+      if (imagePreview2) {
+        localStorage.setItem('gomytho_pending_image2', imagePreview2)
+      } else {
+        localStorage.removeItem('gomytho_pending_image2')
+      }
     } catch { /* ignore */ }
     navigate('/chargementmytho')
   }
@@ -59,7 +89,7 @@ export default function Create() {
             <p className="text-text-secondary">Plus elle est nette, plus le résultat sera bluffant</p>
           </div>
 
-          {/* Zone d'upload */}
+          {/* Zone d'upload — Photo 1 (obligatoire) */}
           {!imagePreview ? (
             <div
               onDrop={handleDrop}
@@ -92,7 +122,11 @@ export default function Create() {
               />
             </div>
           ) : (
-            <div className="relative rounded-3xl overflow-hidden border mb-8" style={{ borderColor: 'rgba(198,255,60,0.3)' }}>
+            <div className="relative rounded-3xl overflow-hidden border mb-4" style={{ borderColor: 'rgba(198,255,60,0.3)' }}>
+              <div className="absolute top-3 left-3 z-10 px-3 py-1 rounded-full text-xs font-bold"
+                style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}>
+                Photo 1 · Sujet
+              </div>
               <img src={imagePreview} alt="Preview" className="w-full h-auto max-h-72 object-cover" />
               <button
                 onClick={() => { setImage(null); setImagePreview(null) }}
@@ -101,6 +135,60 @@ export default function Create() {
               >
                 Changer
               </button>
+            </div>
+          )}
+
+          {/* Zone d'upload — Photo 2 (optionnelle, image-to-image) */}
+          {imagePreview && (
+            <div className="mb-8">
+              {!imagePreview2 ? (
+                <div
+                  onClick={() => !isConverting2 && document.getElementById('file-upload-2')?.click()}
+                  className="rounded-3xl p-6 text-center active:scale-95 transition-all duration-200 cursor-pointer"
+                  style={{ borderColor: 'rgba(198,255,60,0.18)', background: 'rgba(20,24,38,0.35)', border: '2px dashed rgba(198,255,60,0.18)' }}
+                >
+                  {isConverting2 ? (
+                    <>
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-lime mx-auto mb-2" />
+                      <p className="text-lime font-bold text-sm">Traitement...</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3 text-2xl"
+                        style={{ background: 'rgba(198,255,60,0.06)', border: '1px solid rgba(198,255,60,0.15)' }}>
+                        🪄
+                      </div>
+                      <p className="font-bold text-sm mb-1">+ Ajouter une 2<sup>e</sup> photo (optionnel)</p>
+                      <p className="text-text-secondary text-xs leading-relaxed">
+                        Pour fusionner deux images. Ex&nbsp;: <em>"Mets cet homme sur cette plage"</em>
+                        <br/>Photo 1 = le sujet · Photo 2 = la scène / décor
+                      </p>
+                    </>
+                  )}
+                  <input
+                    id="file-upload-2"
+                    type="file"
+                    accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                    onChange={async e => { if (e.target.files?.[0]) await handleFile2(e.target.files[0]) }}
+                    className="hidden"
+                  />
+                </div>
+              ) : (
+                <div className="relative rounded-3xl overflow-hidden border" style={{ borderColor: 'rgba(198,255,60,0.3)' }}>
+                  <div className="absolute top-3 left-3 z-10 px-3 py-1 rounded-full text-xs font-bold"
+                    style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}>
+                    Photo 2 · Scène
+                  </div>
+                  <img src={imagePreview2} alt="Preview 2" className="w-full h-auto max-h-72 object-cover" />
+                  <button
+                    onClick={removeImage2}
+                    className="absolute top-3 right-3 bg-primary-bg/90 text-lime text-sm font-bold px-4 py-2 rounded-full active:scale-95 transition-all"
+                    style={{ border: '1px solid rgba(198,255,60,0.3)' }}
+                  >
+                    Retirer
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -117,7 +205,10 @@ export default function Create() {
                 <textarea
                   value={prompt}
                   onChange={e => setPrompt(e.target.value)}
-                  placeholder={'Exemples :\n• Mets-moi une Rolex sur le poignet\n• Ajoute un dinosaure dans le salon\n• Mets une moustache géante sur mon pote'}
+                  placeholder={imagePreview2
+                    ? 'Exemples (avec 2 photos) :\n• Mets cet homme sur cette plage\n• Place ce sac dans cette voiture\n• Fais apparaître ce chien dans ce salon'
+                    : 'Exemples :\n• Mets-moi une Rolex sur le poignet\n• Ajoute un dinosaure dans le salon\n• Mets une moustache géante sur mon pote'
+                  }
                   className="w-full h-36 rounded-2xl px-4 py-4 text-text-primary placeholder:text-text-secondary/40 text-sm leading-relaxed resize-none transition-all duration-200 focus:outline-none"
                   style={{
                     background: '#141826',
@@ -127,7 +218,10 @@ export default function Create() {
                   onBlur={e => (e.target.style.borderColor = 'rgba(198,255,60,0.15)')}
                 />
                 <p className="mt-2 text-xs text-text-secondary leading-relaxed">
-                  💡 Astuce : sois précis dans ta description (couleur, position, style) pour un meilleur résultat. Évite les noms de personnes réelles.
+                  💡 {imagePreview2
+                    ? <>Mode 2 photos&nbsp;: <strong>Photo 1 = le sujet</strong>, <strong>Photo 2 = la scène</strong>. Décris simplement ce que tu veux. </>
+                    : 'Astuce : sois précis dans ta description (couleur, position, style) pour un meilleur résultat. '}
+                  Évite les noms de personnes réelles.
                 </p>
               </div>
 

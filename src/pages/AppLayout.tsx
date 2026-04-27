@@ -14,22 +14,41 @@ import {
 
 export interface AppUser extends User {}
 
+async function dataUrlToPublicUrl(
+  dataUrl: string,
+  userId: string,
+  filename: string
+): Promise<string> {
+  const res = await fetch(dataUrl)
+  const blob = await res.blob()
+  const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
+  return uploadToSupabase(file, userId)
+}
+
 async function tryAutoGenerate(userId: string): Promise<boolean> {
   const pendingImage = localStorage.getItem('gomytho_pending_image')
+  const pendingImage2 = localStorage.getItem('gomytho_pending_image2')
   const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
   const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
   if (!pendingImage || !pendingPrompt) return false
   try {
-    const res = await fetch(pendingImage)
-    const blob = await res.blob()
-    const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
-    const publicUrl = await uploadToSupabase(file, userId)
+    const publicUrl = await dataUrlToPublicUrl(pendingImage, userId, 'photo.jpg')
+    let publicUrl2: string | null = null
+    if (pendingImage2) {
+      try {
+        publicUrl2 = await dataUrlToPublicUrl(pendingImage2, userId, 'photo2.jpg')
+      } catch (e2) {
+        console.warn('[autoGen] upload photo 2 échoué (non bloquant):', e2)
+      }
+    }
+    const imageUrls = publicUrl2 ? [publicUrl, publicUrl2] : [publicUrl]
     const { dataUrl } = await generateMytho(
-      { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
+      { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
       () => {}
     )
     await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
     localStorage.removeItem('gomytho_pending_image')
+    localStorage.removeItem('gomytho_pending_image2')
     localStorage.removeItem('gomytho_pending_prompt')
     localStorage.removeItem('gomytho_pending_ratio')
     localStorage.removeItem('gomytho_pending_plan')
