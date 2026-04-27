@@ -19,6 +19,8 @@ export default function Create() {
       const { file: jpeg, preview } = await convertToJpeg(file)
       setImage(jpeg)
       setImagePreview(preview)
+      // Stocker pour génération auto après paiement
+      try { localStorage.setItem('gomytho_pending_image', preview) } catch { /* localStorage plein */ }
     } finally {
       setIsConverting(false)
     }
@@ -36,6 +38,11 @@ export default function Create() {
     sessionStorage.setItem('uploadedImageName', image.name)
     sessionStorage.setItem('userPrompt', prompt)
     sessionStorage.setItem('aspectRatio', aspectRatio)
+    // Persister aussi dans localStorage (survit au redirect Stripe)
+    try {
+      localStorage.setItem('gomytho_pending_prompt', prompt)
+      localStorage.setItem('gomytho_pending_ratio', aspectRatio)
+    } catch { /* ignore */ }
     navigate('/chargementmytho')
   }
 

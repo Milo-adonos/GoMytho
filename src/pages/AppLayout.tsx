@@ -1,15 +1,41 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
+import { generateImage, uploadToSupabase } from '@/lib/kie-api'
+import type { AspectRatio } from '@/lib/kie-api'
 
 const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
 
 export interface AppUser extends User {}
 
+async function tryAutoGenerate(userId: string) {
+  const pendingImage = localStorage.getItem('gomytho_pending_image')
+  const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
+  const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
+  if (!pendingImage || !pendingPrompt) return
+  try {
+    const res = await fetch(pendingImage)
+    const blob = await res.blob()
+    const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
+    const publicUrl = await uploadToSupabase(file, userId)
+    const resultUrl = await generateImage(
+      { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
+      () => {}
+    )
+    await supabase.from('mythos').insert([{ user_id: userId, image_url: resultUrl, prompt: pendingPrompt }])
+    localStorage.removeItem('gomytho_pending_image')
+    localStorage.removeItem('gomytho_pending_prompt')
+    localStorage.removeItem('gomytho_pending_ratio')
+    localStorage.removeItem('gomytho_pending_plan')
+    window.location.href = '/resultats'
+  } catch { /* échec silencieux */ }
+}
+
 export default function AppLayout() {
   const [searchParams] = useSearchParams()
   const [user, setUser] = useState<AppUser | null>(null)
   const [loading, setLoading] = useState(true)
+  const [autoGen, setAutoGen] = useState(false)
 
   useEffect(() => {
     const init = async () => {
@@ -45,12 +71,17 @@ export default function AppLayout() {
           .eq('id', authUser.id)
           .single()
 
+        const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
+
         if (dbUser) {
           setUser(dbUser)
+          if (hasPending) { setAutoGen(true); tryAutoGenerate(authUser.id).finally(() => setAutoGen(false)) }
         } else {
           // Nouveau profil (premier login Google, etc.)
-          const planParam = searchParams.get('plan') || 'monthly'
-          const plan = PLAN_CREDITS[planParam] ? planParam : 'monthly'
+          const urlPlan = searchParams.get('plan')
+          const storedPlan = localStorage.getItem('gomytho_pending_plan')
+          const rawPlan = urlPlan || storedPlan || 'monthly'
+          const plan = PLAN_CREDITS[rawPlan] ? rawPlan : 'monthly'
           const newUser = {
             id: authUser.id,
             email: authUser.email!,
@@ -61,6 +92,7 @@ export default function AppLayout() {
           }
           supabase.from('users').upsert([newUser], { onConflict: 'id' }).then(() => {})
           setUser(newUser as any)
+          if (hasPending) { setAutoGen(true); tryAutoGenerate(authUser.id).finally(() => setAutoGen(false)) }
         }
       } catch {
         // DB inaccessible → on affiche quand même l'app avec les infos auth de base
@@ -80,12 +112,13 @@ export default function AppLayout() {
     init()
   }, [searchParams])
 
-  if (loading) {
+  if (loading || autoGen) {
     return (
       <div className="min-h-screen bg-primary-bg flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime" />
-          <p className="text-text-secondary text-sm">Chargement...</p>
+        <div className="flex flex-col items-center gap-4 text-center px-6">
+          <div className="w-16 h-16 rounded-full border-4 border-lime/20 border-t-lime animate-spin" />
+          <p className="font-black text-white text-xl">{autoGen ? 'Génération de ton mytho...' : 'Chargement...'}</p>
+          {autoGen && <p className="text-text-secondary text-sm">~15 secondes, ne ferme pas cette page</p>}
         </div>
       </div>
     )

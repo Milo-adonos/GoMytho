@@ -4,6 +4,8 @@ import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
+import { generateImage, uploadToSupabase } from '@/lib/kie-api'
+import type { AspectRatio } from '@/lib/kie-api'
 
 const PLAN_CONFIG = {
   weekly:  { credits: 160, label: 'hebdomadaire' },  // 20 images × 8 crédits
@@ -23,6 +25,8 @@ export default function Signup() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [genStep, setGenStep] = useState('')
   const [error, setError] = useState('')
 
   const handleEmailSignup = async (e: React.FormEvent) => {
@@ -50,19 +54,53 @@ export default function Signup() {
         // Nettoyer le plan sauvegardé
         localStorage.removeItem('gomytho_pending_plan')
 
-        // S'il y a un prompt en attente → aller directement créer le mytho
-        const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
-        const dest = pendingPrompt ? '/makemytho?pending=1' : '/resultats'
-
-        if (_data.session) {
-          window.location.href = dest
-        } else {
+        // S'assurer d'avoir une session active
+        let userId = _data.user.id
+        if (!_data.session) {
           const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
-          if (signInData?.session) {
-            window.location.href = dest
-          } else {
-            window.location.href = '/login'
+          if (!signInData?.session) { window.location.href = '/login'; return }
+          userId = signInData.session.user.id
+        }
+
+        // Générer automatiquement si une photo + prompt sont en attente
+        const pendingImage = localStorage.getItem('gomytho_pending_image')
+        const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
+        const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
+
+        if (pendingImage && pendingPrompt) {
+          setIsLoading(false)
+          setIsGenerating(true)
+          try {
+            setGenStep('Conversion de ta photo...')
+            const res = await fetch(pendingImage)
+            const blob = await res.blob()
+            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
+
+            setGenStep('Upload de ta photo...')
+            const publicUrl = await uploadToSupabase(file, userId)
+
+            setGenStep('Génération de ton mytho...')
+            const resultUrl = await generateImage(
+              { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
+              (s) => setGenStep(s)
+            )
+
+            setGenStep('Sauvegarde...')
+            await supabase.from('mythos').insert([{
+              user_id: userId, image_url: resultUrl, prompt: pendingPrompt
+            }])
+
+            // Nettoyer
+            localStorage.removeItem('gomytho_pending_image')
+            localStorage.removeItem('gomytho_pending_prompt')
+            localStorage.removeItem('gomytho_pending_ratio')
+            window.location.href = '/resultats'
+          } catch {
+            // Génération échouée → aller sur /makemytho avec le prompt pré-rempli
+            window.location.href = '/makemytho?pending=1'
           }
+        } else {
+          window.location.href = '/resultats'
         }
       }
     } catch (error: unknown) {
@@ -95,6 +133,21 @@ export default function Signup() {
 
   return (
     <div className="min-h-screen bg-primary-bg">
+      {/* Écran de génération automatique */}
+      {isGenerating && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6"
+          style={{ background: '#0A0E1A' }}>
+          <div className="text-center max-w-sm">
+            <div className="w-20 h-20 rounded-full border-4 border-lime/20 border-t-lime animate-spin mx-auto mb-6" />
+            <h2 className="text-2xl font-black text-white mb-2">Génération en cours...</h2>
+            <p className="text-lime font-semibold text-sm mb-2">{genStep}</p>
+            <p className="text-text-secondary text-xs">Ça prend ~15 secondes, ne ferme pas cette page</p>
+            <div className="mt-6 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(198,255,60,0.1)' }}>
+              <div className="h-full bg-lime animate-pulse rounded-full w-full" />
+            </div>
+          </div>
+        </div>
+      )}
       <Header showLogin={false} />
 
       <div className="pt-32 pb-20 px-4">
