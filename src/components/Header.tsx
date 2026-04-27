@@ -30,7 +30,11 @@ export default function Header({ showLogin = true }: HeaderProps) {
   }, [])
 
   const handleLogin = () => {
-    navigate('/signup')
+    if (user) {
+      navigate('/app')
+    } else {
+      navigate('/login')
+    }
   }
 
   return (
@@ -53,7 +57,7 @@ export default function Header({ showLogin = true }: HeaderProps) {
             onClick={handleLogin}
             className="text-lime hover:text-lime-hover font-semibold transition-colors hover:underline"
           >
-            {user ? 'Dashboard' : 'Se connecter'}
+            {user ? 'Mon app →' : 'Se connecter'}
           </button>
         )}
       </div>

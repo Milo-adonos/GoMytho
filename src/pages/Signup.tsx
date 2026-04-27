@@ -213,7 +213,7 @@ export default function Signup() {
             <p className="text-text-secondary">
               Déjà un compte ?{' '}
               <button
-                onClick={() => navigate('/app')}
+                onClick={() => navigate('/login')}
                 className="text-lime hover:underline font-semibold"
               >
                 Se connecter

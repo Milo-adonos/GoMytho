@@ -7,6 +7,7 @@ const Create = lazy(() => import('./pages/Create'))
 const Analyzing = lazy(() => import('./pages/Analyzing'))
 const Unlock = lazy(() => import('./pages/Unlock'))
 const Signup = lazy(() => import('./pages/Signup'))
+const Login = lazy(() => import('./pages/Login'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Creations = lazy(() => import('./pages/Creations'))
 
@@ -44,6 +45,7 @@ function App() {
         <Route path="/analyzing" element={<Analyzing />} />
         <Route path="/unlock" element={<Unlock />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/login" element={<Login />} />
         {/* App interne — layout avec bottom nav */}
         <Route path="/app" element={<AppLayout />}>
           <Route index element={<AppCreations />} />
