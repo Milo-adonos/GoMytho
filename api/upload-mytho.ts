@@ -72,7 +72,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const { data: publicData } = adminClient.storage.from(safeBucketName).getPublicUrl(forcedPath)
-    return res.status(200).json({ publicUrl: publicData.publicUrl })
+    const signed = await adminClient.storage
+      .from(safeBucketName)
+      .createSignedUrl(forcedPath, 60 * 60 * 24 * 30) // 30 jours
+
+    return res.status(200).json({
+      publicUrl: publicData.publicUrl,
+      signedUrl: signed.data?.signedUrl || null,
+      path: forcedPath,
+    })
   } catch (error) {
     console.error('upload-mytho error:', error)
     return res.status(500).json({ error: 'Upload serveur impossible' })

@@ -384,67 +384,30 @@ export async function uploadToSupabase(file: File, userId: string): Promise<stri
 
   const fileExt = file.name.split('.').pop() || 'jpg'
   const fileName = `${userId}/${Date.now()}.${fileExt}`
+  const { data: sessionData } = await supabase.auth.getSession()
+  const token = sessionData?.session?.access_token
+  if (!token) throw new Error('Session utilisateur introuvable pour upload serveur.')
 
-  const doUpload = async () => {
-    return supabase.storage
-      .from(bucketName)
-      .upload(fileName, file, { contentType: file.type, upsert: false })
+  const dataUrl = await fileToDataUrl(file)
+  const response = await fetch('/api/upload-mytho', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      bucketName,
+      fileName,
+      contentType: file.type || 'image/jpeg',
+      dataUrl,
+    }),
+  })
+
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok || (!payload?.signedUrl && !payload?.publicUrl)) {
+    throw new Error(payload?.error || 'Upload serveur échoué')
   }
-
-  let { error } = await doUpload()
-
-  // Bucket manquant: essayer de le créer puis retenter une fois
-  if (error && /bucket.*not found/i.test(error.message || '')) {
-    const { error: createErr } = await supabase.storage.createBucket(bucketName, {
-      public: true,
-      fileSizeLimit: '20MB',
-      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'],
-    })
-
-    if (!createErr) {
-      const retry = await doUpload()
-      error = retry.error
-    } else {
-      throw new Error(
-        `Bucket Supabase introuvable (${bucketName}). Crée un bucket public nommé "${bucketName}" dans Supabase Storage.`
-      )
-    }
-  }
-
-  // Toute erreur upload client => fallback upload serveur (service role)
-  // pour éviter les blocages RLS/policies/bad request côté Storage.
-  if (error) {
-    const { data: sessionData } = await supabase.auth.getSession()
-    const token = sessionData?.session?.access_token
-    if (!token) throw new Error('Session utilisateur introuvable pour upload serveur.')
-
-    const dataUrl = await fileToDataUrl(file)
-    const response = await fetch('/api/upload-mytho', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        bucketName,
-        fileName,
-        contentType: file.type || 'image/jpeg',
-        dataUrl,
-      }),
-    })
-
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok || !payload?.publicUrl) {
-      throw new Error(payload?.error || 'Upload serveur échoué')
-    }
-    return payload.publicUrl as string
-  }
-
-  const { data: { publicUrl } } = supabase.storage
-    .from(bucketName)
-    .getPublicUrl(fileName)
-
-  return publicUrl
+  return (payload?.signedUrl || payload?.publicUrl) as string
 }
 
 /**
