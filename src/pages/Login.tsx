@@ -16,20 +16,24 @@ export default function Login() {
     setError('')
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
 
       if (error) {
         if (error.message?.includes('Invalid login credentials')) {
           setError('❌ Email ou mot de passe incorrect. Pas encore de compte ? Commence par payer ton abonnement.')
+        } else if (error.message?.includes('Email not confirmed')) {
+          // Email non confirmé → on tente quand même de récupérer la session
+          const { data: { session } } = await supabase.auth.getSession()
+          if (session) { window.location.href = '/resultats'; return }
+          setError('❌ Confirme ton email avant de te connecter.')
         } else {
           setError(error.message || 'Une erreur est survenue')
         }
         return
       }
 
-      if (data.session) {
-        window.location.href = '/resultats'
-      }
+      // Connexion réussie → redirection inconditionnelle
+      window.location.href = '/resultats'
     } catch {
       setError('Une erreur est survenue. Réessaie.')
     } finally {
