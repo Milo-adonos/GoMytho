@@ -58,6 +58,7 @@ export default function AppCreate() {
   const [resultDataUrl, setResultDataUrl] = useState<string | null>(null)
 
   useEffect(() => {
+    // 1) Mode `?pending=` : utilisateur revient pour finaliser → on consomme.
     if (searchParams.get('pending')) {
       const savedPrompt = localStorage.getItem('gomytho_pending_prompt')
       const savedRatio = localStorage.getItem('gomytho_pending_ratio') as AspectRatio | null
@@ -68,6 +69,41 @@ export default function AppCreate() {
         localStorage.removeItem('gomytho_pending_prompt')
         localStorage.removeItem('gomytho_pending_ratio')
       }
+      return
+    }
+
+    // 2) Sans `?pending=` : si une auto-gen a échoué (les pending data sont
+    // toujours là), on les pré-remplit pour que le user puisse relancer en 1 clic.
+    const savedImage = localStorage.getItem('gomytho_pending_image')
+    const savedImage2 = localStorage.getItem('gomytho_pending_image2')
+    const savedPrompt = localStorage.getItem('gomytho_pending_prompt')
+    const savedRatio = localStorage.getItem('gomytho_pending_ratio') as AspectRatio | null
+    if (savedImage && savedPrompt) {
+      ;(async () => {
+        try {
+          const r = await fetch(savedImage)
+          const b = await r.blob()
+          const f = new File([b], 'photo.jpg', { type: b.type || 'image/jpeg' })
+          setImage(f)
+          setImagePreview(savedImage)
+        } catch (e) {
+          console.warn('[AppCreate] restore image pending échoué:', e)
+        }
+        if (savedImage2) {
+          try {
+            const r2 = await fetch(savedImage2)
+            const b2 = await r2.blob()
+            const f2 = new File([b2], 'photo2.jpg', { type: b2.type || 'image/jpeg' })
+            setImage2(f2)
+            setImagePreview2(savedImage2)
+          } catch (e2) {
+            console.warn('[AppCreate] restore image2 pending échoué:', e2)
+          }
+        }
+        setPrompt(savedPrompt)
+        if (savedRatio) setAspectRatio(savedRatio)
+        setPendingBanner(true)
+      })()
     }
   }, [searchParams])
 
@@ -154,20 +190,50 @@ export default function AppCreate() {
         return
       }
 
+      // Helper retry (3 tentatives + backoff exponentiel) — on ne veut pas
+      // qu'une coupure réseau temporaire fasse échouer la génération.
+      const withRetry = async <T,>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> => {
+        let lastErr: unknown = null
+        for (let i = 1; i <= attempts; i += 1) {
+          try {
+            const r = await fn()
+            if (i > 1) console.info(`[AppCreate] ${label} → réussi après ${i} tentatives`)
+            return r
+          } catch (err) {
+            lastErr = err
+            console.warn(`[AppCreate] ${label} échec ${i}/${attempts}:`, err)
+            if (i < attempts) {
+              const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
+              await new Promise((r) => setTimeout(r, delay))
+            }
+          }
+        }
+        throw lastErr
+      }
+
       // 1) Upload de la photo source (et de la 2e photo si présente) vers Supabase
       setStep(image2 ? 'Upload des photos...' : 'Upload de ta photo...')
-      const sourceUrl = await uploadToSupabase(image, activeUser.id)
+      const sourceUrl = await withRetry('upload photo 1', () => uploadToSupabase(image, activeUser!.id))
       let sourceUrl2: string | null = null
       if (image2) {
-        sourceUrl2 = await uploadToSupabase(image2, activeUser.id)
+        try {
+          sourceUrl2 = await withRetry('upload photo 2', () => uploadToSupabase(image2, activeUser!.id))
+        } catch (e2) {
+          console.warn('[AppCreate] upload photo 2 abandonné, on continue avec la photo 1 seule:', e2)
+        }
       }
       const imageUrls = sourceUrl2 ? [sourceUrl, sourceUrl2] : [sourceUrl]
 
       // 2) Génération IA — retourne TOUJOURS un dataUrl base64 prêt à afficher
       setStep('Génération IA...')
-      const { dataUrl } = await generateMytho(
-        { userPrompt: prompt, imageUrls, aspectRatio },
-        (s) => setStep(s)
+      const { dataUrl, remoteUrl } = await withRetry(
+        'generateMytho',
+        () =>
+          generateMytho(
+            { userPrompt: prompt, imageUrls, aspectRatio },
+            (s) => setStep(s)
+          ),
+        2
       )
 
       // 3) Affichage immédiat depuis la copie locale base64
@@ -175,11 +241,34 @@ export default function AppCreate() {
 
       // 4) Sauvegarde cloud (manifeste Supabase Storage) + cache local
       setStep('Sauvegarde...')
-      await saveMythoToCloud({
-        userId: activeUser.id,
-        generatedDataUrl: dataUrl,
-        prompt,
-      })
+      try {
+        await withRetry(
+          'saveMythoToCloud',
+          () => saveMythoToCloud({ userId: activeUser!.id, generatedDataUrl: dataUrl, prompt }),
+          2
+        )
+      } catch (saveErr) {
+        // L'image existe → on la met quand même dans le cache local pour qu'elle
+        // apparaisse dans Créations au prochain refresh.
+        console.warn('[AppCreate] saveMythoToCloud KO, fallback cache local:', saveErr)
+        try {
+          const { readLocalCreations, writeLocalCreations } = await import('@/lib/mythos-sync')
+          const list = readLocalCreations(activeUser.id)
+          writeLocalCreations(activeUser.id, [
+            {
+              id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              user_id: activeUser.id,
+              image_url: remoteUrl || dataUrl,
+              preview_data_url: dataUrl,
+              prompt,
+              created_at: new Date().toISOString(),
+            },
+            ...list,
+          ])
+        } catch (cacheErr) {
+          console.error('[AppCreate] fallback cache local KO:', cacheErr)
+        }
+      }
 
       // 5) Décrément des crédits en DB (cross-device) — non bloquant
       const newCredits = availableCredits - CREDITS_PER_IMAGE
@@ -197,6 +286,15 @@ export default function AppCreate() {
         (activeUser.plan as 'weekly' | 'monthly' | 'free' | undefined) || 'monthly',
         newCredits
       )
+
+      // Génération manuelle réussie → on nettoie les pending laissés par
+      // une éventuelle auto-gen précédente qui aurait échoué.
+      try {
+        localStorage.removeItem('gomytho_pending_image')
+        localStorage.removeItem('gomytho_pending_image2')
+        localStorage.removeItem('gomytho_pending_prompt')
+        localStorage.removeItem('gomytho_pending_ratio')
+      } catch { /* ignore */ }
     } catch (err: unknown) {
       console.error(err)
       const msg = err instanceof Error ? err.message : 'Erreur inconnue'

@@ -6,6 +6,40 @@ import PhotoCard from '@/components/PhotoCard'
 import { AspectRatio } from '@/lib/kie-api'
 import { convertToJpeg } from '@/lib/image-utils'
 
+// localStorage.setItem qui ne perd JAMAIS la donnée pending : si on hit le
+// quota, on purge progressivement les vieux caches non critiques (creations,
+// preview cache, etc.) avant de re-tenter. C'est crucial : sans `pending_image`
+// après paiement, l'auto-gen peut pas reconstruire le mytho.
+function safeSetPending(key: string, value: string): boolean {
+  const tryWrite = (): boolean => {
+    try {
+      localStorage.setItem(key, value)
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (tryWrite()) return true
+  const purgeKeys = Object.keys(localStorage).filter(
+    (k) =>
+      k.startsWith('gomytho_creations_preview_') ||
+      k.startsWith('gomytho_image_cache_') ||
+      k.startsWith('gomytho_thumb_')
+  )
+  for (const k of purgeKeys) {
+    try { localStorage.removeItem(k) } catch { /* ignore */ }
+    if (tryWrite()) return true
+  }
+  // Dernière chance : purge le cache des créations (le user les retrouvera via cloud sync)
+  const creationKeys = Object.keys(localStorage).filter((k) => k.startsWith('gomytho_creations_'))
+  for (const k of creationKeys) {
+    try { localStorage.removeItem(k) } catch { /* ignore */ }
+    if (tryWrite()) return true
+  }
+  console.error('[Create] localStorage saturé, impossible de persister', key)
+  return false
+}
+
 export default function Create() {
   const navigate = useNavigate()
   // Image 1 = sujet (obligatoire). Image 2 = scène cible (optionnel, image-to-image).
@@ -25,7 +59,7 @@ export default function Create() {
       const { file: jpeg, preview } = await convertToJpeg(file)
       setImage(jpeg)
       setImagePreview(preview)
-      try { localStorage.setItem('gomytho_pending_image', preview) } catch { /* localStorage plein */ }
+      safeSetPending('gomytho_pending_image', preview)
     } finally {
       setIsConverting(false)
     }
@@ -36,7 +70,7 @@ export default function Create() {
     try {
       const { preview } = await convertToJpeg(file)
       setImagePreview2(preview)
-      try { localStorage.setItem('gomytho_pending_image2', preview) } catch { /* localStorage plein */ }
+      safeSetPending('gomytho_pending_image2', preview)
     } finally {
       setIsConverting2(false)
     }
@@ -65,15 +99,17 @@ export default function Create() {
       sessionStorage.removeItem('uploadedImage2')
     }
     // Persister aussi dans localStorage (survit au redirect Stripe)
-    try {
-      localStorage.setItem('gomytho_pending_prompt', prompt)
-      localStorage.setItem('gomytho_pending_ratio', aspectRatio)
-      if (imagePreview2) {
-        localStorage.setItem('gomytho_pending_image2', imagePreview2)
-      } else {
-        localStorage.removeItem('gomytho_pending_image2')
-      }
-    } catch { /* ignore */ }
+    safeSetPending('gomytho_pending_prompt', prompt)
+    safeSetPending('gomytho_pending_ratio', aspectRatio)
+    if (imagePreview2) {
+      safeSetPending('gomytho_pending_image2', imagePreview2)
+    } else {
+      try { localStorage.removeItem('gomytho_pending_image2') } catch { /* ignore */ }
+    }
+    // Sécurité supplémentaire : ré-écrit l'image 1 si elle a été perdue entretemps
+    if (imagePreview && !localStorage.getItem('gomytho_pending_image')) {
+      safeSetPending('gomytho_pending_image', imagePreview)
+    }
     navigate('/chargementmytho')
   }
 

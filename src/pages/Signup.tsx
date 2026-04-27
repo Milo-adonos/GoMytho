@@ -71,6 +71,26 @@ export default function Signup() {
       return
     }
 
+    // Retry helper avec backoff exponentiel — on ne veut PAS échouer.
+    const withRetry = async <T,>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> => {
+      let lastErr: unknown = null
+      for (let i = 1; i <= attempts; i += 1) {
+        try {
+          const r = await fn()
+          if (i > 1) console.info(`[signup] ${label} → réussi après ${i} tentatives`)
+          return r
+        } catch (err) {
+          lastErr = err
+          console.warn(`[signup] ${label} échec ${i}/${attempts}:`, err)
+          if (i < attempts) {
+            const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
+            await new Promise((r) => setTimeout(r, delay))
+          }
+        }
+      }
+      throw lastErr
+    }
+
     setIsLoading(false)
     setIsGenerating(true)
     try {
@@ -91,25 +111,58 @@ export default function Signup() {
       }
 
       setGenStep(file2 ? 'Upload de tes photos...' : 'Upload de ta photo...')
-      const publicUrl = await uploadToSupabase(file, userId)
+      const publicUrl = await withRetry('upload photo 1', () => uploadToSupabase(file, userId))
       let publicUrl2: string | null = null
       if (file2) {
         try {
-          publicUrl2 = await uploadToSupabase(file2, userId)
+          publicUrl2 = await withRetry('upload photo 2', () => uploadToSupabase(file2 as File, userId))
         } catch (e2) {
-          console.warn('[signup] upload photo 2 échoué:', e2)
+          console.warn('[signup] upload photo 2 abandonné après retries:', e2)
         }
       }
       const imageUrls = publicUrl2 ? [publicUrl, publicUrl2] : [publicUrl]
 
       setGenStep('Génération de ton mytho...')
-      const { dataUrl } = await generateMytho(
-        { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
-        (s) => setGenStep(s)
+      const { dataUrl, remoteUrl } = await withRetry(
+        'generateMytho',
+        () =>
+          generateMytho(
+            { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
+            (s) => setGenStep(s)
+          ),
+        2
       )
 
       setGenStep('Sauvegarde...')
-      await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
+      try {
+        await withRetry(
+          'saveMythoToCloud',
+          () => saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt }),
+          2
+        )
+      } catch (saveErr) {
+        // L'image EXISTE — on garantit qu'elle apparaît dans Créations même si
+        // saveMythoToCloud a planté → fallback cache local pur.
+        console.warn('[signup] saveMythoToCloud KO, fallback cache local pur:', saveErr)
+        try {
+          const { readLocalCreations, writeLocalCreations } = await import('@/lib/mythos-sync')
+          const list = readLocalCreations(userId)
+          writeLocalCreations(userId, [
+            {
+              id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              user_id: userId,
+              image_url: remoteUrl || dataUrl,
+              preview_data_url: dataUrl,
+              prompt: pendingPrompt,
+              created_at: new Date().toISOString(),
+            },
+            ...list,
+          ])
+        } catch (cacheErr) {
+          console.error('[signup] fallback cache local lui-même KO:', cacheErr)
+          throw saveErr
+        }
+      }
 
       localStorage.removeItem('gomytho_pending_image')
       localStorage.removeItem('gomytho_pending_image2')
@@ -117,10 +170,8 @@ export default function Signup() {
       localStorage.removeItem('gomytho_pending_ratio')
       window.location.href = '/resultats'
     } catch (genErr) {
-      console.warn('[signup] auto-génération échouée :', genErr)
-      // En cas d'échec, on garde les pending data pour permettre une relance
-      // manuelle, mais on emmène toujours le user dans Créations (pour qu'il
-      // ne se retrouve pas perdu sur /makemytho avec un message ambigu).
+      console.error('[signup] auto-génération échouée définitivement après retries :', genErr)
+      // On garde les pending data → relance manuelle possible depuis /makemytho.
       try {
         alert('La génération automatique a rencontré un souci. Tu peux relancer depuis l\'onglet "Créer".')
       } catch { /* ignore */ }

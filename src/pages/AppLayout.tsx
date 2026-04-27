@@ -35,6 +35,30 @@ function clearPendingMytho() {
   } catch { /* ignore */ }
 }
 
+// ─── Retry helper avec backoff exponentiel ─────────────────────────────────
+async function withRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  attempts = 3
+): Promise<T> {
+  let lastErr: unknown = null
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      const result = await fn()
+      if (i > 1) console.info(`[autoGen] ${label} → réussi après ${i} tentatives`)
+      return result
+    } catch (err) {
+      lastErr = err
+      console.warn(`[autoGen] ${label} échec tentative ${i}/${attempts}:`, err)
+      if (i < attempts) {
+        const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
+        await new Promise((r) => setTimeout(r, delay))
+      }
+    }
+  }
+  throw lastErr
+}
+
 async function tryAutoGenerate(userId: string): Promise<boolean> {
   const pendingImage = localStorage.getItem('gomytho_pending_image')
   const pendingImage2 = localStorage.getItem('gomytho_pending_image2')
@@ -45,32 +69,73 @@ async function tryAutoGenerate(userId: string): Promise<boolean> {
     return false
   }
   try {
-    console.info('[autoGen] step 1/4 — upload photo principale...')
-    const publicUrl = await dataUrlToPublicUrl(pendingImage, userId, 'photo.jpg')
+    console.info('[autoGen] step 1/4 — upload photo principale (retry x3)...')
+    const publicUrl = await withRetry('upload photo 1', () =>
+      dataUrlToPublicUrl(pendingImage, userId, 'photo.jpg')
+    )
+
     let publicUrl2: string | null = null
     if (pendingImage2) {
       try {
-        console.info('[autoGen] step 1bis — upload photo 2...')
-        publicUrl2 = await dataUrlToPublicUrl(pendingImage2, userId, 'photo2.jpg')
+        console.info('[autoGen] step 1bis — upload photo 2 (retry x3)...')
+        publicUrl2 = await withRetry('upload photo 2', () =>
+          dataUrlToPublicUrl(pendingImage2, userId, 'photo2.jpg')
+        )
       } catch (e2) {
-        console.warn('[autoGen] upload photo 2 échoué (non bloquant):', e2)
+        console.warn('[autoGen] upload photo 2 abandonné après retries (non bloquant):', e2)
       }
     }
+
     const imageUrls = publicUrl2 ? [publicUrl, publicUrl2] : [publicUrl]
-    console.info('[autoGen] step 2/4 — génération via Kie.ai...', { imageCount: imageUrls.length })
-    const { dataUrl } = await generateMytho(
-      { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
-      (s) => console.info('[autoGen] kie:', s)
+    console.info('[autoGen] step 2/4 — génération via Kie.ai (retry x2)...', { imageCount: imageUrls.length })
+    const { dataUrl, remoteUrl } = await withRetry(
+      'generateMytho',
+      () =>
+        generateMytho(
+          { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
+          (s) => console.info('[autoGen] kie:', s)
+        ),
+      2
     )
+
     console.info('[autoGen] step 3/4 — sauvegarde dans Créations...')
-    await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
-    console.info('[autoGen] step 4/4 — clean pending data')
+    // L'image est générée — on est obligés de la mettre dans Créations.
+    // Si saveMythoToCloud foire (ex. quota Supabase), on retombe sur un
+    // ajout direct au cache local avec l'URL Kie.ai (toujours visible).
+    try {
+      await withRetry(
+        'saveMythoToCloud',
+        () => saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt }),
+        2
+      )
+    } catch (saveErr) {
+      console.warn('[autoGen] saveMythoToCloud KO, fallback cache local pur:', saveErr)
+      try {
+        const { readLocalCreations, writeLocalCreations } = await import('@/lib/mythos-sync')
+        const list = readLocalCreations(userId)
+        writeLocalCreations(userId, [
+          {
+            id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            user_id: userId,
+            image_url: remoteUrl || dataUrl,
+            preview_data_url: dataUrl,
+            prompt: pendingPrompt,
+            created_at: new Date().toISOString(),
+          },
+          ...list,
+        ])
+      } catch (cacheErr) {
+        console.error('[autoGen] fallback cache local lui-même KO:', cacheErr)
+        throw saveErr
+      }
+    }
+
+    console.info('[autoGen] step 4/4 — clean pending data ✅')
     clearPendingMytho()
     return true
   } catch (err) {
-    console.error('[autoGen] échec :', err)
-    // On NE clear PAS les pending data en cas d'échec → permet au user
-    // de relancer manuellement depuis /makemytho.
+    console.error('[autoGen] échec définitif après retries :', err)
+    // On NE clear PAS les pending data → relance manuelle possible depuis /makemytho.
     return false
   }
 }
