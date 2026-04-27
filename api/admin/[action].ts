@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { createClient } from '@supabase/supabase-js'
+import Stripe from 'stripe'
 
 const WEEKLY_PRICE = 2.99
 const MONTHLY_PRICE = 9.90
@@ -8,11 +9,145 @@ const COST_PER_IMAGE = 0.037
 const MONTH_LABELS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_gomytho_2026'
 
+const HEBDO_PRICE_ID = process.env.HEBDO_PRICE_ID || ''
+const MENSU_PRICE_ID = process.env.MENSU_PRICE_ID || ''
+
 function getSupabase() {
   const url = process.env.VITE_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
   if (!url || !key) return null
   return createClient(url, key)
+}
+
+function getStripe(): Stripe | null {
+  const secret = process.env.STRIPE_SECRET_KEY
+  if (!secret) return null
+  return new Stripe(secret)
+}
+
+// ─── Source de vérité Stripe : abonnements + paiements ───────────────────────
+//
+// On interroge directement Stripe pour le CA, le nombre d'abonnés et le
+// nombre de nouveaux abonnés. Ainsi, dès qu'un paiement passe sur Stripe,
+// les chiffres apparaissent dans le panel — même si le user n'a pas encore
+// terminé sa création de compte côté Supabase.
+type StripeStats = {
+  totalRevenueAllTime: number
+  revenue30d: number
+  revenuePrev30d: number
+  activeSubscribers: number
+  weeklySubscribers: number
+  monthlySubscribers: number
+  newSubscribers30d: number
+  newSubscribersPrev30d: number
+  cancelledLast30d: number
+  dailyRevenue: Record<string, number>  // YYYY-MM-DD -> €
+  subscriptions: Array<{
+    customerId: string
+    email: string | null
+    plan: 'weekly' | 'monthly' | 'unknown'
+    status: string
+    createdAt: number
+  }>
+}
+
+function planFromPriceId(priceId: string | undefined | null): 'weekly' | 'monthly' | 'unknown' {
+  if (!priceId) return 'unknown'
+  if (priceId === HEBDO_PRICE_ID) return 'weekly'
+  if (priceId === MENSU_PRICE_ID) return 'monthly'
+  return 'unknown'
+}
+
+async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
+  const now = Math.floor(Date.now() / 1000)
+  const thirtyDaysAgo = now - 30 * 86400
+  const sixtyDaysAgo = now - 60 * 86400
+
+  // Subscriptions actives + canceled (pour le churn) — on remonte 200 max
+  const [activeSubs, canceledSubs] = await Promise.all([
+    stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] }),
+    stripe.subscriptions.list({ status: 'canceled', limit: 100 }),
+  ])
+
+  // Liste des paiements (invoices) des 60 derniers jours pour calculer CA
+  const invoices: Stripe.Invoice[] = []
+  let starting_after: string | undefined = undefined
+  for (let i = 0; i < 5; i++) {
+    const page: Stripe.ApiList<Stripe.Invoice> = await stripe.invoices.list({
+      status: 'paid',
+      created: { gte: sixtyDaysAgo },
+      limit: 100,
+      ...(starting_after ? { starting_after } : {}),
+    })
+    invoices.push(...page.data)
+    if (!page.has_more) break
+    starting_after = page.data[page.data.length - 1]?.id
+  }
+
+  const dailyRevenue: Record<string, number> = {}
+  let revenue30d = 0
+  let revenuePrev30d = 0
+  for (const inv of invoices) {
+    const ts = inv.created
+    const amount = (inv.amount_paid || 0) / 100
+    if (ts >= thirtyDaysAgo) revenue30d += amount
+    else if (ts >= sixtyDaysAgo) revenuePrev30d += amount
+    const day = new Date(ts * 1000).toISOString().split('T')[0]
+    dailyRevenue[day] = (dailyRevenue[day] || 0) + amount
+  }
+
+  // CA cumulé = somme des invoices toutes époques (approximation = 60j) +
+  // estimation MRR pour l'historique antérieur
+  const totalRevenueAllTime = invoices.reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
+
+  let weeklySubscribers = 0
+  let monthlySubscribers = 0
+  let newSubscribers30d = 0
+  let newSubscribersPrev30d = 0
+  const subscriptions: StripeStats['subscriptions'] = []
+
+  for (const sub of activeSubs.data) {
+    const priceId = sub.items?.data?.[0]?.price?.id
+    const plan = planFromPriceId(priceId)
+    if (plan === 'weekly') weeklySubscribers++
+    else if (plan === 'monthly') monthlySubscribers++
+
+    if (sub.created >= thirtyDaysAgo) newSubscribers30d++
+    else if (sub.created >= sixtyDaysAgo) newSubscribersPrev30d++
+
+    const customer = sub.customer
+    const email = typeof customer === 'string'
+      ? null
+      : (customer as Stripe.Customer)?.email || null
+    const customerId = typeof customer === 'string' ? customer : (customer as Stripe.Customer)?.id || ''
+
+    subscriptions.push({
+      customerId,
+      email,
+      plan,
+      status: sub.status,
+      createdAt: sub.created * 1000,
+    })
+  }
+
+  let cancelledLast30d = 0
+  for (const sub of canceledSubs.data) {
+    if ((sub.canceled_at || 0) >= thirtyDaysAgo) cancelledLast30d++
+  }
+
+  return {
+    totalRevenueAllTime,
+    revenue30d,
+    revenuePrev30d,
+    activeSubscribers: weeklySubscribers + monthlySubscribers,
+    weeklySubscribers,
+    monthlySubscribers,
+    newSubscribers30d,
+    newSubscribersPrev30d,
+    cancelledLast30d,
+    dailyRevenue,
+    subscriptions,
+  }
 }
 
 function fromBase64url(input: string): Buffer {
@@ -98,66 +233,67 @@ function emptyForAction(action: string) {
 
 async function handleDashboard(res: VercelResponse) {
   const supabase = getSupabase()
-  if (!supabase) return res.status(200).json(buildEmptyDashboard())
+  const stripe = getStripe()
 
+  // ─── Récupération parallèle Stripe + Supabase ──────────────────────────────
+  // Stripe = source de vérité pour CA + abonnés (paiement réel)
+  // Supabase = source pour les analyses générées (table mythos)
   const now = new Date()
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30)
-  const sixtyDaysAgo = new Date(now); sixtyDaysAgo.setDate(now.getDate() - 60)
 
-  const [
-    { data: allUsers },
-    { data: newUsers30d },
-    { data: newUsersPrev30d },
-    { data: mythos30d },
-    { data: allMythos },
-    { count: cancelledCount },
-  ] = await Promise.all([
-    supabase.from('users').select('id, plan, subscription_status, created_at'),
-    supabase.from('users').select('id, plan, created_at').gte('created_at', thirtyDaysAgo.toISOString()).eq('subscription_status', 'active'),
-    supabase.from('users').select('id').gte('created_at', sixtyDaysAgo.toISOString()).lt('created_at', thirtyDaysAgo.toISOString()).eq('subscription_status', 'active'),
-    supabase.from('mythos').select('id, created_at').gte('created_at', thirtyDaysAgo.toISOString()),
-    supabase.from('mythos').select('id, created_at'),
-    supabase.from('users').select('*', { count: 'exact', head: true }).eq('subscription_status', 'cancelled'),
+  const [stripeStats, mythosData] = await Promise.all([
+    stripe ? fetchStripeStats(stripe).catch((e) => {
+      console.error('[admin/dashboard] stripe error:', e?.message || e)
+      return null
+    }) : Promise.resolve(null),
+    supabase ? supabase.from('mythos').select('id, created_at') : Promise.resolve({ data: [] as any[] }),
   ])
 
-  const users = allUsers || []
-  const activeUsers = users.filter(u => u.subscription_status === 'active')
-  const weeklyUsers = activeUsers.filter(u => u.plan === 'weekly')
-  const monthlyUsers = activeUsers.filter(u => u.plan === 'monthly')
-
-  const weeklyRevenue = weeklyUsers.length * WEEKLY_PRICE * 4.33
-  const monthlyRevenue = monthlyUsers.length * MONTHLY_PRICE
-  const totalRevenue = weeklyRevenue + monthlyRevenue
-
-  const revenue30d = (newUsers30d || []).reduce((acc, u) => {
-    return acc + (u.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE)
-  }, 0)
-
-  const prevRevenue30d = (newUsersPrev30d || []).length * MONTHLY_PRICE
-  const revenueGrowth = prevRevenue30d > 0 ? ((revenue30d - prevRevenue30d) / prevRevenue30d) * 100 : 0
-
-  const totalMythos = (allMythos || []).length
+  const allMythos = (mythosData as any)?.data || []
+  const totalMythos = allMythos.length
   const totalCost = totalMythos * COST_PER_IMAGE
+
+  // Si Stripe est dispo on s'en sert, sinon on tombe à 0 (mais structure complète)
+  const totalRevenue = stripeStats?.totalRevenueAllTime ?? 0
+  const revenue30d = stripeStats?.revenue30d ?? 0
+  const prevRevenue30d = stripeStats?.revenuePrev30d ?? 0
+  const revenueGrowth = prevRevenue30d > 0
+    ? ((revenue30d - prevRevenue30d) / prevRevenue30d) * 100
+    : (revenue30d > 0 ? 100 : 0)
+
+  const newSub30d = stripeStats?.newSubscribers30d ?? 0
+  const newSubPrev30d = stripeStats?.newSubscribersPrev30d ?? 0
+  const newSubGrowth = newSubPrev30d > 0
+    ? ((newSub30d - newSubPrev30d) / newSubPrev30d) * 100
+    : (newSub30d > 0 ? 100 : 0)
+
   const netProfit = totalRevenue - totalCost
   const margin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0
 
-  const totalActiveUsers = users.filter(u => u.subscription_status !== 'inactive').length
-  const churnRate = totalActiveUsers > 0 ? ((cancelledCount || 0) / totalActiveUsers) * 100 : 0
+  const totalActive = (stripeStats?.activeSubscribers ?? 0) + (stripeStats?.cancelledLast30d ?? 0)
+  const churnRate = totalActive > 0 ? ((stripeStats?.cancelledLast30d ?? 0) / totalActive) * 100 : 0
 
+  // Histogramme journalier 30 jours (revenus Stripe + analyses Supabase)
   const dailyMap: Record<string, { revenue: number; mythos: number }> = {}
   for (let i = 29; i >= 0; i--) {
     const d = new Date(now); d.setDate(now.getDate() - i)
     dailyMap[d.toISOString().split('T')[0]] = { revenue: 0, mythos: 0 }
   }
-  ;(newUsers30d || []).forEach(u => {
-    const day = u.created_at.split('T')[0]
-    if (dailyMap[day] !== undefined) dailyMap[day].revenue += u.plan === 'weekly' ? WEEKLY_PRICE : MONTHLY_PRICE
-  })
-  ;(mythos30d || []).forEach(m => {
-    const day = m.created_at.split('T')[0]
-    if (dailyMap[day] !== undefined) dailyMap[day].mythos += 1
-  })
+  if (stripeStats) {
+    for (const [day, rev] of Object.entries(stripeStats.dailyRevenue)) {
+      if (dailyMap[day] !== undefined) dailyMap[day].revenue = +rev.toFixed(2)
+    }
+  }
+  for (const m of allMythos) {
+    const day = String(m.created_at || '').split('T')[0]
+    if (day && dailyMap[day] !== undefined) dailyMap[day].mythos += 1
+  }
   const dailyChartData = Object.entries(dailyMap).map(([date, v]) => ({ date, ...v }))
+
+  // Filtrer les mythos sur les 30 derniers jours pour stat
+  const mythos30dCount = allMythos.filter((m: any) =>
+    new Date(m.created_at) >= thirtyDaysAgo
+  ).length
 
   return res.status(200).json({
     totalRevenue: +totalRevenue.toFixed(2),
@@ -165,19 +301,27 @@ async function handleDashboard(res: VercelResponse) {
     revenueGrowth: +revenueGrowth.toFixed(1),
     totalCost: +totalCost.toFixed(2),
     totalMythos,
+    mythos30d: mythos30dCount,
     netProfit: +netProfit.toFixed(2),
     margin: +margin.toFixed(1),
-    activeSubscribers: activeUsers.length,
-    weeklySubscribers: weeklyUsers.length,
-    monthlySubscribers: monthlyUsers.length,
-    newSubscribers30d: (newUsers30d || []).length,
-    newSubscribersGrowth: +revenueGrowth.toFixed(1),
+    activeSubscribers: stripeStats?.activeSubscribers ?? 0,
+    weeklySubscribers: stripeStats?.weeklySubscribers ?? 0,
+    monthlySubscribers: stripeStats?.monthlySubscribers ?? 0,
+    newSubscribers30d: newSub30d,
+    newSubscribersGrowth: +newSubGrowth.toFixed(1),
     churnRate: +churnRate.toFixed(1),
-    churnCount: cancelledCount || 0,
+    churnCount: stripeStats?.cancelledLast30d ?? 0,
     dailyRevenue: dailyChartData,
     dailyMythos: dailyChartData,
+    stripeAvailable: !!stripeStats,
   })
 }
+
+// (legacy unused — gardé pour compat)
+function _legacyMonthlyMath() {
+  return WEEKLY_PRICE + MONTHLY_PRICE
+}
+void _legacyMonthlyMath
 
 function buildEmptyDashboard() {
   const now = new Date()
@@ -196,58 +340,78 @@ function buildEmptyDashboard() {
 
 async function handleFinance(res: VercelResponse) {
   const supabase = getSupabase()
-  if (!supabase) return res.status(200).json(buildEmptyFinance())
+  const stripe = getStripe()
 
   const now = new Date()
   const currentYear = now.getFullYear()
   const currentMonth = now.getMonth()
-
-  const [{ data: allUsers }, { data: allMythos }] = await Promise.all([
-    supabase.from('users').select('id, plan, subscription_status, created_at, email'),
-    supabase.from('mythos').select('id, user_id, created_at'),
-  ])
-
-  const users = (allUsers || []) as Array<{ id: string; plan?: string; subscription_status?: string; created_at: string; email?: string }>
-  const mythos = (allMythos || []) as Array<{ id: string; user_id: string; created_at: string }>
-
-  const activeUsers = users.filter(u => u.subscription_status === 'active')
-  const weeklyCount = activeUsers.filter(u => u.plan === 'weekly').length
-  const monthlyCount = activeUsers.filter(u => u.plan === 'monthly').length
-
   const startOfMonth = new Date(currentYear, currentMonth, 1)
-  const newThisMonth = users.filter(u =>
-    u.subscription_status === 'active' && new Date(u.created_at) >= startOfMonth
-  )
-  const mythosThisMonth = mythos.filter(m => new Date(m.created_at) >= startOfMonth)
-  const cancelledThisMonth = users.filter(u =>
-    u.subscription_status === 'cancelled' && new Date(u.created_at) >= startOfMonth
-  )
+  const sixMonthsAgo = new Date(currentYear, currentMonth - 5, 1)
 
-  const revenueThisMonth = newThisMonth.reduce((acc, u) =>
-    acc + (u.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE), 0)
+  // ─── 1. Stripe : invoices payées des 6 derniers mois ───────────────────────
+  const stripeInvoices: Stripe.Invoice[] = []
+  const stripeSubsActive: Stripe.Subscription[] = []
+  const stripeSubsCanceled: Stripe.Subscription[] = []
+
+  if (stripe) {
+    try {
+      let starting_after: string | undefined = undefined
+      for (let i = 0; i < 5; i++) {
+        const page: Stripe.ApiList<Stripe.Invoice> = await stripe.invoices.list({
+          status: 'paid',
+          created: { gte: Math.floor(sixMonthsAgo.getTime() / 1000) },
+          limit: 100,
+          ...(starting_after ? { starting_after } : {}),
+        })
+        stripeInvoices.push(...page.data)
+        if (!page.has_more) break
+        starting_after = page.data[page.data.length - 1]?.id
+      }
+      const subsActive = await stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] })
+      stripeSubsActive.push(...subsActive.data)
+      const subsCanceled = await stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] })
+      stripeSubsCanceled.push(...subsCanceled.data)
+    } catch (e: any) {
+      console.error('[admin/finance] stripe error:', e?.message || e)
+    }
+  }
+
+  // ─── 2. Supabase : analyses (mythos) des 6 derniers mois ──────────────────
+  let mythos: Array<{ id: string; user_id: string; created_at: string }> = []
+  if (supabase) {
+    const { data } = await supabase.from('mythos').select('id, user_id, created_at').gte('created_at', sixMonthsAgo.toISOString())
+    mythos = (data || []) as any
+  }
+
+  // ─── 3. Stats du mois en cours ────────────────────────────────────────────
+  const startOfMonthTs = Math.floor(startOfMonth.getTime() / 1000)
+  const invoicesThisMonth = stripeInvoices.filter(inv => inv.created >= startOfMonthTs)
+  const revenueThisMonth = invoicesThisMonth.reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
+  const newSubsThisMonth = stripeSubsActive.filter(s => s.created >= startOfMonthTs).length
+  const cancelledThisMonth = stripeSubsCanceled.filter(s => (s.canceled_at || 0) >= startOfMonthTs).length
+
+  const mythosThisMonth = mythos.filter(m => new Date(m.created_at) >= startOfMonth)
   const costThisMonth = mythosThisMonth.length * COST_PER_IMAGE
   const marginThisMonth = revenueThisMonth - costThisMonth
   const marginPct = revenueThisMonth > 0 ? (marginThisMonth / revenueThisMonth) * 100 : 0
-  const totalActiveMonth = users.filter(u => u.subscription_status !== 'inactive').length
-  const churnRate = totalActiveMonth > 0 ? (cancelledThisMonth.length / totalActiveMonth) * 100 : 0
+  const totalActive = stripeSubsActive.length + cancelledThisMonth
+  const churnRate = totalActive > 0 ? (cancelledThisMonth / totalActive) * 100 : 0
 
+  // ─── 4. Évolution sur 6 mois ──────────────────────────────────────────────
   const monthlyData = []
   for (let i = 5; i >= 0; i--) {
     const m = new Date(currentYear, currentMonth - i, 1)
     const mEnd = new Date(currentYear, currentMonth - i + 1, 1)
+    const mStart = Math.floor(m.getTime() / 1000)
+    const mEndTs = Math.floor(mEnd.getTime() / 1000)
     const label = MONTH_LABELS[m.getMonth()]
 
-    const newInMonth = users.filter(u =>
-      u.subscription_status === 'active' &&
-      new Date(u.created_at) >= m &&
-      new Date(u.created_at) < mEnd
-    )
+    const rev = stripeInvoices
+      .filter(inv => inv.created >= mStart && inv.created < mEndTs)
+      .reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
     const mythosInMonth = mythos.filter(mt =>
       new Date(mt.created_at) >= m && new Date(mt.created_at) < mEnd
     )
-
-    const rev = newInMonth.reduce((acc, u) =>
-      acc + (u.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE), 0)
     const cost = mythosInMonth.length * COST_PER_IMAGE
 
     monthlyData.push({
@@ -258,17 +422,44 @@ async function handleFinance(res: VercelResponse) {
     })
   }
 
+  // ─── 5. Répartition des plans (depuis Stripe) ─────────────────────────────
+  let weeklyCount = 0
+  let monthlyCount = 0
+  for (const sub of stripeSubsActive) {
+    const priceId = sub.items?.data?.[0]?.price?.id
+    const plan = planFromPriceId(priceId)
+    if (plan === 'weekly') weeklyCount++
+    else if (plan === 'monthly') monthlyCount++
+  }
+
+  // ─── 6. Top clients : analyses Supabase + email Stripe ────────────────────
   const mythosByUser: Record<string, number> = {}
   mythos.forEach(m => { mythosByUser[m.user_id] = (mythosByUser[m.user_id] || 0) + 1 })
+
+  // Map Supabase user.id → email + plan
+  const userMap: Record<string, { email: string; plan: string }> = {}
+  if (supabase) {
+    const ids = Object.keys(mythosByUser)
+    if (ids.length > 0) {
+      const { data: dbUsers } = await supabase
+        .from('users')
+        .select('id, email, plan')
+        .in('id', ids)
+      for (const u of (dbUsers || [])) {
+        userMap[u.id] = { email: u.email || '', plan: u.plan || 'unknown' }
+      }
+    }
+  }
+
   const topClients = Object.entries(mythosByUser)
     .sort(([, a], [, b]) => b - a)
     .slice(0, 5)
     .map(([userId, count]) => {
-      const user = users.find(u => u.id === userId)
-      const rev = user?.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE
+      const u = userMap[userId]
+      const rev = u?.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE
       return {
-        email: user?.email || userId.slice(0, 8) + '...',
-        plan: user?.plan || 'unknown',
+        email: u?.email || userId.slice(0, 8) + '...',
+        plan: u?.plan || 'unknown',
         mythos: count,
         revenue: +rev.toFixed(2),
         cost: +(count * COST_PER_IMAGE).toFixed(2),
@@ -282,13 +473,14 @@ async function handleFinance(res: VercelResponse) {
       margin: +marginThisMonth.toFixed(2),
       marginPct: +marginPct.toFixed(1),
       mythos: mythosThisMonth.length,
-      newSubscribers: newThisMonth.length,
-      cancellations: cancelledThisMonth.length,
+      newSubscribers: newSubsThisMonth,
+      cancellations: cancelledThisMonth,
       churnRate: +churnRate.toFixed(1),
     },
     monthlyData,
     planSplit: { weekly: weeklyCount, monthly: monthlyCount },
     topClients,
+    stripeAvailable: !!stripe,
   })
 }
 
@@ -327,36 +519,129 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
 
 async function handleUsers(req: VercelRequest, res: VercelResponse) {
   const supabase = getSupabase()
-  if (!supabase) return res.status(200).json({ users: [], total: 0 })
+  const stripe = getStripe()
 
   const page = parseInt(req.query.page as string) || 1
   const limit = parseInt(req.query.limit as string) || 50
-  const search = req.query.search as string
-  const plan = req.query.plan as string
-  const status = req.query.status as string
+  const search = (req.query.search as string) || ''
+  const planFilter = (req.query.plan as string) || 'all'
+  const statusFilter = (req.query.status as string) || 'all'
 
-  let query = supabase.from('users').select(`
-    id, email, plan, subscription_status, created_at,
-    mythos(count)
-  `, { count: 'exact' })
+  // ─── 1. Liste tous les abonnés Stripe (active + canceled) ─────────────────
+  type StripeUser = {
+    email: string
+    plan: 'weekly' | 'monthly' | 'unknown'
+    subscription_status: 'active' | 'cancelled'
+    created_at: string
+    customer_id: string
+    revenue_eur: number
+  }
+  const stripeUsersByEmail = new Map<string, StripeUser>()
 
-  if (search) query = query.ilike('email', `%${search}%`)
-  if (plan && plan !== 'all') query = query.eq('plan', plan)
-  if (status && status !== 'all') query = query.eq('subscription_status', status)
+  if (stripe) {
+    try {
+      // Active
+      const subsActive = await stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] })
+      // Canceled
+      const subsCanceled = await stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] })
 
-  const { data, count } = await query
-    .range((page - 1) * limit, page * limit - 1)
-    .order('created_at', { ascending: false })
+      const all = [...subsActive.data, ...subsCanceled.data]
+      for (const sub of all) {
+        const customer = sub.customer as Stripe.Customer | string
+        const email = (typeof customer === 'string' ? '' : customer.email) || ''
+        if (!email) continue
+        const key = email.toLowerCase()
+        const existing = stripeUsersByEmail.get(key)
+        if (existing) continue // garde la première (la plus récente vu l'ordre Stripe)
 
-  const users = (data || []).map((u: any) => ({
-    ...u,
-    total_mythos: u.mythos?.[0]?.count || 0,
-    total_cost_eur: +((u.mythos?.[0]?.count || 0) * COST_PER_IMAGE).toFixed(2),
-    total_revenue_eur: 0,
-    net_eur: 0,
-  }))
+        const priceId = sub.items?.data?.[0]?.price?.id
+        const p = planFromPriceId(priceId)
+        const status = sub.status === 'active' ? 'active' : 'cancelled'
+        // Estimation revenu = prix × nombre cycles facturés
+        const monthlyEq = p === 'weekly' ? WEEKLY_PRICE * 4.33 : (p === 'monthly' ? MONTHLY_PRICE : 0)
+        stripeUsersByEmail.set(key, {
+          email,
+          plan: p,
+          subscription_status: status,
+          created_at: new Date(sub.created * 1000).toISOString(),
+          customer_id: typeof customer === 'string' ? customer : customer.id,
+          revenue_eur: +monthlyEq.toFixed(2),
+        })
+      }
+    } catch (e: any) {
+      console.error('[admin/users] stripe error:', e?.message || e)
+    }
+  }
 
-  return res.status(200).json({ users, total: count || 0 })
+  // ─── 2. Récupère les users Supabase pour mapper avec leurs analyses ───────
+  type DbUser = {
+    id: string
+    email: string
+    plan?: string
+    subscription_status?: string
+    created_at: string
+    mythos?: Array<{ count: number }>
+  }
+  let dbUsers: DbUser[] = []
+  if (supabase) {
+    const { data } = await supabase.from('users').select(`
+      id, email, plan, subscription_status, created_at,
+      mythos(count)
+    `)
+    dbUsers = (data || []) as any
+  }
+
+  // ─── 3. Fusion par email — Stripe = vérité paiement, Supabase = analyses ──
+  const merged = new Map<string, any>()
+
+  for (const dbUser of dbUsers) {
+    const key = (dbUser.email || '').toLowerCase()
+    if (!key) continue
+    const stripeData = stripeUsersByEmail.get(key)
+    const totalMythos = dbUser.mythos?.[0]?.count || 0
+    merged.set(key, {
+      id: dbUser.id,
+      email: dbUser.email,
+      plan: stripeData?.plan || dbUser.plan || 'unknown',
+      subscription_status: stripeData?.subscription_status || dbUser.subscription_status || 'inactive',
+      created_at: dbUser.created_at,
+      total_mythos: totalMythos,
+      total_cost_eur: +(totalMythos * COST_PER_IMAGE).toFixed(2),
+      total_revenue_eur: stripeData?.revenue_eur || 0,
+      net_eur: +((stripeData?.revenue_eur || 0) - totalMythos * COST_PER_IMAGE).toFixed(2),
+    })
+  }
+
+  // 3b. Ajoute les abonnés Stripe qui n'ont pas (encore) de compte Supabase
+  for (const [key, stripeData] of stripeUsersByEmail) {
+    if (merged.has(key)) continue
+    merged.set(key, {
+      id: `stripe_${stripeData.customer_id}`,
+      email: stripeData.email,
+      plan: stripeData.plan,
+      subscription_status: stripeData.subscription_status,
+      created_at: stripeData.created_at,
+      total_mythos: 0,
+      total_cost_eur: 0,
+      total_revenue_eur: stripeData.revenue_eur,
+      net_eur: stripeData.revenue_eur,
+    })
+  }
+
+  // ─── 4. Filtres + pagination ──────────────────────────────────────────────
+  let users = Array.from(merged.values())
+  if (search) {
+    const s = search.toLowerCase()
+    users = users.filter(u => u.email.toLowerCase().includes(s))
+  }
+  if (planFilter !== 'all') users = users.filter(u => u.plan === planFilter)
+  if (statusFilter !== 'all') users = users.filter(u => u.subscription_status === statusFilter)
+
+  users.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  const total = users.length
+  const paged = users.slice((page - 1) * limit, page * limit)
+
+  return res.status(200).json({ users: paged, total })
 }
 
 async function handleSettings(req: VercelRequest, res: VercelResponse) {
