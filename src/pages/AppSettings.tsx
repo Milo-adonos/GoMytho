@@ -3,6 +3,7 @@ import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_PORTAL_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
 const STRIPE_PORTAL_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
+const STRIPE_CANCEL_URL = import.meta.env.VITE_STRIPE_PORTAL_URL || 'https://billing.stripe.com/p/login/eVa3fJ9EQ8L4'
 
 export default function AppSettings() {
   const navigate = useNavigate()
@@ -34,8 +35,8 @@ export default function AppSettings() {
     {
       icon: '❌',
       label: 'Annuler l\'abonnement',
-      sub: 'Envoie-nous un email : support@gomytho.com',
-      action: () => window.open('mailto:support@gomytho.com?subject=Annulation abonnement GoMytho', '_blank'),
+      sub: 'Gérer via le portail Stripe',
+      action: () => window.open(STRIPE_CANCEL_URL, '_blank'),
       show: user?.subscription_status === 'active',
       danger: true,
     },
