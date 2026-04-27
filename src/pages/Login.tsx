@@ -18,18 +18,37 @@ export default function Login() {
     setError('')
 
     try {
+      // Vérifier si l'email existe dans notre table users
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', email)
+        .maybeSingle()
+
+      if (!existingUser) {
+        setError('❌ Aucun compte enregistré avec cet email. Tu dois d\'abord payer et créer un compte.')
+        setIsLoading(false)
+        return
+      }
+
       const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) throw error
+
+      if (error) {
+        if (error.message?.includes('Invalid login credentials')) {
+          setError('❌ Mot de passe incorrect.')
+        } else if (error.message?.includes('Email not confirmed')) {
+          setError('✉️ Confirme ton email avant de te connecter.')
+        } else {
+          setError(error.message || 'Une erreur est survenue')
+        }
+        return
+      }
+
       if (data.session) {
         navigate('/app')
       }
-    } catch (error: unknown) {
-      const err = error as { message?: string }
-      if (err.message?.includes('Invalid login credentials')) {
-        setError('Email ou mot de passe incorrect.')
-      } else {
-        setError(err.message || 'Une erreur est survenue')
-      }
+    } catch {
+      setError('Une erreur est survenue. Réessaie.')
     } finally {
       setIsLoading(false)
     }
@@ -79,8 +98,16 @@ export default function Login() {
             className="bg-secondary-bg rounded-3xl p-8 border border-lime/10"
           >
             {error && (
-              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-red-400 text-sm">
-                {error}
+              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-sm space-y-2">
+                <p className="text-red-400">{error}</p>
+                {error.includes('Aucun compte') && (
+                  <a
+                    href="/create"
+                    className="block text-center mt-2 text-lime font-semibold hover:underline"
+                  >
+                    → Essayer GoMytho gratuitement
+                  </a>
+                )}
               </div>
             )}
 
