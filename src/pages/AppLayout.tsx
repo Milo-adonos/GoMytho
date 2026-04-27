@@ -177,24 +177,24 @@ export default function AppLayout() {
       setUser(resolvedUser)
       setLoading(false)
 
-      // ─── 4. Auto-génération UNIQUEMENT si fresh payment ────────────────────
-      // Cas valide  : user vient de payer et arrive sur l'app pour la 1ère fois.
-      // Cas invalide: simple login depuis la landing → on ignore les pending et
-      //               on les purge pour que ça n'arrive plus.
-      const userIsInitialized =
-        !!dbUser &&
-        ((dbUser.plan && dbUser.plan !== 'free') || Number(dbUser.credits_remaining ?? 0) > 0)
-
-      if (hasPending && hasFreshPayment && !userIsInitialized) {
+      // ─── 4. Auto-génération si fresh payment + pending photos ─────────────
+      // Cas valide  : user vient de payer et arrive sur l'app pour la 1ère
+      //               fois → on génère son mytho automatiquement.
+      // Cas invalide: simple login depuis la landing avec des pending résidus
+      //               de session précédente → on les purge pour pas qu'une
+      //               auto-gen absurde ne se déclenche.
+      //
+      // Note : hasFreshPayment suffit comme signal d'autorisation. Inutile
+      // de re-tester userIsInitialized — l'upsert juste au-dessus a marqué
+      // le user comme initialisé, ce qui ferait sauter à tort l'auto-gen.
+      if (hasPending && hasFreshPayment) {
         setAutoGen(true)
         const ok = await tryAutoGenerate(authUser.id)
         setAutoGen(false)
         if (ok) {
           window.location.href = '/resultats'
         }
-      } else if (hasPending && userIsInitialized) {
-        // Compte déjà fonctionnel → ces pending sont des résidus, on nettoie
-        // pour ne pas re-déclencher d'auto-gen aux prochains logins.
+      } else if (hasPending) {
         clearPendingMytho()
       }
     }
