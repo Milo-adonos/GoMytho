@@ -1,13 +1,41 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import axios from 'axios'
 
+function normalizeImageUrl(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl)
+    // Répare les chemins Supabase Storage publics mal encodés
+    if (u.pathname.includes('/storage/v1/object/public/')) {
+      const marker = '/storage/v1/object/public/'
+      const idx = u.pathname.indexOf(marker)
+      const suffix = u.pathname.slice(idx + marker.length)
+      const repaired = suffix
+        .split('/')
+        .map((seg) => {
+          if (!seg) return seg
+          try {
+            return encodeURIComponent(decodeURIComponent(seg))
+          } catch {
+            return encodeURIComponent(seg)
+          }
+        })
+        .join('/')
+      u.pathname = `${marker}${repaired}`
+      return u.toString()
+    }
+    return u.toString()
+  } catch {
+    return rawUrl
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
-    const imageUrl = String(req.body?.imageUrl || '').trim()
+    const imageUrl = normalizeImageUrl(String(req.body?.imageUrl || '').trim())
     if (!imageUrl) return res.status(400).json({ error: 'Missing imageUrl' })
 
     if (imageUrl.startsWith('data:image/')) {

@@ -49,10 +49,11 @@ export default function AppCreations() {
     if (!url) return null
     if (url.startsWith('data:image/')) return url
     try {
+      const normalizedUrl = normalizeStorageUrl(url)
       const response = await fetch('/api/image-copy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageUrl: url }),
+        body: JSON.stringify({ imageUrl: normalizedUrl }),
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) return null
@@ -175,17 +176,32 @@ export default function AppCreations() {
 
   const handleDownload = async (url: string, previewDataUrl?: string) => {
     if (!url) return
-    const normalizedUrl = normalizeStorageUrl(url)
     try {
       if (previewDataUrl?.startsWith('data:image/')) {
         const blob = await dataUrlToBlob(previewDataUrl)
         await downloadBlob(blob, `mytho-${Date.now()}.jpg`)
         return
       }
-      const response = await fetch(normalizedUrl, { mode: 'cors' })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const blob = await response.blob()
+
+      // Évite les GET directs Storage qui peuvent renvoyer 400.
+      // On passe par /api/image-copy puis on télécharge la copie locale.
+      const copiedDataUrl = await copyUrlToDataUrl(url)
+      if (!copiedDataUrl) throw new Error('Unable to copy image to data URL')
+      const blob = await dataUrlToBlob(copiedDataUrl)
       await downloadBlob(blob, `mytho-${Date.now()}.jpg`)
+
+      // Met en cache local le preview récupéré pour éviter les échecs suivants.
+      if (user?.id) {
+        setMythos((prev) => {
+          const next = prev.map((item) =>
+            normalizeStorageUrl(item.image_url) === normalizeStorageUrl(url)
+              ? { ...item, preview_data_url: item.preview_data_url || copiedDataUrl }
+              : item
+          )
+          saveLocalMythos(user.id, next)
+          return next
+        })
+      }
     } catch (error) {
       console.error('download failed', error)
       if (previewDataUrl?.startsWith('data:image/')) {
