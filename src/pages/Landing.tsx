@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
+import { supabase } from '@/lib/supabase'
 
 // Génère un nombre pseudo-aléatoire entre 938 et 2371
 // Change chaque jour à 15h heure française (UTC+2 en été)
@@ -149,6 +150,26 @@ export default function Landing() {
       })
     }, 3000)
     return () => clearInterval(iv)
+  }, [])
+
+  // ─── Filet de sécurité OAuth ───────────────────────────────────────────
+  // Si un user authentifié atterrit ici (cas où Supabase a fallback sur la
+  // Site URL au lieu de respecter notre redirectTo /auth/callback), on le
+  // renvoie directement dans l'app pour pas qu'il reste bloqué sur la
+  // landing après un login Google.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      // Petit délai pour laisser Supabase parser le hash #access_token=...
+      await new Promise((r) => setTimeout(r, 300))
+      const { data } = await supabase.auth.getSession()
+      if (cancelled || !data?.session) return
+      // Préserve les query params éventuels (plan, session_id) pour le
+      // post-paiement.
+      const search = window.location.search
+      window.location.replace(`/resultats${search}`)
+    })()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
