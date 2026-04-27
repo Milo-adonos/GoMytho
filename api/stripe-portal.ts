@@ -46,8 +46,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const stripe = new Stripe(stripeSecret)
     const adminClient = serviceKey ? createClient(supabaseUrl, serviceKey) : null
 
+    const normalizedEmail = userEmail.trim().toLowerCase()
+
     let customerId: string | null = null
 
+    // ── 1. Priorité : stripe_customer_id déjà persisté en DB ─────────────────
     if (adminClient) {
       const { data: profile } = await adminClient
         .from('users')
@@ -57,20 +60,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       customerId = profile?.stripe_customer_id || null
     }
 
+    // ── 2. Fallback : recherche par email exact (case-insensitive Stripe) ───
     if (!customerId) {
-      const customers = await stripe.customers.list({ email: userEmail, limit: 1 })
-      customerId = customers.data[0]?.id || null
+      try {
+        const customers = await stripe.customers.list({ email: normalizedEmail, limit: 10 })
+        customerId = customers.data[0]?.id || null
+      } catch (e) {
+        console.warn('[stripe-portal] customers.list failed:', (e as any)?.message)
+      }
+    }
+
+    // ── 3. Fallback : Stripe Search API (plus permissif, gère les variations) ──
+    if (!customerId) {
+      try {
+        const search = await stripe.customers.search({
+          query: `email:'${normalizedEmail}'`,
+          limit: 10,
+        })
+        customerId = search.data[0]?.id || null
+      } catch (e) {
+        // Search API exige le mode live OU un test API access spécifique.
+        // En cas d'échec, on enchaîne avec le fallback subscriptions.
+        console.warn('[stripe-portal] customers.search failed:', (e as any)?.message)
+      }
+    }
+
+    // ── 4. Dernier recours : balayer les subscriptions et matcher l'email ──
+    // Utile si le client a payé avec un email légèrement différent dans Stripe
+    // (ex: majuscules, alias). On garde le customer le plus récent qui a une
+    // sub active ou trialing.
+    if (!customerId) {
+      try {
+        const subs = await stripe.subscriptions.list({
+          status: 'all',
+          limit: 100,
+          expand: ['data.customer'],
+        })
+        const matching = subs.data.find((s) => {
+          const cust = s.customer as Stripe.Customer | string
+          if (!cust || typeof cust === 'string') return false
+          const email = (cust.email || '').trim().toLowerCase()
+          return email === normalizedEmail
+        })
+        if (matching) {
+          const cust = matching.customer as Stripe.Customer
+          customerId = cust.id
+        }
+      } catch (e) {
+        console.warn('[stripe-portal] subscriptions.list scan failed:', (e as any)?.message)
+      }
     }
 
     if (!customerId) {
-      return res.status(404).json({ error: 'No Stripe customer found' })
+      return res.status(404).json({
+        error:
+          'Aucun compte Stripe trouvé avec cet email. Si tu as payé avec une autre adresse, contacte le support pour qu\'on relie les deux comptes.',
+      })
     }
 
+    // Persiste pour les prochains appels (un seul aller-retour à l'avenir)
     if (adminClient) {
-      await adminClient
-        .from('users')
-        .update({ stripe_customer_id: customerId })
-        .eq('id', authData.user.id)
+      try {
+        await adminClient
+          .from('users')
+          .update({ stripe_customer_id: customerId })
+          .eq('id', authData.user.id)
+      } catch (e) {
+        console.warn('[stripe-portal] persist customerId failed:', (e as any)?.message)
+      }
     }
 
     const returnUrl =

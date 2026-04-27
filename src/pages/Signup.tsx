@@ -30,17 +30,19 @@ export default function Signup() {
   async function persistUserProfile(userId: string, userEmail: string, plan: VerifiedPlan) {
     // Toujours upsert dans public.users — la vérification du paiement est notre
     // seule source de vérité pour le plan + les crédits (cross-device).
+    // On stocke aussi stripe_customer_id (s'il a été retourné par stripe-verify)
+    // pour permettre à l'API stripe-portal d'ouvrir le portail sans re-chercher
+    // par email (évite l'erreur "No Stripe customer found" plus tard).
     try {
-      await supabase.from('users').upsert(
-        [{
-          id: userId,
-          email: userEmail,
-          credits_remaining: plan.credits,
-          subscription_status: 'active',
-          plan: plan.plan,
-        }],
-        { onConflict: 'id' }
-      )
+      const row: Record<string, unknown> = {
+        id: userId,
+        email: userEmail,
+        credits_remaining: plan.credits,
+        subscription_status: 'active',
+        plan: plan.plan,
+      }
+      if (plan.customerId) row.stripe_customer_id = plan.customerId
+      await supabase.from('users').upsert([row], { onConflict: 'id' })
     } catch (err) {
       console.warn('[signup] upsert users échoué (non bloquant):', err)
     }

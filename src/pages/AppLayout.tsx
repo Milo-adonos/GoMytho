@@ -120,12 +120,15 @@ export default function AppLayout() {
 
       if (dbIsUninitialized && hasFreshPayment) {
         const verified = await resolveNewUserPlan(searchParams)
-        const upsertRow = {
+        const upsertRow: Record<string, unknown> = {
           id: authUser.id,
           email: authUser.email!,
           credits_remaining: verified.credits,
           subscription_status: 'active' as const,
           plan: verified.plan,
+        }
+        if (verified.customerId) {
+          upsertRow.stripe_customer_id = verified.customerId
         }
         try {
           await supabase.from('users').upsert([upsertRow], { onConflict: 'id' })
@@ -134,7 +137,7 @@ export default function AppLayout() {
           console.warn('[AppLayout] upsert plan échoué (fallback localStorage):', err)
           dbUser = dbUser || {
             ...upsertRow,
-            stripe_customer_id: null,
+            stripe_customer_id: verified.customerId || null,
             created_at: new Date().toISOString(),
           }
         }
