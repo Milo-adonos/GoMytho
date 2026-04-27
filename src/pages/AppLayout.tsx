@@ -25,6 +25,16 @@ async function dataUrlToPublicUrl(
   return uploadToSupabase(file, userId)
 }
 
+function clearPendingMytho() {
+  try {
+    localStorage.removeItem('gomytho_pending_image')
+    localStorage.removeItem('gomytho_pending_image2')
+    localStorage.removeItem('gomytho_pending_prompt')
+    localStorage.removeItem('gomytho_pending_ratio')
+    localStorage.removeItem('gomytho_pending_plan')
+  } catch { /* ignore */ }
+}
+
 async function tryAutoGenerate(userId: string): Promise<boolean> {
   const pendingImage = localStorage.getItem('gomytho_pending_image')
   const pendingImage2 = localStorage.getItem('gomytho_pending_image2')
@@ -47,11 +57,7 @@ async function tryAutoGenerate(userId: string): Promise<boolean> {
       () => {}
     )
     await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
-    localStorage.removeItem('gomytho_pending_image')
-    localStorage.removeItem('gomytho_pending_image2')
-    localStorage.removeItem('gomytho_pending_prompt')
-    localStorage.removeItem('gomytho_pending_ratio')
-    localStorage.removeItem('gomytho_pending_plan')
+    clearPendingMytho()
     return true
   } catch (err) {
     console.warn('Auto-génération échouée :', err)
@@ -99,6 +105,11 @@ export default function AppLayout() {
       }
 
       const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
+      // "Fresh payment" = signal explicite qu'on revient d'un parcours d'achat
+      // (URL Stripe redirect ou plan en attente non encore consommé). Sans ce
+      // signal, on NE déclenche JAMAIS l'auto-génération même si des pending
+      // photos traînent dans localStorage : ce sont alors des résidus d'une
+      // session précédente abandonnée — pas la volonté actuelle de l'user.
       const hasFreshPayment = !!searchParams.get('session_id') || !!searchParams.get('plan') || !!localStorage.getItem('gomytho_pending_plan')
 
       // ─── 2. Si user fraîchement payé OU profil DB non initialisé → upsert ──
@@ -156,14 +167,25 @@ export default function AppLayout() {
       setUser(resolvedUser)
       setLoading(false)
 
-      // ─── 4. Auto-génération si pending data (post-paiement, cross-device) ──
-      if (hasPending) {
+      // ─── 4. Auto-génération UNIQUEMENT si fresh payment ────────────────────
+      // Cas valide  : user vient de payer et arrive sur l'app pour la 1ère fois.
+      // Cas invalide: simple login depuis la landing → on ignore les pending et
+      //               on les purge pour que ça n'arrive plus.
+      const userIsInitialized =
+        !!dbUser &&
+        ((dbUser.plan && dbUser.plan !== 'free') || Number(dbUser.credits_remaining ?? 0) > 0)
+
+      if (hasPending && hasFreshPayment && !userIsInitialized) {
         setAutoGen(true)
         const ok = await tryAutoGenerate(authUser.id)
         setAutoGen(false)
         if (ok) {
           window.location.href = '/resultats'
         }
+      } else if (hasPending && userIsInitialized) {
+        // Compte déjà fonctionnel → ces pending sont des résidus, on nettoie
+        // pour ne pas re-déclencher d'auto-gen aux prochains logins.
+        clearPendingMytho()
       }
     }
 
