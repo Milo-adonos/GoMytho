@@ -175,22 +175,28 @@ export default function AppCreations() {
   }
 
   const handleDownload = async (url: string, previewDataUrl?: string) => {
-    if (!url) return
+    const filename = `mytho-${Date.now()}.jpg`
     try {
+      // 1) Toujours privilégier la copie locale base64 (toujours dispo pour les nouveaux mythos)
       if (previewDataUrl?.startsWith('data:image/')) {
         const blob = await dataUrlToBlob(previewDataUrl)
-        await downloadBlob(blob, `mytho-${Date.now()}.jpg`)
+        await downloadBlob(blob, filename)
         return
       }
-
-      // Évite les GET directs Storage qui peuvent renvoyer 400.
-      // On passe par /api/image-copy puis on télécharge la copie locale.
+      // 2) Fallback : data URL stockée en image_url (ancien format)
+      if (url?.startsWith('data:image/')) {
+        const blob = await dataUrlToBlob(url)
+        await downloadBlob(blob, filename)
+        return
+      }
+      // 3) Sinon : passer par /api/image-copy pour récupérer une copie base64
+      if (!url) throw new Error('No image URL')
       const copiedDataUrl = await copyUrlToDataUrl(url)
       if (!copiedDataUrl) throw new Error('Unable to copy image to data URL')
       const blob = await dataUrlToBlob(copiedDataUrl)
-      await downloadBlob(blob, `mytho-${Date.now()}.jpg`)
+      await downloadBlob(blob, filename)
 
-      // Met en cache local le preview récupéré pour éviter les échecs suivants.
+      // Cache la copie locale pour éviter de re-fetcher la prochaine fois
       if (user?.id) {
         setMythos((prev) => {
           const next = prev.map((item) =>
@@ -204,12 +210,7 @@ export default function AppCreations() {
       }
     } catch (error) {
       console.error('download failed', error)
-      if (previewDataUrl?.startsWith('data:image/')) {
-        const blob = await dataUrlToBlob(previewDataUrl)
-        await downloadBlob(blob, `mytho-${Date.now()}.jpg`)
-        return
-      }
-      alert('Téléchargement impossible : image introuvable (404). Regénère ce mytho.')
+      alert('Téléchargement impossible. Regénère ce mytho ou réessaye.')
     }
   }
 

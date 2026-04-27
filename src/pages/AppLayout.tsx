@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
-import { generateImage, uploadToSupabase } from '@/lib/kie-api'
+import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
 import type { AspectRatio } from '@/lib/kie-api'
 
 const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
@@ -10,47 +10,18 @@ const USE_MYTHOS_TABLE = import.meta.env.VITE_USE_MYTHOS_TABLE === 'true'
 
 export interface AppUser extends User {}
 
-function normalizeStorageUrl(url: string) {
-  if (!url) return url
-  return url
-    .replace('/object/public/mythos%20/', '/object/public/mythos/')
-    .replace('/object/public/mythos%2520/', '/object/public/mythos/')
-}
-
-async function toDataUrl(url: string): Promise<string | null> {
-  if (!url) return null
-  if (url.startsWith('data:image/')) return url
-  try {
-    const response = await fetch('/api/image-copy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageUrl: url }),
-    })
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) return null
-    return typeof payload?.dataUrl === 'string' ? payload.dataUrl : null
-  } catch {
-    return null
-  }
-}
-
-async function dataUrlToFile(dataUrl: string, filename: string): Promise<File> {
-  const res = await fetch(dataUrl)
-  const blob = await res.blob()
-  return new File([blob], filename, { type: blob.type || 'image/jpeg' })
-}
-
-function saveLocalCreation(userId: string, imageUrl: string, prompt: string, previewDataUrl?: string | null) {
+function saveLocalCreation(userId: string, remoteUrl: string, prompt: string, previewDataUrl: string) {
   const key = `gomytho_creations_${userId}`
   const raw = localStorage.getItem(key)
-  const list = raw ? JSON.parse(raw) as Array<{ id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }> : []
-  const entry = {
+  type Entry = { id: string; user_id: string; image_url: string; prompt: string; created_at: string; preview_data_url?: string }
+  const list = raw ? (JSON.parse(raw) as Entry[]) : []
+  const entry: Entry = {
     id: `local-${Date.now()}`,
     user_id: userId,
-    image_url: imageUrl,
+    image_url: remoteUrl || previewDataUrl,
     prompt,
     created_at: new Date().toISOString(),
-    preview_data_url: previewDataUrl || undefined,
+    preview_data_url: previewDataUrl,
   }
   localStorage.setItem(key, JSON.stringify([entry, ...list].slice(0, 200)))
 }
@@ -65,30 +36,26 @@ async function tryAutoGenerate(userId: string) {
     const blob = await res.blob()
     const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
     const publicUrl = await uploadToSupabase(file, userId)
-    const resultUrl = await generateImage(
+    const { remoteUrl, dataUrl } = await generateMytho(
       { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
       () => {}
     )
-    const previewDataUrl = await toDataUrl(resultUrl)
-    if (!previewDataUrl) throw new Error('Impossible de copier localement l’image générée')
-
-    let stableUrl = previewDataUrl
-    try {
-      const generatedFile = await dataUrlToFile(previewDataUrl, `generated-${Date.now()}.jpg`)
-      stableUrl = normalizeStorageUrl(await uploadToSupabase(generatedFile, userId))
-    } catch (uploadErr) {
-      console.warn('Upload résultat distant échoué (AppLayout auto-gen), fallback local conservé:', uploadErr)
+    if (USE_MYTHOS_TABLE && remoteUrl.startsWith('http')) {
+      try {
+        await supabase.from('mythos').insert([{ user_id: userId, image_url: remoteUrl, prompt: pendingPrompt }])
+      } catch (dbErr) {
+        console.warn('DB sauvegarde non critique :', dbErr)
+      }
     }
-    if (USE_MYTHOS_TABLE && stableUrl.startsWith('http')) {
-      await supabase.from('mythos').insert([{ user_id: userId, image_url: stableUrl, prompt: pendingPrompt }])
-    }
-    saveLocalCreation(userId, stableUrl, pendingPrompt, previewDataUrl)
+    saveLocalCreation(userId, remoteUrl, pendingPrompt, dataUrl)
     localStorage.removeItem('gomytho_pending_image')
     localStorage.removeItem('gomytho_pending_prompt')
     localStorage.removeItem('gomytho_pending_ratio')
     localStorage.removeItem('gomytho_pending_plan')
     window.location.href = '/resultats'
-  } catch { /* échec silencieux */ }
+  } catch (err) {
+    console.warn('Auto-génération échouée :', err)
+  }
 }
 
 async function waitForSession(maxAttempts = 20, delayMs = 250) {
