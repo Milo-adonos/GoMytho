@@ -1,20 +1,52 @@
+import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
 
-const STRIPE_PORTAL_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
-const STRIPE_PORTAL_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
-// Page de gestion d'abonnement Stripe (magic-link). Le client saisit son email
-// et reçoit un lien pour annuler / modifier son abonnement.
-const STRIPE_PORTAL_URL =
-  import.meta.env.VITE_STRIPE_PORTAL_URL ||
-  'https://billing.stripe.com/p/login/fZu4gyauk4oy0rg8dVgYU00'
+const STRIPE_CHECKOUT_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
+const STRIPE_CHECKOUT_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
 
 export default function AppSettings() {
   const navigate = useNavigate()
   const { user } = useOutletContext<{ user: User | null }>()
+  const [isOpeningPortal, setIsOpeningPortal] = useState(false)
+  const [portalError, setPortalError] = useState<string | null>(null)
 
-  const openStripePortal = () => {
-    window.location.href = STRIPE_PORTAL_URL
+  // Ouvre directement le Stripe Billing Portal pour le client connecté.
+  // Cette URL générée par l'API Stripe ouvre la page de gestion du compte
+  // sans demander la saisie d'un email (contrairement au magic-link login).
+  const openStripePortal = async () => {
+    if (isOpeningPortal) return
+    setPortalError(null)
+    setIsOpeningPortal(true)
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData?.session?.access_token
+      if (!token) {
+        throw new Error('Session expirée. Reconnecte-toi.')
+      }
+
+      const response = await fetch('/api/stripe-portal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          returnUrl: `${window.location.origin}/settings`,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok || !payload?.url) {
+        throw new Error(payload?.error || 'Impossible d\'ouvrir le portail Stripe.')
+      }
+
+      window.location.href = payload.url as string
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erreur inconnue'
+      setPortalError(msg)
+      setIsOpeningPortal(false)
+    }
   }
 
   // Plan effectif: priorité cache local, sinon DB, sinon inférence basique
@@ -37,23 +69,24 @@ export default function AppSettings() {
       icon: '📈',
       label: 'Passer au Mensuel',
       sub: '70 images / mois · 9,90€',
-      action: () => { localStorage.setItem('gomytho_pending_plan', 'monthly'); window.location.href = STRIPE_PORTAL_MENSUEL },
+      action: () => { localStorage.setItem('gomytho_pending_plan', 'monthly'); window.location.href = STRIPE_CHECKOUT_MENSUEL },
       show: inferredPlan !== 'monthly',
     },
     {
       icon: '📉',
       label: 'Passer à l\'Hebdo',
       sub: '20 images / semaine · 2,99€',
-      action: () => { localStorage.setItem('gomytho_pending_plan', 'weekly'); window.location.href = STRIPE_PORTAL_HEBDO },
+      action: () => { localStorage.setItem('gomytho_pending_plan', 'weekly'); window.location.href = STRIPE_CHECKOUT_HEBDO },
       show: inferredPlan !== 'weekly',
     },
     {
       icon: '❌',
-      label: 'Annuler l\'abonnement',
-      sub: 'Gérer via le portail Stripe',
+      label: isOpeningPortal ? 'Ouverture du portail...' : 'Annuler l\'abonnement',
+      sub: 'Gérer directement sur Stripe',
       action: openStripePortal,
       show: user?.subscription_status === 'active',
       danger: true,
+      disabled: isOpeningPortal,
     },
   ]
 
@@ -102,7 +135,8 @@ export default function AppSettings() {
           <button
             key={idx}
             onClick={item.action}
-            className="w-full flex items-center gap-4 px-5 py-4 text-left transition-all hover:bg-white/5 active:bg-white/10 border-b last:border-b-0"
+            disabled={item.disabled}
+            className="w-full flex items-center gap-4 px-5 py-4 text-left transition-all hover:bg-white/5 active:bg-white/10 border-b last:border-b-0 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ borderColor: 'rgba(255,255,255,0.04)' }}
           >
             <span className="text-xl w-8 flex-shrink-0">{item.icon}</span>
@@ -110,10 +144,32 @@ export default function AppSettings() {
               <p className={`text-sm font-bold ${item.danger ? 'text-red-400' : 'text-white'}`}>{item.label}</p>
               <p className="text-xs text-text-secondary mt-0.5">{item.sub}</p>
             </div>
-            <span className="text-text-secondary text-xs">→</span>
+            {item.disabled ? (
+              <span className="w-4 h-4 rounded-full border-2 border-text-secondary border-t-transparent animate-spin flex-shrink-0" />
+            ) : (
+              <span className="text-text-secondary text-xs">→</span>
+            )}
           </button>
         ))}
       </div>
+
+      {portalError && (
+        <div
+          className="rounded-2xl p-4 text-sm leading-relaxed"
+          style={{
+            background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.25)',
+            color: '#fca5a5',
+          }}
+        >
+          <p className="font-bold mb-1">Impossible d'ouvrir le portail Stripe</p>
+          <p className="text-xs">{portalError}</p>
+          <p className="text-xs mt-2 text-text-secondary">
+            Contacte le support&nbsp;:{' '}
+            <a href="mailto:support@gomytho.com" className="text-lime underline">support@gomytho.com</a>
+          </p>
+        </div>
+      )}
 
       {/* Déconnexion */}
       <button
