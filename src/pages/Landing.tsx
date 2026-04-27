@@ -413,7 +413,6 @@ export default function Landing() {
           >
             Commencer maintenant →
           </button>
-          <p className="mt-4 text-text-secondary text-xs">3 mythos gratuits · Aucune CB requise</p>
         </div>
       </section>
 
