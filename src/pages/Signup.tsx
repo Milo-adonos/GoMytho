@@ -26,22 +26,28 @@ export default function Signup() {
       if (error) throw error
 
       if (_data.user) {
-        const { error: insertError } = await supabase
-          .from('users')
-          .insert([
-            {
-              id: _data.user.id,
-              email: _data.user.email,
-              credits_remaining: 610, // Crédits du plan monthly
-              subscription_status: 'active',
-            },
-          ])
+        // Créer le profil utilisateur (ignore l'erreur si déjà existant)
+        await supabase.from('users').upsert([{
+          id: _data.user.id,
+          email: _data.user.email,
+          credits_remaining: 610,
+          subscription_status: 'active',
+          plan: 'monthly',
+        }], { onConflict: 'id' })
 
-        if (insertError) {
-          console.error('Error creating user record:', insertError)
+        // Si une session est active (email confirmation désactivé dans Supabase)
+        if (_data.session) {
+          navigate('/app')
+        } else {
+          // Email confirmation activé → essayer de se connecter directement
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+          if (!signInError && signInData.session) {
+            navigate('/app')
+          } else {
+            // Afficher message de confirmation d'email
+            setError('✉️ Vérifie ta boîte mail et clique sur le lien de confirmation, puis reviens ici pour te connecter.')
+          }
         }
-
-        navigate('/app')
       }
     } catch (error: unknown) {
       const err = error as { message?: string }

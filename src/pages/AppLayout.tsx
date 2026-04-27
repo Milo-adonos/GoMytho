@@ -12,10 +12,22 @@ export default function AppLayout() {
   useEffect(() => {
     const init = async () => {
       try {
-        const { data: { user: authUser } } = await supabase.auth.getUser()
-        if (!authUser) { navigate('/signup'); return }
+        // Récupère la session (gère aussi le callback OAuth avec token dans l'URL)
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) {
+          navigate('/signup')
+          return
+        }
+        const authUser = session.user
         const { data } = await supabase.from('users').select('*').eq('id', authUser.id).single()
-        setUser(data)
+        if (data) {
+          setUser(data)
+        } else {
+          // Créer le profil si inexistant (ex: 1er login Google)
+          const newUser = { id: authUser.id, email: authUser.email!, credits_remaining: 610, subscription_status: 'active', plan: 'monthly' }
+          await supabase.from('users').upsert([newUser], { onConflict: 'id' })
+          setUser(newUser as any)
+        }
       } catch {
         navigate('/signup')
       } finally {
