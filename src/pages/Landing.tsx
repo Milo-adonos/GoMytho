@@ -173,7 +173,7 @@ export default function Landing() {
             GoMytho
           </span>
           <button
-            onClick={() => navigate('/signup')}
+            onClick={() => navigate('/login')}
             className="text-lime text-sm font-bold px-4 py-2 rounded-full border active:scale-95 transition-all"
             style={{ borderColor: 'rgba(198,255,60,0.3)', background: 'rgba(198,255,60,0.06)' }}
           >
