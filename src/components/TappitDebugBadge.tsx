@@ -53,15 +53,18 @@ export default function TappitDebugBadge() {
     if (!enabled) return
     if (typeof PerformanceObserver === 'undefined') return
 
-    // Compte les requêtes déjà arrivées avant le mount du composant.
+    // Le tracker.js charge depuis taap.it MAIS envoie les events vers
+    // ingest.tapp.it/collect. On compte les deux pour avoir un signal clair.
+    const TAPPIT_RX = /taap\.it|tapp\.it/i
+
     try {
       const existing = performance.getEntriesByType('resource') as PerformanceResourceTiming[]
-      requestsRef.current = existing.filter((e) => /taap\.it/.test(e.name)).length
+      requestsRef.current = existing.filter((e) => TAPPIT_RX.test(e.name)).length
     } catch { /* ignore */ }
 
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
-        if (/taap\.it/.test(entry.name)) {
+        if (TAPPIT_RX.test(entry.name)) {
           requestsRef.current += 1
           setStatus((s) => ({
             ...s,
@@ -88,14 +91,22 @@ export default function TappitDebugBadge() {
       ) as HTMLScriptElement | null
 
       const w = window as any
-      const candidates = ['taapit', 'tappit', 'Tappit', 'radar', 'Radar', 'snitcher']
-      const globalNames = candidates.filter((c) => typeof w[c] !== 'undefined')
+      // Le SDK tappit expose window.visitors (cf. tracker.js: var NS="visitors").
+      const candidates = ['visitors', 'taapit', 'tappit', 'Tappit', 'radar', 'Radar']
+      const globalNames = candidates.filter((c) => {
+        const v = w[c]
+        // window.visitors est créé pré-load comme {q:[]} (queue stub).
+        // Si seul .q existe et pas .pageview/.track → script pas encore chargé.
+        if (c === 'visitors') {
+          return !!v && (typeof v.pageview === 'function' || typeof v.track === 'function')
+        }
+        return typeof v !== 'undefined'
+      })
 
       let trackingId: string | null = null
       try {
-        if (typeof w.taapit?.getTrackingId === 'function') {
-          trackingId = w.taapit.getTrackingId() || null
-        }
+        // Le tracker stocke un visitor_id dans localStorage.__va_vid
+        trackingId = localStorage.getItem('__va_vid') || null
       } catch { /* ignore */ }
 
       setStatus((s) => ({
@@ -218,14 +229,26 @@ export default function TappitDebugBadge() {
           Vérifie que le script taap.it est bien dans <code>index.html</code>.
         </p>
       )}
-      {status.scriptInDom && status.requests === 0 && (
-        <p style={{ marginTop: 8, color: '#ffce6b', fontSize: 10, opacity: 0.9 }}>
-          Désactive ton ad-blocker et recharge la page.
-        </p>
-      )}
+      {status.scriptInDom && status.requests === 0 && (() => {
+        const host = window.location.hostname
+        const isLocal = host === 'localhost' || host === '127.0.0.1'
+        const isDNT =
+          (navigator as any).doNotTrack === '1' ||
+          (window as any).doNotTrack === '1' ||
+          (navigator as any).globalPrivacyControl === true
+        return (
+          <p style={{ marginTop: 8, color: '#ffce6b', fontSize: 10, opacity: 0.9 }}>
+            {isLocal
+              ? 'Tracker désactivé en localhost (par design). Test en prod : gomytho.com'
+              : isDNT
+                ? 'Tracker désactivé par "Do Not Track" ou Global Privacy Control de ton navigateur.'
+                : 'Désactive ton ad-blocker (uBlock, Brave) et recharge.'}
+          </p>
+        )
+      })()}
 
       <p style={{ marginTop: 8, opacity: 0.45, fontSize: 10 }}>
-        ?taap=0 dans l'URL pour désactiver
+        ?taap=0 dans l'URL pour désactiver le badge
       </p>
     </div>
   )
