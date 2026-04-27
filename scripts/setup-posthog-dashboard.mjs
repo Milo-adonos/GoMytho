@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 /**
- * Crée le dashboard PostHog "GoMytho — Funnel ITO" en 1 commande.
+ * Crée le dashboard PostHog "GoMytho — Pages" en 1 commande.
+ *
+ * Le dashboard est volontairement épuré :
+ *   • Visites par page (toutes les pages nommées de gomytho.com)
+ *   • Sorties par page (où les visiteurs quittent le site)
+ *   • Visiteurs uniques par page (DAU)
+ *   • Funnel public ITO étape par étape
  *
  * Pré-requis : 2 variables d'env
  *   POSTHOG_PERSONAL_API_KEY  → app.posthog.com → User → Personal API keys
- *                                (DIFFÉRENT de la clé phc_ utilisée par le SDK).
- *   POSTHOG_PROJECT_ID        → app.posthog.com → Project Settings → Project ID
- *                                (un nombre, ex: 12345)
+ *   POSTHOG_PROJECT_ID        → Project Settings → Project ID
  *
  * Optionnel :
- *   POSTHOG_HOST              → défaut https://eu.i.posthog.com
+ *   POSTHOG_HOST                    → défaut https://eu.i.posthog.com
+ *   POSTHOG_DASHBOARD_ID_TO_DELETE  → si fourni, supprime ce dashboard et ses
+ *                                     insights AVANT de créer le nouveau.
+ *                                     Utile pour repartir propre.
  *
  * Usage :
  *   POSTHOG_PERSONAL_API_KEY=phx_xxx POSTHOG_PROJECT_ID=12345 \
@@ -19,14 +26,12 @@
 const HOST = (process.env.POSTHOG_HOST || 'https://eu.i.posthog.com').replace(/\/$/, '')
 const KEY = process.env.POSTHOG_PERSONAL_API_KEY
 const PROJECT_ID = process.env.POSTHOG_PROJECT_ID
+const DELETE_ID = process.env.POSTHOG_DASHBOARD_ID_TO_DELETE
 
 if (!KEY || !PROJECT_ID) {
   console.error('\n❌ Variables manquantes.\n')
   console.error('   POSTHOG_PERSONAL_API_KEY=<phx_xxx> POSTHOG_PROJECT_ID=<id> \\')
   console.error('     node scripts/setup-posthog-dashboard.mjs\n')
-  console.error('   • Personal API key : app.posthog.com → user menu → Personal API keys')
-  console.error('   • Project ID       : Project Settings → Project ID (un nombre)')
-  console.error('   • POSTHOG_HOST     : https://eu.i.posthog.com (défaut) ou https://us.i.posthog.com\n')
   process.exit(1)
 }
 
@@ -36,14 +41,19 @@ const HEADERS = {
   'Content-Type': 'application/json',
 }
 
-// ─── Funnel ITO : 6 étapes alignées avec page_name dans src/lib/analytics.ts ─
-const FUNNEL_STEPS = [
-  { step: 'Landing', name: 'Landing' },
-  { step: 'Upload Photo', name: 'Upload Photo' },
-  { step: 'Chargement Mytho', name: 'Chargement Mytho' },
-  { step: 'Choix Offre', name: 'Choix Offre' },
-  { step: 'Signup', name: 'Signup' },
-  { step: 'Mes Creations', name: 'Mes Creations' },
+// ─── Pages nommées (ordre = funnel ITO) ────────────────────────────────────
+const PAGES = [
+  { name: 'Landing', step: 1 },
+  { name: 'Upload Photo', step: 2 },
+  { name: 'Chargement Mytho', step: 3 },
+  { name: 'Choix Offre', step: 4 },
+  { name: 'Signup', step: 5 },
+  { name: 'Mes Creations', step: 6 },
+  // App interne / hors funnel
+  { name: 'Login' },
+  { name: 'Auth Callback' },
+  { name: 'Creer un Mytho' },
+  { name: 'Parametres' },
 ]
 
 async function api(path, init = {}) {
@@ -57,15 +67,33 @@ async function api(path, init = {}) {
   return json
 }
 
+// ─── Suppression de l'ancien dashboard si demandée ─────────────────────────
+async function deleteDashboardIfRequested() {
+  if (!DELETE_ID) return
+  console.log(`• Archivage du dashboard #${DELETE_ID} (soft delete)…`)
+  try {
+    // PostHog n'autorise pas DELETE direct sur /dashboards/{id}/.
+    // Le pattern officiel est PATCH { deleted: true, pinned: false }.
+    await api(`/dashboards/${DELETE_ID}/`, {
+      method: 'PATCH',
+      body: JSON.stringify({ deleted: true, pinned: false }),
+    })
+    console.log('  → ✓ archivé')
+  } catch (err) {
+    console.warn(`  ⚠ impossible d'archiver (${err.message.slice(0, 120)}) — on continue.`)
+  }
+}
+
 async function createDashboard() {
-  console.log('• Création du dashboard "GoMytho — Funnel ITO"…')
+  console.log('• Création du dashboard "GoMytho — Pages"…')
   const dash = await api('/dashboards/', {
     method: 'POST',
     body: JSON.stringify({
-      name: 'GoMytho — Funnel ITO',
+      name: 'GoMytho — Pages',
       description:
-        'Parcours public : Landing → Upload Photo → Chargement → Choix Offre → Signup → Mes Creations. ' +
-        'Sources : événement $pageview filtré par page_name.',
+        'Dashboard simple : pour chaque page nommée du site (Landing, Upload Photo, ' +
+        'Chargement Mytho, Choix Offre, Signup, Mes Creations…), nombre de visites ' +
+        'et nombre de sorties (où les visiteurs quittent le site).',
       pinned: true,
     }),
   })
@@ -73,38 +101,125 @@ async function createDashboard() {
   return dash
 }
 
-function pageviewFilter(pageName) {
-  return {
-    id: '$pageview',
-    name: '$pageview',
-    type: 'events',
-    properties: [
-      { key: 'page_name', value: pageName, operator: 'exact', type: 'event' },
-    ],
-  }
-}
-
-async function createFunnelInsight(dashId) {
-  console.log('• Insight Funnel — drop-off par étape…')
+// ─── Insight 1 : Nombre de visites par page (toutes les pages nommées) ────
+async function createVisitsByPage(dashId) {
+  console.log('• Insight — Visites par page…')
   const insight = await api('/insights/', {
     method: 'POST',
     body: JSON.stringify({
-      name: 'Funnel ITO — Drop-off par étape',
-      description: 'Conversion étape par étape, du Landing à la 1ʳᵉ création visible.',
+      name: 'Visites par page',
+      description: 'Nombre total de pageviews sur 30 jours, classé par page nommée.',
+      dashboards: [dashId],
+      query: {
+        kind: 'InsightVizNode',
+        source: {
+          kind: 'TrendsQuery',
+          dateRange: { date_from: '-30d' },
+          interval: 'day',
+          series: [
+            { kind: 'EventsNode', event: '$pageview', name: 'Visites', math: 'total' },
+          ],
+          breakdownFilter: { breakdown_type: 'event', breakdown: 'page_name' },
+          // ActionsBarValue = barres horizontales = ranking clair par page
+          trendsFilter: { display: 'ActionsBarValue' },
+        },
+      },
+    }),
+  })
+  console.log(`  → ✓ id=${insight.id}`)
+}
+
+// ─── Insight 2 : Visiteurs uniques par page (DAU) ─────────────────────────
+async function createUniqueVisitorsByPage(dashId) {
+  console.log('• Insight — Visiteurs uniques par page (DAU)…')
+  const insight = await api('/insights/', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Visiteurs uniques par page',
+      description: 'Personnes différentes (DAU) ayant vu chaque page sur 30 jours.',
+      dashboards: [dashId],
+      query: {
+        kind: 'InsightVizNode',
+        source: {
+          kind: 'TrendsQuery',
+          dateRange: { date_from: '-30d' },
+          interval: 'day',
+          series: [
+            { kind: 'EventsNode', event: '$pageview', name: 'Personnes', math: 'dau' },
+          ],
+          breakdownFilter: { breakdown_type: 'event', breakdown: 'page_name' },
+          trendsFilter: { display: 'ActionsBarValue' },
+        },
+      },
+    }),
+  })
+  console.log(`  → ✓ id=${insight.id}`)
+}
+
+// ─── Insight 3 : Sorties par page (vraies "exit pages" via HogQL) ─────────
+// On considère qu'une "sortie" est la DERNIÈRE page vue dans une session.
+// HogQL nous laisse exprimer ça précisément.
+async function createExitsByPage(dashId) {
+  console.log('• Insight — Sorties par page (HogQL)…')
+  const insight = await api('/insights/', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Sorties par page',
+      description:
+        "Nombre de visiteurs dont la DERNIÈRE page vue dans la session est X. " +
+        "Indique où les gens quittent réellement le site.",
+      dashboards: [dashId],
+      query: {
+        kind: 'DataTableNode',
+        source: {
+          kind: 'HogQLQuery',
+          query: `
+            SELECT
+              last_page AS page_name,
+              count() AS sorties
+            FROM (
+              SELECT
+                argMax(properties.page_name, timestamp) AS last_page,
+                $session_id AS sid
+              FROM events
+              WHERE event = '$pageview'
+                AND timestamp > now() - INTERVAL 30 DAY
+                AND $session_id IS NOT NULL
+                AND properties.page_name IS NOT NULL
+              GROUP BY $session_id
+            )
+            GROUP BY page_name
+            ORDER BY sorties DESC
+          `.trim(),
+        },
+      },
+    }),
+  })
+  console.log(`  → ✓ id=${insight.id}`)
+}
+
+// ─── Insight 4 : Funnel ITO 6 étapes ──────────────────────────────────────
+async function createFunnelITO(dashId) {
+  console.log('• Insight — Funnel ITO (6 étapes)…')
+  const funnelPages = PAGES.filter((p) => typeof p.step === 'number').sort((a, b) => a.step - b.step)
+  const insight = await api('/insights/', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Funnel ITO — du Landing à la 1ère création',
+      description: 'Conversion à chaque étape : Landing → Upload Photo → Chargement → Choix Offre → Signup → Mes Creations.',
       dashboards: [dashId],
       query: {
         kind: 'InsightVizNode',
         source: {
           kind: 'FunnelsQuery',
           dateRange: { date_from: '-30d' },
-          interval: 'day',
-          series: FUNNEL_STEPS.map((s) => ({
+          series: funnelPages.map((p) => ({
             kind: 'EventsNode',
             event: '$pageview',
-            name: s.name,
-            custom_name: s.name,
+            name: p.name,
+            custom_name: p.name,
             properties: [
-              { key: 'page_name', value: s.name, operator: 'exact', type: 'event' },
+              { key: 'page_name', value: p.name, operator: 'exact', type: 'event' },
             ],
           })),
           funnelsFilter: {
@@ -120,148 +235,14 @@ async function createFunnelInsight(dashId) {
   console.log(`  → ✓ id=${insight.id}`)
 }
 
-async function createTopPagesInsight(dashId) {
-  console.log('• Insight Trends — pages les plus visitées (breakdown page_name)…')
-  const insight = await api('/insights/', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: 'Pages les plus visitées',
-      description: 'Volume de pageviews par page nommée, sur 30 jours.',
-      dashboards: [dashId],
-      query: {
-        kind: 'InsightVizNode',
-        source: {
-          kind: 'TrendsQuery',
-          dateRange: { date_from: '-30d' },
-          interval: 'day',
-          series: [
-            { kind: 'EventsNode', event: '$pageview', name: 'Pageview', math: 'total' },
-          ],
-          breakdownFilter: { breakdown_type: 'event', breakdown: 'page_name' },
-          trendsFilter: { display: 'ActionsLineGraph' },
-        },
-      },
-    }),
-  })
-  console.log(`  → ✓ id=${insight.id}`)
-}
-
-async function createUniqueVisitorsInsight(dashId) {
-  console.log('• Insight Trends — visiteurs uniques par jour…')
-  const insight = await api('/insights/', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: 'Visiteurs uniques (DAU)',
-      description: 'Nombre de visiteurs uniques par jour sur 30 jours.',
-      dashboards: [dashId],
-      query: {
-        kind: 'InsightVizNode',
-        source: {
-          kind: 'TrendsQuery',
-          dateRange: { date_from: '-30d' },
-          interval: 'day',
-          series: [
-            { kind: 'EventsNode', event: '$pageview', name: 'Visiteurs uniques', math: 'dau' },
-          ],
-          trendsFilter: { display: 'ActionsLineGraph' },
-        },
-      },
-    }),
-  })
-  console.log(`  → ✓ id=${insight.id}`)
-}
-
-async function createDropOffPerPageInsight(dashId) {
-  console.log('• Insight Trends — sorties par page (last seen)…')
-  const insight = await api('/insights/', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: 'Pages où les visiteurs s\'arrêtent (sorties)',
-      description:
-        "Nombre d'utilisateurs uniques dont la DERNIÈRE page vue est X. Approximé par " +
-        '$pageview unique (DAU) breakdown page_name + filtre temporel récent.',
-      dashboards: [dashId],
-      query: {
-        kind: 'InsightVizNode',
-        source: {
-          kind: 'TrendsQuery',
-          dateRange: { date_from: '-7d' },
-          interval: 'day',
-          series: [
-            { kind: 'EventsNode', event: '$pageview', name: 'Visiteurs', math: 'dau' },
-          ],
-          breakdownFilter: { breakdown_type: 'event', breakdown: 'page_name' },
-          trendsFilter: { display: 'ActionsBarValue' },
-        },
-      },
-    }),
-  })
-  console.log(`  → ✓ id=${insight.id}`)
-}
-
-async function createPathsInsight(dashId) {
-  console.log('• Insight Paths — chemins suivis par les utilisateurs…')
-  const insight = await api('/insights/', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: 'User paths — où ils décrochent',
-      description:
-        'Diagramme Sankey des parcours réels : chaque "fin de branche" est ' +
-        'une page où des utilisateurs se sont arrêtés.',
-      dashboards: [dashId],
-      query: {
-        kind: 'InsightVizNode',
-        source: {
-          kind: 'PathsQuery',
-          dateRange: { date_from: '-30d' },
-          pathsFilter: {
-            includeEventTypes: ['$pageview'],
-            stepLimit: 6,
-          },
-        },
-      },
-    }),
-  })
-  console.log(`  → ✓ id=${insight.id}`)
-}
-
-async function createBouncePerStep(dashId) {
-  console.log('• Insight Trends — pageviews par funnel_step…')
-  const insight = await api('/insights/', {
-    method: 'POST',
-    body: JSON.stringify({
-      name: 'Volume par étape du funnel ITO',
-      description: 'Pageviews uniques (DAU) groupés par funnel_step (1=Landing … 6=Mes Creations).',
-      dashboards: [dashId],
-      query: {
-        kind: 'InsightVizNode',
-        source: {
-          kind: 'TrendsQuery',
-          dateRange: { date_from: '-30d' },
-          interval: 'day',
-          series: [
-            { kind: 'EventsNode', event: '$pageview', name: 'Visiteurs', math: 'dau' },
-          ],
-          breakdownFilter: { breakdown_type: 'event', breakdown: 'funnel_step' },
-          trendsFilter: { display: 'ActionsLineGraph' },
-        },
-      },
-    }),
-  })
-  console.log(`  → ✓ id=${insight.id}`)
-}
-
 async function main() {
   console.log(`\n🦔 PostHog setup — host=${HOST}  project=${PROJECT_ID}\n`)
+  await deleteDashboardIfRequested()
   const dash = await createDashboard()
-  // En séquence pour avoir des logs lisibles et éviter le throttling
-  await createFunnelInsight(dash.id)
-  await createTopPagesInsight(dash.id)
-  await createDropOffPerPageInsight(dash.id)
-  await createUniqueVisitorsInsight(dash.id)
-  await createBouncePerStep(dash.id)
-  await createPathsInsight(dash.id)
-
+  await createVisitsByPage(dash.id)
+  await createUniqueVisitorsByPage(dash.id)
+  await createExitsByPage(dash.id)
+  await createFunnelITO(dash.id)
   const url = `${HOST}/project/${PROJECT_ID}/dashboard/${dash.id}`
   console.log(`\n✅ Dashboard prêt : ${url}\n`)
 }
