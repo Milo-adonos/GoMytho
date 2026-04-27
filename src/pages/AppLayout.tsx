@@ -130,6 +130,12 @@ export default function AppLayout() {
         if (verified.customerId) {
           upsertRow.stripe_customer_id = verified.customerId
         }
+        // Email Stripe réel (peut différer de authUser.email si Apple Pay /
+        // Google Pay / alias). Indispensable pour retrouver le customer si
+        // stripe_customer_id n'est jamais persisté.
+        if (verified.email) {
+          upsertRow.stripe_payment_email = verified.email
+        }
         try {
           await supabase.from('users').upsert([upsertRow], { onConflict: 'id' })
           dbUser = { ...upsertRow, created_at: new Date().toISOString() }
@@ -138,6 +144,7 @@ export default function AppLayout() {
           dbUser = dbUser || {
             ...upsertRow,
             stripe_customer_id: verified.customerId || null,
+            stripe_payment_email: verified.email || null,
             created_at: new Date().toISOString(),
           }
         }

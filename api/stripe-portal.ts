@@ -46,49 +46,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const stripe = new Stripe(stripeSecret)
     const adminClient = serviceKey ? createClient(supabaseUrl, serviceKey) : null
 
-    const normalizedEmail = userEmail.trim().toLowerCase()
+    const normalizedAccountEmail = userEmail.trim().toLowerCase()
 
-    let customerId: string | null = null
+    // Liste de candidats d'email à interroger sur Stripe, par ordre de priorité.
+    // 1) stripe_payment_email (email réellement utilisé pour payer — Apple Pay,
+    //    Google Pay, alias…) — STRICTEMENT PRIORITAIRE.
+    // 2) email du compte GoMytho (cas standard où c'est le même).
+    const emailCandidates: string[] = []
+    let dbStripeCustomerId: string | null = null
 
-    // ── 1. Priorité : stripe_customer_id déjà persisté en DB ─────────────────
     if (adminClient) {
       const { data: profile } = await adminClient
         .from('users')
-        .select('stripe_customer_id')
+        .select('stripe_customer_id, stripe_payment_email')
         .eq('id', authData.user.id)
         .maybeSingle()
-      customerId = profile?.stripe_customer_id || null
+      dbStripeCustomerId = profile?.stripe_customer_id || null
+      const paymentEmail = (profile?.stripe_payment_email as string | undefined)?.trim().toLowerCase()
+      if (paymentEmail) emailCandidates.push(paymentEmail)
+    }
+    if (!emailCandidates.includes(normalizedAccountEmail)) {
+      emailCandidates.push(normalizedAccountEmail)
     }
 
-    // ── 2. Fallback : recherche par email exact (case-insensitive Stripe) ───
+    let customerId: string | null = dbStripeCustomerId
+
+    // ── Fallback 1 : Stripe customers.list par email (priorité au paymentEmail) ──
     if (!customerId) {
-      try {
-        const customers = await stripe.customers.list({ email: normalizedEmail, limit: 10 })
-        customerId = customers.data[0]?.id || null
-      } catch (e) {
-        console.warn('[stripe-portal] customers.list failed:', (e as any)?.message)
+      for (const candidate of emailCandidates) {
+        try {
+          const customers = await stripe.customers.list({ email: candidate, limit: 10 })
+          if (customers.data[0]?.id) {
+            customerId = customers.data[0].id
+            break
+          }
+        } catch (e) {
+          console.warn('[stripe-portal] customers.list failed:', (e as any)?.message)
+        }
       }
     }
 
-    // ── 3. Fallback : Stripe Search API (plus permissif, gère les variations) ──
+    // ── Fallback 2 : Stripe Search API (gère majuscules / alias) ─────────────
     if (!customerId) {
-      try {
-        const search = await stripe.customers.search({
-          query: `email:'${normalizedEmail}'`,
-          limit: 10,
-        })
-        customerId = search.data[0]?.id || null
-      } catch (e) {
-        // Search API exige le mode live OU un test API access spécifique.
-        // En cas d'échec, on enchaîne avec le fallback subscriptions.
-        console.warn('[stripe-portal] customers.search failed:', (e as any)?.message)
+      for (const candidate of emailCandidates) {
+        try {
+          const search = await stripe.customers.search({
+            query: `email:'${candidate}'`,
+            limit: 10,
+          })
+          if (search.data[0]?.id) {
+            customerId = search.data[0].id
+            break
+          }
+        } catch (e) {
+          console.warn('[stripe-portal] customers.search failed:', (e as any)?.message)
+        }
       }
     }
 
-    // ── 4. Dernier recours : balayer les subscriptions et matcher l'email ──
-    // Utile si le client a payé avec un email légèrement différent dans Stripe
-    // (ex: majuscules, alias). On garde le customer le plus récent qui a une
-    // sub active ou trialing.
+    // ── Fallback 3 : balayer les subscriptions et matcher l'email ──────────
     if (!customerId) {
       try {
         const subs = await stripe.subscriptions.list({
@@ -100,7 +116,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const cust = s.customer as Stripe.Customer | string
           if (!cust || typeof cust === 'string') return false
           const email = (cust.email || '').trim().toLowerCase()
-          return email === normalizedEmail
+          return emailCandidates.includes(email)
         })
         if (matching) {
           const cust = matching.customer as Stripe.Customer
@@ -112,18 +128,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (!customerId) {
+      // Pas trouvé → le frontend gère le fallback magic-link.
       return res.status(404).json({
-        error:
-          'Aucun compte Stripe trouvé avec cet email. Si tu as payé avec une autre adresse, contacte le support pour qu\'on relie les deux comptes.',
+        error: 'Aucun customer Stripe trouvé pour ce compte.',
+        triedEmails: emailCandidates,
       })
     }
 
-    // Persiste pour les prochains appels (un seul aller-retour à l'avenir)
+    // Persiste pour les prochains appels (un seul aller-retour à l'avenir).
+    // Récupère aussi l'email du customer Stripe si on n'avait pas de
+    // stripe_payment_email en DB (cas des comptes anciens).
     if (adminClient) {
       try {
+        const updates: Record<string, unknown> = { stripe_customer_id: customerId }
+        try {
+          const cust = await stripe.customers.retrieve(customerId)
+          if (cust && !(cust as Stripe.DeletedCustomer).deleted) {
+            const stripeEmail = ((cust as Stripe.Customer).email || '').trim().toLowerCase()
+            if (stripeEmail) updates.stripe_payment_email = stripeEmail
+          }
+        } catch { /* ignore */ }
         await adminClient
           .from('users')
-          .update({ stripe_customer_id: customerId })
+          .update(updates)
           .eq('id', authData.user.id)
       } catch (e) {
         console.warn('[stripe-portal] persist customerId failed:', (e as any)?.message)

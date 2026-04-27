@@ -42,6 +42,14 @@ export default function Signup() {
         plan: plan.plan,
       }
       if (plan.customerId) row.stripe_customer_id = plan.customerId
+      // Email réellement utilisé sur Stripe (peut différer de userEmail si
+      // paiement Apple Pay / Google Pay / alias). Permet à stripe-portal de
+      // retrouver le customer même quand stripe_customer_id manque.
+      if (plan.email && plan.email !== userEmail) {
+        row.stripe_payment_email = plan.email
+      } else if (plan.email) {
+        row.stripe_payment_email = plan.email
+      }
       await supabase.from('users').upsert([row], { onConflict: 'id' })
     } catch (err) {
       console.warn('[signup] upsert users échoué (non bloquant):', err)

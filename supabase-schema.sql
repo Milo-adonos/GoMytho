@@ -9,11 +9,19 @@ CREATE TABLE IF NOT EXISTS public.users (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email TEXT NOT NULL UNIQUE,
     stripe_customer_id TEXT,
+    -- Email réellement utilisé sur Stripe (peut être différent de "email"
+    -- si paiement Apple Pay / Google Pay / alias). Sert à retrouver le
+    -- customer côté API stripe-portal sans demander de saisie au user.
+    stripe_payment_email TEXT,
     subscription_status TEXT DEFAULT 'inactive' CHECK (subscription_status IN ('active', 'inactive', 'cancelled')),
     plan TEXT DEFAULT 'free' CHECK (plan IN ('weekly', 'monthly', 'free')),
     credits_remaining INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Migration safe (pour bases existantes) : ajoute la colonne si absente
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_payment_email TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 
 -- Table mythos
 CREATE TABLE IF NOT EXISTS public.mythos (

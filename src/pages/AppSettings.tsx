@@ -5,47 +5,69 @@ import { supabase, User } from '@/lib/supabase'
 const STRIPE_CHECKOUT_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
 const STRIPE_CHECKOUT_MENSUEL = 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00'
 
+// URL générique du Customer Portal Stripe (login par email).
+// Utilisée en fallback quand on ne peut pas générer une session API
+// directe — par exemple si le client a payé avec un email différent
+// (Apple Pay, alias…). L'utilisateur entre l'email avec lequel il a payé,
+// reçoit un magic-link, et accède à SA page de gestion d'abonnement.
+const STRIPE_PORTAL_FALLBACK =
+  import.meta.env.VITE_STRIPE_PORTAL_URL ||
+  'https://billing.stripe.com/p/login/fZu4gyauk4oy0rg8dVgYU00'
+
 export default function AppSettings() {
   const navigate = useNavigate()
   const { user } = useOutletContext<{ user: User | null }>()
   const [isOpeningPortal, setIsOpeningPortal] = useState(false)
-  const [portalError, setPortalError] = useState<string | null>(null)
 
-  // Ouvre directement le Stripe Billing Portal pour le client connecté.
-  // Cette URL générée par l'API Stripe ouvre la page de gestion du compte
-  // sans demander la saisie d'un email (contrairement au magic-link login).
+  // Ouvre la page de gestion d'abonnement Stripe.
+  //
+  // Stratégie en 2 temps :
+  //   1) On tente une session de Billing Portal liée au stripe_customer_id
+  //      du user (résolu via DB ou recherche email côté serveur). Si OK →
+  //      redirect direct sur la page de gestion (zéro saisie).
+  //   2) Sinon (cas où le customer Stripe a un email différent, ex Apple
+  //      Pay), on bascule silencieusement sur le portail Stripe générique
+  //      où l'utilisateur entre l'email avec lequel il a payé.
+  //
+  // Dans les deux cas, l'utilisateur arrive sur Stripe — on n'affiche
+  // jamais "No Stripe customer found" à l'écran.
   const openStripePortal = async () => {
     if (isOpeningPortal) return
-    setPortalError(null)
     setIsOpeningPortal(true)
     try {
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData?.session?.access_token
-      if (!token) {
-        throw new Error('Session expirée. Reconnecte-toi.')
+
+      if (token) {
+        try {
+          const response = await fetch('/api/stripe-portal', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              returnUrl: `${window.location.origin}/settings`,
+            }),
+          })
+          const payload = await response.json().catch(() => ({}))
+          if (response.ok && payload?.url) {
+            window.location.href = payload.url as string
+            return
+          }
+          console.warn('[stripe-portal] session API indisponible, fallback magic-link:', payload?.error)
+        } catch (apiErr) {
+          console.warn('[stripe-portal] appel API échoué, fallback magic-link:', apiErr)
+        }
       }
 
-      const response = await fetch('/api/stripe-portal', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          returnUrl: `${window.location.origin}/settings`,
-        }),
-      })
-      const payload = await response.json().catch(() => ({}))
-
-      if (!response.ok || !payload?.url) {
-        throw new Error(payload?.error || 'Impossible d\'ouvrir le portail Stripe.')
-      }
-
-      window.location.href = payload.url as string
+      // Fallback : portail Stripe générique (saisie de l'email Stripe).
+      window.location.href = STRIPE_PORTAL_FALLBACK
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erreur inconnue'
-      setPortalError(msg)
-      setIsOpeningPortal(false)
+      console.warn('[stripe-portal] erreur fatale, fallback magic-link:', err)
+      window.location.href = STRIPE_PORTAL_FALLBACK
+    } finally {
+      // setIsOpeningPortal(false) inutile : on est déjà parti via redirect.
     }
   }
 
@@ -152,24 +174,6 @@ export default function AppSettings() {
           </button>
         ))}
       </div>
-
-      {portalError && (
-        <div
-          className="rounded-2xl p-4 text-sm leading-relaxed"
-          style={{
-            background: 'rgba(239,68,68,0.08)',
-            border: '1px solid rgba(239,68,68,0.25)',
-            color: '#fca5a5',
-          }}
-        >
-          <p className="font-bold mb-1">Impossible d'ouvrir le portail Stripe</p>
-          <p className="text-xs">{portalError}</p>
-          <p className="text-xs mt-2 text-text-secondary">
-            Contacte le support&nbsp;:{' '}
-            <a href="mailto:support@gomytho.com" className="text-lime underline">support@gomytho.com</a>
-          </p>
-        </div>
-      )}
 
       {/* Déconnexion */}
       <button
