@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
@@ -7,112 +7,146 @@ import { supabase } from '@/lib/supabase'
 import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import type { AspectRatio } from '@/lib/kie-api'
-
-const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
-
-const PLAN_CONFIG = {
-  weekly:  { credits: 160, label: 'hebdomadaire' },
-  monthly: { credits: 560, label: 'mensuel' },
-  free:    { credits: 3,   label: 'gratuit' },
-}
+import { resolveNewUserPlan, cachePlanLocally, PLAN_LABELS, type VerifiedPlan } from '@/lib/plan'
 
 export default function Signup() {
   const [searchParams] = useSearchParams()
-  // Priorité : URL param > localStorage (sauvegardé avant le redirect Stripe)
-  const urlPlan = searchParams.get('plan')
-  const storedPlan = localStorage.getItem('gomytho_pending_plan')
-  const rawPlan = (urlPlan || storedPlan || 'monthly') as keyof typeof PLAN_CONFIG
-  const plan = PLAN_CONFIG[rawPlan] ? rawPlan : 'monthly'
-  const { credits } = PLAN_CONFIG[plan]
-
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [genStep, setGenStep] = useState('')
   const [error, setError] = useState('')
+  const [verified, setVerified] = useState<VerifiedPlan | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void resolveNewUserPlan(searchParams).then((v) => {
+      if (alive) setVerified(v)
+    })
+    return () => { alive = false }
+  }, [searchParams])
+
+  async function persistUserProfile(userId: string, userEmail: string, plan: VerifiedPlan) {
+    // Toujours upsert dans public.users — la vérification du paiement est notre
+    // seule source de vérité pour le plan + les crédits (cross-device).
+    try {
+      await supabase.from('users').upsert(
+        [{
+          id: userId,
+          email: userEmail,
+          credits_remaining: plan.credits,
+          subscription_status: 'active',
+          plan: plan.plan,
+        }],
+        { onConflict: 'id' }
+      )
+    } catch (err) {
+      console.warn('[signup] upsert users échoué (non bloquant):', err)
+    }
+    cachePlanLocally(plan.plan, plan.credits)
+    try {
+      localStorage.removeItem('gomytho_pending_plan')
+    } catch { /* ignore */ }
+  }
+
+  async function runAutoGeneration(userId: string) {
+    const pendingImage = localStorage.getItem('gomytho_pending_image')
+    const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
+    const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
+
+    if (!pendingImage || !pendingPrompt) {
+      window.location.href = '/resultats'
+      return
+    }
+
+    setIsLoading(false)
+    setIsGenerating(true)
+    try {
+      setGenStep('Conversion de ta photo...')
+      const res = await fetch(pendingImage)
+      const blob = await res.blob()
+      const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
+
+      setGenStep('Upload de ta photo...')
+      const publicUrl = await uploadToSupabase(file, userId)
+
+      setGenStep('Génération de ton mytho...')
+      const { dataUrl } = await generateMytho(
+        { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
+        (s) => setGenStep(s)
+      )
+
+      setGenStep('Sauvegarde...')
+      await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
+
+      localStorage.removeItem('gomytho_pending_image')
+      localStorage.removeItem('gomytho_pending_prompt')
+      localStorage.removeItem('gomytho_pending_ratio')
+      window.location.href = '/resultats'
+    } catch (genErr) {
+      console.warn('[signup] auto-génération échouée :', genErr)
+      // Le user verra son prompt récupéré sur /makemytho et pourra relancer.
+      window.location.href = '/makemytho?pending=1'
+    }
+  }
 
   const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     setError('')
 
+    const planToAssign = verified ?? (await resolveNewUserPlan(searchParams))
+
     try {
-      const { data: _data, error } = await supabase.auth.signUp({
-        email,
-        password,
-      })
+      const { data, error: signUpErr } = await supabase.auth.signUp({ email, password })
 
-      if (error) throw error
-
-      if (_data.user) {
-        if (USE_USERS_TABLE) {
-          await supabase.from('users').upsert([{
-            id: _data.user.id,
-            email: _data.user.email,
-            credits_remaining: credits,
-            subscription_status: 'active',
-            plan,
-          }], { onConflict: 'id' })
-        }
-
-        // Cache local pour éviter les incohérences d'affichage si la DB tarde
-        localStorage.setItem('gomytho_user_plan', plan)
-        localStorage.setItem('gomytho_user_credits', String(credits))
-
-        // Nettoyer le plan sauvegardé
-        localStorage.removeItem('gomytho_pending_plan')
-
-        // S'assurer d'avoir une session active
-        let userId = _data.user.id
-        if (!_data.session) {
-          const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
-          if (!signInData?.session) { window.location.href = '/login'; return }
-          userId = signInData.session.user.id
-        }
-
-        // Générer automatiquement si une photo + prompt sont en attente
-        const pendingImage = localStorage.getItem('gomytho_pending_image')
-        const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
-        const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
-
-        if (pendingImage && pendingPrompt) {
-          setIsLoading(false)
-          setIsGenerating(true)
-          try {
-            setGenStep('Conversion de ta photo...')
-            const res = await fetch(pendingImage)
-            const blob = await res.blob()
-            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
-
-            setGenStep('Upload de ta photo...')
-            const publicUrl = await uploadToSupabase(file, userId)
-
-            setGenStep('Génération de ton mytho...')
-            const { dataUrl } = await generateMytho(
-              { userPrompt: pendingPrompt, imageUrl: publicUrl, aspectRatio: pendingRatio },
-              (s) => setGenStep(s)
-            )
-
-            setGenStep('Sauvegarde...')
-            await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
-
-            localStorage.removeItem('gomytho_pending_image')
-            localStorage.removeItem('gomytho_pending_prompt')
-            localStorage.removeItem('gomytho_pending_ratio')
-            window.location.href = '/resultats'
-          } catch (genErr) {
-            console.warn('Auto-génération échouée :', genErr)
-            window.location.href = '/makemytho?pending=1'
+      if (signUpErr) {
+        // Compte existant → on bascule sur login en gardant les pending data
+        if (/already registered|already exists|user.*exists/i.test(signUpErr.message)) {
+          const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password })
+          if (signInErr || !signInData.session) {
+            setError(`❌ Un compte existe déjà avec cet email. Connecte-toi depuis la page Login.`)
+            setIsLoading(false)
+            return
           }
-        } else {
-          window.location.href = '/resultats'
+          // Connexion OK → traiter comme un nouveau signup pour upsert du plan
+          await persistUserProfile(signInData.session.user.id, signInData.session.user.email || email, planToAssign)
+          await runAutoGeneration(signInData.session.user.id)
+          return
         }
+        throw signUpErr
       }
-    } catch (error: unknown) {
-      const err = error as { message?: string }
+
+      if (!data.user) {
+        setError('Création du compte impossible (utilisateur non créé). Réessaie.')
+        setIsLoading(false)
+        return
+      }
+
+      // Si email confirmation activée, signUp ne retourne pas de session.
+      let session = data.session
+      if (!session) {
+        const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
+        session = signInData?.session ?? null
+      }
+
+      if (!session) {
+        // Email confirmation activée dans Supabase → on ne peut pas auto-loguer.
+        // On persist quand même le plan en DB (via service role côté trigger),
+        // et on guide le user vers la confirmation puis le login.
+        setError('📧 Vérifie ta boîte mail (et les spams) pour confirmer ton compte, puis connecte-toi.')
+        setIsLoading(false)
+        return
+      }
+
+      const userId = session.user.id
+      const userEmail = session.user.email || email
+      await persistUserProfile(userId, userEmail, planToAssign)
+      await runAutoGeneration(userId)
+    } catch (e: unknown) {
+      const err = e as { message?: string }
       setError(err.message || 'Une erreur est survenue')
-    } finally {
       setIsLoading(false)
     }
   }
@@ -122,16 +156,19 @@ export default function Signup() {
     setError('')
 
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
+      const planQuery = verified?.plan || 'monthly'
+      const sessionParam = searchParams.get('session_id')
+      const sidQuery = sessionParam ? `&session_id=${encodeURIComponent(sessionParam)}` : ''
+      const origin = window.location.origin
+      const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `https://gomytho.com/resultats?plan=${plan}`,
+          redirectTo: `${origin}/resultats?plan=${planQuery}${sidQuery}`,
         },
       })
-
-      if (error) throw error
-    } catch (error: unknown) {
-      const err = error as { message?: string }
+      if (oauthErr) throw oauthErr
+    } catch (e: unknown) {
+      const err = e as { message?: string }
       setError(err.message || 'Une erreur est survenue')
       setIsLoading(false)
     }
@@ -169,11 +206,12 @@ export default function Signup() {
             <p className="text-text-secondary mb-3">
               Pour accéder à tes mythos depuis n'importe où
             </p>
-            {searchParams.get('plan') && (
+            {verified && (
               <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
                 <span className="w-2 h-2 rounded-full bg-lime animate-pulse" />
                 <span className="text-lime text-sm font-semibold">
-                  Plan {PLAN_CONFIG[plan].label} — {credits} mythos
+                  Plan {PLAN_LABELS[verified.plan]} — {verified.credits} crédits
+                  {verified.source === 'stripe' && <span className="ml-1 opacity-70">· Paiement vérifié ✓</span>}
                 </span>
               </div>
             )}
@@ -284,6 +322,13 @@ export default function Signup() {
               <a href="/privacy" className="text-lime hover:underline">
                 politique de confidentialité
               </a>
+            </p>
+
+            <p className="text-center text-sm text-text-secondary mt-4">
+              Déjà un compte ?{' '}
+              <Link to="/login" className="text-lime hover:underline font-semibold">
+                Se connecter
+              </Link>
             </p>
           </motion.div>
 

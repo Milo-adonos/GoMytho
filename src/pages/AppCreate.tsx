@@ -6,9 +6,9 @@ import { generateMytho, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
+import { cachePlanLocally } from '@/lib/plan'
 
 const CREDITS_PER_IMAGE = 8
-const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
 
 async function downloadDataUrl(dataUrl: string, filename = `mytho-${Date.now()}.jpg`) {
   try {
@@ -147,20 +147,22 @@ export default function AppCreate() {
         prompt,
       })
 
-      // 5) Crédits — non bloquant
+      // 5) Décrément des crédits en DB (cross-device) — non bloquant
+      const newCredits = availableCredits - CREDITS_PER_IMAGE
       try {
-        if (USE_USERS_TABLE) {
-          await supabase
-            .from('users')
-            .update({ credits_remaining: availableCredits - CREDITS_PER_IMAGE })
-            .eq('id', activeUser.id)
-        }
+        await supabase
+          .from('users')
+          .update({ credits_remaining: newCredits })
+          .eq('id', activeUser.id)
       } catch (dbErr) {
-        console.warn('DB sauvegarde non critique :', dbErr)
+        console.warn('Décrément crédits DB échoué (non bloquant) :', dbErr)
       }
 
-      setUser({ ...activeUser, credits_remaining: availableCredits - CREDITS_PER_IMAGE })
-      localStorage.setItem('gomytho_user_credits', String(availableCredits - CREDITS_PER_IMAGE))
+      setUser({ ...activeUser, credits_remaining: newCredits })
+      cachePlanLocally(
+        (activeUser.plan as 'weekly' | 'monthly' | 'free' | undefined) || 'monthly',
+        newCredits
+      )
     } catch (err: unknown) {
       console.error(err)
       const msg = err instanceof Error ? err.message : 'Erreur inconnue'

@@ -4,17 +4,21 @@ import { supabase, User } from '@/lib/supabase'
 import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import type { AspectRatio } from '@/lib/kie-api'
-
-const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
-const USE_USERS_TABLE = import.meta.env.VITE_USE_USERS_TABLE === 'true'
+import {
+  cachePlanLocally,
+  PLAN_CREDITS,
+  readCachedPlan,
+  resolveNewUserPlan,
+  type Plan,
+} from '@/lib/plan'
 
 export interface AppUser extends User {}
 
-async function tryAutoGenerate(userId: string) {
+async function tryAutoGenerate(userId: string): Promise<boolean> {
   const pendingImage = localStorage.getItem('gomytho_pending_image')
   const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
   const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
-  if (!pendingImage || !pendingPrompt) return
+  if (!pendingImage || !pendingPrompt) return false
   try {
     const res = await fetch(pendingImage)
     const blob = await res.blob()
@@ -29,9 +33,10 @@ async function tryAutoGenerate(userId: string) {
     localStorage.removeItem('gomytho_pending_prompt')
     localStorage.removeItem('gomytho_pending_ratio')
     localStorage.removeItem('gomytho_pending_plan')
-    window.location.href = '/resultats'
+    return true
   } catch (err) {
     console.warn('Auto-génération échouée :', err)
+    return false
   }
 }
 
@@ -56,7 +61,6 @@ export default function AppLayout() {
 
   useEffect(() => {
     const init = async () => {
-      // ── 1. Vérifier la session auth (CRITIQUE) ──────────────────────────
       const session = await waitForSession()
 
       if (!session) {
@@ -66,73 +70,82 @@ export default function AppLayout() {
 
       const authUser = session.user
 
-      // Mode sans table users (évite spam 404 si table absente)
-      if (!USE_USERS_TABLE) {
-        const cachedPlan = (localStorage.getItem('gomytho_user_plan') as 'weekly' | 'monthly' | null) || 'monthly'
-        const cachedCredits = Number(localStorage.getItem('gomytho_user_credits') || PLAN_CREDITS[cachedPlan] || 0)
-        setUser({
-          id: authUser.id,
-          email: authUser.email!,
-          credits_remaining: Number.isFinite(cachedCredits) ? cachedCredits : 0,
-          subscription_status: 'active',
-          plan: cachedPlan,
-          created_at: new Date().toISOString(),
-        } as any)
-        setLoading(false)
-        return
+      // ─── 1. Lecture du profil DB (source de vérité cross-device) ────────────
+      let dbUser: any = null
+      try {
+        const { data } = await supabase.from('users').select('*').eq('id', authUser.id).single()
+        dbUser = data || null
+      } catch {
+        dbUser = null
       }
 
-      // ── 2. Charger le profil depuis la DB (NON-CRITIQUE) ────────────────
-      // Une erreur ici ne déconnecte PAS l'utilisateur
-      try {
-        const { data: dbUser } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', authUser.id)
-          .single()
+      const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
+      const hasFreshPayment = !!searchParams.get('session_id') || !!searchParams.get('plan') || !!localStorage.getItem('gomytho_pending_plan')
 
-        const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
+      // ─── 2. Si user fraîchement payé OU profil DB non initialisé → upsert ──
+      // Le trigger Supabase crée la ligne avec credits=0/plan='free'. Si on
+      // détecte un paiement (URL ou pending storage) ou que le profil est
+      // resté à 0 crédits, on l'enrichit en vérifiant Stripe quand possible.
+      const dbIsUninitialized = !dbUser || (dbUser.plan === 'free' && (dbUser.credits_remaining ?? 0) === 0)
 
-        if (dbUser) {
-          setUser(dbUser)
-          localStorage.setItem('gomytho_user_plan', dbUser.plan || 'monthly')
-          localStorage.setItem('gomytho_user_credits', String(dbUser.credits_remaining ?? 0))
-          if (hasPending) { setAutoGen(true); tryAutoGenerate(authUser.id).finally(() => setAutoGen(false)) }
-        } else {
-          // Nouveau profil (premier login Google, etc.)
-          const urlPlan = searchParams.get('plan')
-          const storedPlan = localStorage.getItem('gomytho_pending_plan')
-          const rawPlan = urlPlan || storedPlan || 'monthly'
-          const plan = PLAN_CREDITS[rawPlan] ? rawPlan : 'monthly'
-          const newUser = {
-            id: authUser.id,
-            email: authUser.email!,
-            credits_remaining: PLAN_CREDITS[plan],
-            subscription_status: 'active',
-            plan,
+      if (dbIsUninitialized && hasFreshPayment) {
+        const verified = await resolveNewUserPlan(searchParams)
+        const upsertRow = {
+          id: authUser.id,
+          email: authUser.email!,
+          credits_remaining: verified.credits,
+          subscription_status: 'active' as const,
+          plan: verified.plan,
+        }
+        try {
+          await supabase.from('users').upsert([upsertRow], { onConflict: 'id' })
+          dbUser = { ...upsertRow, created_at: new Date().toISOString() }
+        } catch (err) {
+          console.warn('[AppLayout] upsert plan échoué (fallback localStorage):', err)
+          dbUser = dbUser || {
+            ...upsertRow,
+            stripe_customer_id: null,
             created_at: new Date().toISOString(),
           }
-          supabase.from('users').upsert([newUser], { onConflict: 'id' }).then(() => {})
-          setUser(newUser as any)
-          localStorage.setItem('gomytho_user_plan', plan)
-          localStorage.setItem('gomytho_user_credits', String(PLAN_CREDITS[plan]))
-          if (hasPending) { setAutoGen(true); tryAutoGenerate(authUser.id).finally(() => setAutoGen(false)) }
         }
-      } catch {
-        // DB inaccessible → on affiche quand même l'app avec les infos auth de base
-        const cachedPlan = (localStorage.getItem('gomytho_user_plan') as 'weekly' | 'monthly' | null) || 'monthly'
-        const cachedCredits = Number(localStorage.getItem('gomytho_user_credits') || 0)
-        setUser({
-          id: authUser.id,
-          email: authUser.email!,
-          credits_remaining: Number.isFinite(cachedCredits) ? cachedCredits : 0,
-          subscription_status: 'active',
-          plan: cachedPlan,
-          created_at: new Date().toISOString(),
-        } as any)
+        cachePlanLocally(verified.plan, verified.credits)
+        try {
+          localStorage.removeItem('gomytho_pending_plan')
+        } catch { /* ignore */ }
       }
 
+      // ─── 3. Construction de l'objet user (DB > cache local > défaut) ────────
+      let resolvedUser: AppUser
+      if (dbUser) {
+        resolvedUser = dbUser as AppUser
+        cachePlanLocally(
+          (dbUser.plan as Plan) || 'monthly',
+          Number(dbUser.credits_remaining ?? PLAN_CREDITS.monthly)
+        )
+      } else {
+        const cached = readCachedPlan()
+        resolvedUser = {
+          id: authUser.id,
+          email: authUser.email!,
+          credits_remaining: cached.credits,
+          subscription_status: 'active',
+          plan: cached.plan,
+          created_at: new Date().toISOString(),
+        } as AppUser
+      }
+
+      setUser(resolvedUser)
       setLoading(false)
+
+      // ─── 4. Auto-génération si pending data (post-paiement, cross-device) ──
+      if (hasPending) {
+        setAutoGen(true)
+        const ok = await tryAutoGenerate(authUser.id)
+        setAutoGen(false)
+        if (ok) {
+          window.location.href = '/resultats'
+        }
+      }
     }
 
     init()
