@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useSearchParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
 import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
@@ -40,27 +40,37 @@ async function tryAutoGenerate(userId: string): Promise<boolean> {
   const pendingImage2 = localStorage.getItem('gomytho_pending_image2')
   const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
   const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
-  if (!pendingImage || !pendingPrompt) return false
+  if (!pendingImage || !pendingPrompt) {
+    console.info('[autoGen] aborted: pending data missing (image or prompt)')
+    return false
+  }
   try {
+    console.info('[autoGen] step 1/4 — upload photo principale...')
     const publicUrl = await dataUrlToPublicUrl(pendingImage, userId, 'photo.jpg')
     let publicUrl2: string | null = null
     if (pendingImage2) {
       try {
+        console.info('[autoGen] step 1bis — upload photo 2...')
         publicUrl2 = await dataUrlToPublicUrl(pendingImage2, userId, 'photo2.jpg')
       } catch (e2) {
         console.warn('[autoGen] upload photo 2 échoué (non bloquant):', e2)
       }
     }
     const imageUrls = publicUrl2 ? [publicUrl, publicUrl2] : [publicUrl]
+    console.info('[autoGen] step 2/4 — génération via Kie.ai...', { imageCount: imageUrls.length })
     const { dataUrl } = await generateMytho(
       { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
-      () => {}
+      (s) => console.info('[autoGen] kie:', s)
     )
+    console.info('[autoGen] step 3/4 — sauvegarde dans Créations...')
     await saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt })
+    console.info('[autoGen] step 4/4 — clean pending data')
     clearPendingMytho()
     return true
   } catch (err) {
-    console.warn('Auto-génération échouée :', err)
+    console.error('[autoGen] échec :', err)
+    // On NE clear PAS les pending data en cas d'échec → permet au user
+    // de relancer manuellement depuis /makemytho.
     return false
   }
 }
@@ -79,12 +89,18 @@ async function waitForSession(maxAttempts = 20, delayMs = 250) {
 }
 
 export default function AppLayout() {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [user, setUser] = useState<AppUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [autoGen, setAutoGen] = useState(false)
+  // Garde-fou : empêche le useEffect de relancer l'init (et donc l'auto-gen)
+  // si searchParams change pendant qu'on est encore dans la 1ʳᵉ exécution.
+  const initRanRef = useRef(false)
 
   useEffect(() => {
+    if (initRanRef.current) return
+    initRanRef.current = true
     const init = async () => {
       const session = await waitForSession()
 
@@ -191,8 +207,19 @@ export default function AppLayout() {
         setAutoGen(true)
         const ok = await tryAutoGenerate(authUser.id)
         setAutoGen(false)
-        if (ok) {
-          window.location.href = '/resultats'
+        // Dans TOUS les cas (succès comme échec), on atterrit sur /résultats.
+        // - Succès → le mytho est dans le cache local (saveMythoToCloud) →
+        //   AppCreations le lit et l'affiche immédiatement.
+        // - Échec  → /résultats vide, mais les pending data sont conservées
+        //   pour permettre au user de relancer manuellement depuis /makemytho.
+        navigate('/resultats', { replace: true })
+        if (!ok) {
+          // Notification douce (sans bloquer l'UI)
+          setTimeout(() => {
+            try {
+              alert('La génération automatique a échoué. Tu peux relancer depuis l\'onglet "Créer".')
+            } catch { /* ignore */ }
+          }, 300)
         }
       } else if (hasPending) {
         clearPendingMytho()
@@ -200,7 +227,7 @@ export default function AppLayout() {
     }
 
     init()
-  }, [searchParams])
+  }, [searchParams, navigate])
 
   if (loading || autoGen) {
     return (

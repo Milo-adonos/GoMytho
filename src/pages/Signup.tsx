@@ -118,8 +118,13 @@ export default function Signup() {
       window.location.href = '/resultats'
     } catch (genErr) {
       console.warn('[signup] auto-génération échouée :', genErr)
-      // Le user verra son prompt récupéré sur /makemytho et pourra relancer.
-      window.location.href = '/makemytho?pending=1'
+      // En cas d'échec, on garde les pending data pour permettre une relance
+      // manuelle, mais on emmène toujours le user dans Créations (pour qu'il
+      // ne se retrouve pas perdu sur /makemytho avec un message ambigu).
+      try {
+        alert('La génération automatique a rencontré un souci. Tu peux relancer depuis l\'onglet "Créer".')
+      } catch { /* ignore */ }
+      window.location.href = '/resultats'
     }
   }
 
