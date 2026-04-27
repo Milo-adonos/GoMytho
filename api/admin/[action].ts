@@ -1,17 +1,66 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAdmin } from '../_auth'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { createClient } from '@supabase/supabase-js'
 
 const WEEKLY_PRICE = 2.99
 const MONTHLY_PRICE = 9.90
 const COST_PER_IMAGE = 0.037
 const MONTH_LABELS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_gomytho_2026'
 
 function getSupabase() {
   const url = process.env.VITE_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
   if (!url || !key) return null
   return createClient(url, key)
+}
+
+function fromBase64url(input: string): Buffer {
+  const pad = input.length % 4 === 0 ? '' : '='.repeat(4 - (input.length % 4))
+  return Buffer.from(input.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64')
+}
+
+function signPayload(payload: string): string {
+  return createHmac('sha256', JWT_SECRET).update(payload).digest('base64')
+    .replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!header) return out
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=')
+    if (i < 0) continue
+    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim())
+  }
+  return out
+}
+
+function verifyAdmin(req: VercelRequest): boolean {
+  try {
+    const cookies = parseCookies(req.headers.cookie)
+    const token = cookies.admin_token
+    if (!token) return false
+    const [payloadB64, signature] = token.split('.')
+    if (!payloadB64 || !signature) return false
+    const expected = signPayload(payloadB64)
+    const a = Buffer.from(signature)
+    const b = Buffer.from(expected)
+    if (a.length !== b.length) return false
+    if (!timingSafeEqual(a, b)) return false
+    const data = JSON.parse(fromBase64url(payloadB64).toString('utf8'))
+    return data?.role === 'admin' && typeof data.exp === 'number' && Date.now() < data.exp
+  } catch {
+    return false
+  }
+}
+
+function requireAdmin(req: VercelRequest, res: VercelResponse): boolean {
+  if (!verifyAdmin(req)) {
+    res.status(401).json({ error: 'Non autorisé' })
+    return false
+  }
+  return true
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
