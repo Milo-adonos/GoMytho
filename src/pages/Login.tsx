@@ -62,7 +62,11 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/resultats`,
+          // /auth/callback est le SEUL redirect URL à inscrire en allowlist
+          // côté Supabase Dashboard. Cette page attend que la session soit
+          // bien établie avant de naviguer vers /resultats — sans ça, le
+          // hash #access_token=... est perdu et le user est jeté.
+          redirectTo: `${window.location.origin}/auth/callback`,
         },
       })
       if (error) throw error

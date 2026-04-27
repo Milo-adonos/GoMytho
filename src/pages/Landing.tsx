@@ -153,23 +153,53 @@ export default function Landing() {
   }, [])
 
   // ─── Filet de sécurité OAuth ───────────────────────────────────────────
-  // Si un user authentifié atterrit ici (cas où Supabase a fallback sur la
-  // Site URL au lieu de respecter notre redirectTo /auth/callback), on le
-  // renvoie directement dans l'app pour pas qu'il reste bloqué sur la
-  // landing après un login Google.
+  // Si Supabase ne respecte pas notre redirectTo /auth/callback et fallback
+  // sur la Site URL (la landing) avec un hash #access_token=..., il faut :
+  //   1. Laisser le SDK Supabase parser le hash et créer la session
+  //      (onAuthStateChange émet 'SIGNED_IN' une fois fini).
+  //   2. SEULEMENT ENSUITE, naviguer vers /resultats. Si on navigue avant,
+  //      on perd le hash et la session n'est jamais sauvegardée → user jeté.
   useEffect(() => {
     let cancelled = false
-    void (async () => {
-      // Petit délai pour laisser Supabase parser le hash #access_token=...
-      await new Promise((r) => setTimeout(r, 300))
-      const { data } = await supabase.auth.getSession()
-      if (cancelled || !data?.session) return
-      // Préserve les query params éventuels (plan, session_id) pour le
-      // post-paiement.
-      const search = window.location.search
+    let resolved = false
+
+    const goToApp = (search: string) => {
+      if (resolved || cancelled) return
+      resolved = true
       window.location.replace(`/resultats${search}`)
-    })()
-    return () => { cancelled = true }
+    }
+
+    // 1. Listener — réagit dès que le SDK a fini de parser le hash.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (cancelled || !session?.user) return
+      if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
+        goToApp(window.location.search)
+      }
+    })
+
+    // 2. Polling défensif — si SDK avait déjà parsé avant l'abonnement.
+    let attempts = 0
+    const maxAttempts = 25 // 25 × 200ms = 5 s
+    const interval = setInterval(async () => {
+      if (cancelled || resolved) {
+        clearInterval(interval)
+        return
+      }
+      attempts += 1
+      const { data } = await supabase.auth.getSession()
+      if (data?.session?.user) {
+        clearInterval(interval)
+        goToApp(window.location.search)
+      } else if (attempts >= maxAttempts) {
+        clearInterval(interval)
+      }
+    }, 200)
+
+    return () => {
+      cancelled = true
+      subscription.unsubscribe()
+      clearInterval(interval)
+    }
   }, [])
 
   useEffect(() => {

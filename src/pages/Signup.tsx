@@ -195,7 +195,10 @@ export default function Signup() {
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${origin}/resultats?plan=${planQuery}${sidQuery}`,
+          // /auth/callback préserve plan + session_id puis redirige vers
+          // /resultats. AppLayout y fait l'upsert post-paiement et lance
+          // l'auto-génération du mytho.
+          redirectTo: `${origin}/auth/callback?plan=${planQuery}${sidQuery}`,
         },
       })
       if (oauthErr) throw oauthErr
