@@ -1,6 +1,6 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
-import { Suspense, lazy } from 'react'
-import TappitDebugBadge from './components/TappitDebugBadge'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Suspense, lazy, useEffect } from 'react'
+import { capturePageview } from './lib/analytics'
 
 const Landing = lazy(() => import('./pages/Landing'))
 const Create = lazy(() => import('./pages/Create'))
@@ -34,11 +34,18 @@ const LoadingFallback = () => (
   </div>
 )
 
+function PageviewTracker() {
+  const location = useLocation()
+  useEffect(() => {
+    capturePageview()
+  }, [location.pathname, location.search])
+  return null
+}
+
 function App() {
   return (
     <Suspense fallback={<LoadingFallback />}>
-      {/* Badge de debug Tappit/Radar — activable avec ?taap=1 dans l'URL */}
-      <TappitDebugBadge />
+      <PageviewTracker />
       <Routes>
         {/* Funnel public */}
         <Route path="/" element={<Landing />} />

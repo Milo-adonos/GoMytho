@@ -208,6 +208,16 @@ export default function AppLayout() {
         dbUser = null
       }
 
+      // Identifie l'utilisateur dans PostHog (no-op si non configuré).
+      try {
+        const { identifyUser } = await import('@/lib/analytics')
+        identifyUser(authUser.id, {
+          email: authUser.email,
+          plan: dbUser?.plan ?? 'free',
+          credits: dbUser?.credits_remaining ?? 0,
+        })
+      } catch { /* ignore */ }
+
       const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
       // "Fresh payment" = signal explicite qu'on revient d'un parcours d'achat
       // (URL Stripe redirect ou plan en attente non encore consommé). Sans ce

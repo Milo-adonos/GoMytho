@@ -79,6 +79,10 @@ export default function AppSettings() {
     ((user?.credits_remaining ?? 0) <= 160 ? 'weekly' : 'monthly')
 
   const handleLogout = async () => {
+    try {
+      const { resetAnalytics } = await import('@/lib/analytics')
+      resetAnalytics()
+    } catch { /* ignore */ }
     await supabase.auth.signOut()
     navigate('/')
   }
