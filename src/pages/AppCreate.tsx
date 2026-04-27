@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
-import { generateMytho, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
+import { generateMytho, uploadToSupabase, AspectRatio, KieBlockedError } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 import PhotoCard from '@/components/PhotoCard'
+import GenErrorBanner, { setGenError, clearGenError } from '@/components/GenErrorBanner'
 import { cachePlanLocally } from '@/lib/plan'
 
 const CREDITS_PER_IMAGE = 8
@@ -56,6 +57,7 @@ export default function AppCreate() {
   const [isConverting2, setIsConverting2] = useState(false)
   const [step, setStep] = useState('')
   const [resultDataUrl, setResultDataUrl] = useState<string | null>(null)
+  const [bannerKey, setBannerKey] = useState(0)
 
   useEffect(() => {
     // 1) Mode `?pending=` : utilisateur revient pour finaliser → on consomme.
@@ -162,6 +164,9 @@ export default function AppCreate() {
     }
     setIsGenerating(true)
     setResultDataUrl(null)
+    // Nouvelle tentative → on efface le banner d'erreur précédent.
+    clearGenError()
+    setBannerKey((k) => k + 1)
     try {
       let activeUser = user
       if (!activeUser) {
@@ -192,6 +197,7 @@ export default function AppCreate() {
 
       // Helper retry (3 tentatives + backoff exponentiel) — on ne veut pas
       // qu'une coupure réseau temporaire fasse échouer la génération.
+      // Pas de retry sur un blocage de modération : Kie.ai répondra pareil.
       const withRetry = async <T,>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> => {
         let lastErr: unknown = null
         for (let i = 1; i <= attempts; i += 1) {
@@ -201,6 +207,7 @@ export default function AppCreate() {
             return r
           } catch (err) {
             lastErr = err
+            if (err instanceof KieBlockedError) throw err
             console.warn(`[AppCreate] ${label} échec ${i}/${attempts}:`, err)
             if (i < attempts) {
               const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
@@ -297,8 +304,20 @@ export default function AppCreate() {
       } catch { /* ignore */ }
     } catch (err: unknown) {
       console.error(err)
-      const msg = err instanceof Error ? err.message : 'Erreur inconnue'
-      alert(`Erreur lors de la génération IA (${step || 'initialisation'}) : ${msg}`)
+      if (err instanceof KieBlockedError) {
+        setGenError({ code: err.code, message: err.message, blocked: true })
+      } else {
+        const msg = err instanceof Error ? err.message : 'Erreur inconnue'
+        setGenError({
+          code: 'GEN_FAILED',
+          message: msg.includes('Crédits Kie')
+            ? msg
+            : `La génération a échoué pendant l'étape "${step || 'initialisation'}". Vérifie ta connexion et réessaie.`,
+          blocked: false,
+        })
+      }
+      // Force le re-render du banner (sans recharger la page)
+      setBannerKey((k) => k + 1)
     } finally {
       setIsGenerating(false)
       setStep('')
@@ -307,6 +326,9 @@ export default function AppCreate() {
 
   return (
     <div className="px-4 py-5 max-w-lg mx-auto">
+      {/* Banner d'erreur de génération (modération IA, fail réseau, etc.) */}
+      <GenErrorBanner key={bannerKey} showRetryCta={false} />
+
       {pendingBanner && (
         <div
           className="rounded-2xl p-4 mb-5 flex items-center gap-3"

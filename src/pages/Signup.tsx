@@ -4,9 +4,10 @@ import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
-import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
+import { generateMytho, uploadToSupabase, KieBlockedError } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import type { AspectRatio } from '@/lib/kie-api'
+import { setGenError } from '@/components/GenErrorBanner'
 import { resolveNewUserPlan, cachePlanLocally, PLAN_LABELS, type VerifiedPlan } from '@/lib/plan'
 
 export default function Signup() {
@@ -72,6 +73,7 @@ export default function Signup() {
     }
 
     // Retry helper avec backoff exponentiel — on ne veut PAS échouer.
+    // Pas de retry sur un blocage modération : Kie répond pareil → relève direct.
     const withRetry = async <T,>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> => {
       let lastErr: unknown = null
       for (let i = 1; i <= attempts; i += 1) {
@@ -81,6 +83,7 @@ export default function Signup() {
           return r
         } catch (err) {
           lastErr = err
+          if (err instanceof KieBlockedError) throw err
           console.warn(`[signup] ${label} échec ${i}/${attempts}:`, err)
           if (i < attempts) {
             const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
@@ -171,10 +174,22 @@ export default function Signup() {
       window.location.href = '/resultats'
     } catch (genErr) {
       console.error('[signup] auto-génération échouée définitivement après retries :', genErr)
-      // On garde les pending data → relance manuelle possible depuis /makemytho.
-      try {
-        alert('La génération automatique a rencontré un souci. Tu peux relancer depuis l\'onglet "Créer".')
-      } catch { /* ignore */ }
+      // On stocke l'erreur pour affichage dans le banner stylé côté Créations.
+      if (genErr instanceof KieBlockedError) {
+        setGenError({ code: genErr.code, message: genErr.message, blocked: true })
+      } else {
+        const msg =
+          (genErr as Error)?.message ||
+          'La génération automatique a rencontré un souci.'
+        setGenError({
+          code: 'GEN_FAILED',
+          message: msg.includes('Crédits Kie')
+            ? msg
+            : `La génération automatique a échoué. ${msg.length < 120 ? msg : ''} Tu peux relancer depuis l'onglet "Créer".`,
+          blocked: false,
+        })
+      }
+      // On GARDE les pending data → relance manuelle possible depuis /makemytho.
       window.location.href = '/resultats'
     }
   }

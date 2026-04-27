@@ -8,6 +8,7 @@ import {
   LocalMythoEntry,
   readLocalCreations,
 } from '@/lib/mythos-sync'
+import GenErrorBanner from '@/components/GenErrorBanner'
 
 export default function AppCreations() {
   const navigate = useNavigate()
@@ -123,28 +124,34 @@ export default function AppCreations() {
 
   if (mythos.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-[60vh] px-6 text-center">
-        <div
-          className="w-20 h-20 rounded-2xl flex items-center justify-center mb-4 text-4xl"
-          style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.15)' }}
-        >
-          🎨
+      <div className="px-4 py-4">
+        <GenErrorBanner />
+        <div className="flex flex-col items-center justify-center h-[55vh] px-2 text-center">
+          <div
+            className="w-20 h-20 rounded-2xl flex items-center justify-center mb-4 text-4xl"
+            style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.15)' }}
+          >
+            🎨
+          </div>
+          <h2 className="text-xl font-black mb-2">Aucune création</h2>
+          <p className="text-text-secondary text-sm mb-6">Lance ton premier mytho et retrouve-le ici</p>
+          <button
+            onClick={() => navigate('/makemytho')}
+            className="px-6 py-3 rounded-full font-black text-primary-bg bg-lime active:scale-95 transition-all"
+            style={{ boxShadow: '0 0 30px rgba(198,255,60,0.3)' }}
+          >
+            Créer mon premier mytho →
+          </button>
         </div>
-        <h2 className="text-xl font-black mb-2">Aucune création</h2>
-        <p className="text-text-secondary text-sm mb-6">Lance ton premier mytho et retrouve-le ici</p>
-        <button
-          onClick={() => navigate('/makemytho')}
-          className="px-6 py-3 rounded-full font-black text-primary-bg bg-lime active:scale-95 transition-all"
-          style={{ boxShadow: '0 0 30px rgba(198,255,60,0.3)' }}
-        >
-          Créer mon premier mytho →
-        </button>
       </div>
     )
   }
 
   return (
     <div className="px-3 py-4">
+      <div className="px-1">
+        <GenErrorBanner />
+      </div>
       <div className="flex items-center justify-between mb-4 px-1">
         <h1 className="text-lg font-black">Mes créations</h1>
         <span className="text-xs text-text-secondary">

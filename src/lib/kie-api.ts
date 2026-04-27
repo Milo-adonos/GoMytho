@@ -12,6 +12,64 @@ const FIXED_PARAMS = {
 
 export type AspectRatio = '9:16' | '16:9'
 
+// ─── Erreur typée pour les blocages de modération IA ────────────────────────
+// Permet à l'UI de l'afficher avec un visuel dédié (au lieu d'un alert brut).
+export class KieBlockedError extends Error {
+  code: string
+  rawError?: string
+  constructor(code: string, message: string, rawError?: string) {
+    super(message)
+    this.name = 'KieBlockedError'
+    this.code = code
+    this.rawError = rawError
+  }
+}
+
+// Détection côté client (fallback direct Kie.ai) — mêmes règles que api/generate-mytho.ts
+function classifyKieBlock(rawMsg: string): { code: string; message: string } | null {
+  const m = String(rawMsg || '').toLowerCase()
+  if (!m) return null
+  if (!/blocked|flagged|policy|guideline|moderation|refused|rejected|not allowed|prohibited|safety/.test(m)) {
+    return null
+  }
+  if (/public figure|celebrity|politician|prominent person|known person/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_PUBLIC_FIGURE',
+      message:
+        "Personnalité publique détectée. L'IA refuse de générer des images de célébrités, politiques ou figures publiques connues. Réessaie en utilisant ta propre photo ou un personnage anonyme.",
+    }
+  }
+  if (/nudity|sexual|nsfw|explicit|porn|nude/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_NSFW',
+      message: 'Contenu sexuel ou nu détecté. Reformule avec un contenu autorisé.',
+    }
+  }
+  if (/minor|child|underage|kid|teen/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_MINOR',
+      message: "Contenu impliquant un mineur détecté. L'IA refuse cette génération. Utilise une photo d'adulte.",
+    }
+  }
+  if (/violence|gore|harm|blood|weapon|hate/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_VIOLENCE',
+      message: 'Contenu violent ou haineux détecté. Adoucis ton prompt et réessaie.',
+    }
+  }
+  if (/copyright|trademark|brand|logo|intellectual property/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_COPYRIGHT',
+      message:
+        'Contenu protégé par copyright détecté (marque, logo, personnage). Reformule sans référence à une marque connue.',
+    }
+  }
+  return {
+    code: 'CONTENT_BLOCKED',
+    message: 'Génération refusée par les filtres IA. Reformule ton prompt ou change de photo.',
+  }
+}
+
 export interface GenerateMythoParams {
   userPrompt: string
   // Une OU deux images :
@@ -213,6 +271,15 @@ export async function generateMytho(
     if (status === 402) {
       throw new Error(data?.message || 'Crédits Kie.ai insuffisants. Recharge le solde API.')
     }
+    // Blocage modération IA détecté à la création → on ne tente PAS le fallback
+    // (Kie le rejettera de la même façon → autant remonter l'erreur tout de suite).
+    if (status === 422 && data?.blocked) {
+      throw new KieBlockedError(
+        String(data?.code || 'CONTENT_BLOCKED'),
+        String(data?.error || 'Contenu refusé par les filtres IA.'),
+        String(data?.rawError || '')
+      )
+    }
     if (ok && typeof data?.taskId === 'string' && data.taskId) {
       taskId = data.taskId as string
     } else {
@@ -220,6 +287,7 @@ export async function generateMytho(
       backendUsable = false
     }
   } catch (err) {
+    if (err instanceof KieBlockedError) throw err
     if ((err as Error)?.message?.includes('Crédits Kie')) throw err
     console.warn('[generateMytho] backend create exception:', err)
     backendUsable = false
@@ -244,6 +312,13 @@ export async function generateMytho(
         if (!ok) continue
         const status = String(data?.status || 'pending').toLowerCase()
         if (status === 'failed') {
+          if (data?.blocked) {
+            throw new KieBlockedError(
+              String(data?.code || 'CONTENT_BLOCKED'),
+              String(data?.error || 'Contenu refusé par les filtres IA.'),
+              String(data?.rawError || '')
+            )
+          }
           throw new Error(`Kie.ai: ${data?.error || 'génération échouée'}`)
         }
         if (status === 'success' && data?.imageUrl) {
@@ -259,7 +334,8 @@ export async function generateMytho(
         }
         // sinon: pending → on continue
       } catch (err) {
-        // Échec ponctuel d'un poll = on continue jusqu'au max. Sauf erreur métier.
+        // Erreur métier (blocage modération, échec Kie) → on remonte tout de suite.
+        if (err instanceof KieBlockedError) throw err
         if ((err as Error)?.message?.includes('Kie.ai:')) throw err
         if (attempt >= maxAttempts - 3) throw err
       }
@@ -299,6 +375,10 @@ export async function generateMytho(
     if (code === 402 || /credits?\s+insufficient|balance.*enough|top up/i.test(msg)) {
       throw new Error('Kie.ai: crédits API insuffisants. Recharge le solde Kie.')
     }
+    const blocked = classifyKieBlock(msg)
+    if (blocked) {
+      throw new KieBlockedError(blocked.code, blocked.message, msg)
+    }
     throw new Error(`Kie.ai: ${msg || `erreur ${code}`}`)
   }
 
@@ -319,7 +399,16 @@ export async function generateMytho(
       const inner = (pollData?.data || pollData) as Record<string, unknown>
       const state = String(inner?.state || inner?.status || '').toLowerCase()
       if (state === 'failed' || state === 'fail' || state === 'error') {
-        throw new Error(`Kie.ai: ${inner?.failMsg || inner?.error || 'génération échouée'}`)
+        const rawFail = String(
+          (inner as any)?.failMsg ||
+            (inner as any)?.errorMessage ||
+            (inner as any)?.error ||
+            (inner as any)?.message ||
+            ''
+        )
+        const blocked = classifyKieBlock(rawFail)
+        if (blocked) throw new KieBlockedError(blocked.code, blocked.message, rawFail)
+        throw new Error(`Kie.ai: ${rawFail || 'génération échouée'}`)
       }
       if (state === 'success' || state === 'completed' || state === 'succeeded' || state === 'done') {
         const remote = extractKieResultUrl(pollData)
@@ -332,6 +421,7 @@ export async function generateMytho(
         }
       }
     } catch (err) {
+      if (err instanceof KieBlockedError) throw err
       if ((err as Error)?.message?.startsWith('Kie.ai:')) throw err
       consecutiveErrors += 1
       // 5 échecs réseau d'affilée → on stoppe pour ne pas faire attendre l'utilisateur

@@ -66,6 +66,56 @@ function extractKieResultUrl(rawData: unknown): string | null {
   return null
 }
 
+// ─── Classification des blocages IA → message FR friendly ────────────────────
+// Kie.ai retourne des messages anglais peu lisibles ("Request blocked: …
+// prominent public figure"). On les mappe vers des messages clairs et
+// actionnables pour l'utilisateur final.
+function classifyKieBlock(rawMsg: string): { code: string; message: string } | null {
+  const m = String(rawMsg || '').toLowerCase()
+  if (!m) return null
+  if (!/blocked|flagged|policy|guideline|moderation|refused|rejected|not allowed|prohibited|safety/.test(m)) {
+    return null
+  }
+  if (/public figure|celebrity|politician|prominent person|known person/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_PUBLIC_FIGURE',
+      message:
+        "Personnalité publique détectée. L'IA refuse de générer des images de célébrités, politiques ou figures publiques connues. Réessaie en utilisant ta propre photo ou un personnage anonyme.",
+    }
+  }
+  if (/nudity|sexual|nsfw|explicit|porn|nude/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_NSFW',
+      message:
+        'Contenu sexuel ou nu détecté dans la photo ou le prompt. Reformule avec un contenu autorisé.',
+    }
+  }
+  if (/minor|child|underage|kid|teen/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_MINOR',
+      message:
+        "Contenu impliquant un mineur détecté. L'IA refuse cette génération. Utilise une photo d'adulte.",
+    }
+  }
+  if (/violence|gore|harm|blood|weapon|hate/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_VIOLENCE',
+      message: 'Contenu violent ou haineux détecté. Adoucis ton prompt et réessaie.',
+    }
+  }
+  if (/copyright|trademark|brand|logo|intellectual property/.test(m)) {
+    return {
+      code: 'CONTENT_BLOCKED_COPYRIGHT',
+      message:
+        'Contenu protégé par copyright détecté (marque, logo, personnage). Reformule sans référence à une marque connue.',
+    }
+  }
+  return {
+    code: 'CONTENT_BLOCKED',
+    message: 'Génération refusée par les filtres IA. Reformule ton prompt ou change de photo.',
+  }
+}
+
 function extractTaskId(rawData: unknown): string | null {
   if (!rawData || typeof rawData !== 'object') return null
   const root = rawData as Record<string, unknown>
@@ -146,9 +196,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const state = String((inner as any)?.state || (inner as any)?.status || '').toLowerCase()
 
       if (state === 'failed' || state === 'fail' || state === 'error') {
+        const rawMsg = String(
+          (inner as any)?.failMsg ||
+            (inner as any)?.errorMessage ||
+            (inner as any)?.error ||
+            (inner as any)?.message ||
+            ''
+        )
+        const blocked = classifyKieBlock(rawMsg)
+        if (blocked) {
+          return res.status(200).json({
+            status: 'failed',
+            blocked: true,
+            code: blocked.code,
+            error: blocked.message,
+            rawError: rawMsg,
+          })
+        }
         return res.status(200).json({
           status: 'failed',
-          error: (inner as any)?.failMsg || (inner as any)?.error || 'Kie generation failed',
+          error: rawMsg || 'Kie generation failed',
         })
       }
 
@@ -223,6 +290,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(402).json({
           error: 'Kie credits insufficient',
           message: 'Crédits Kie insuffisants. Recharge le solde API Kie.',
+        })
+      }
+      // Blocage IA détecté dès la création (Kie répond parfois directement) → 422
+      const blocked = classifyKieBlock(msg)
+      if (blocked) {
+        return res.status(422).json({
+          blocked: true,
+          code: blocked.code,
+          error: blocked.message,
+          rawError: msg,
         })
       }
       return res.status(502).json({ error: 'Kie createTask failed', message: msg || `provider error ${code}` })

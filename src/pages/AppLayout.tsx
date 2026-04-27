@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
-import { generateMytho, uploadToSupabase } from '@/lib/kie-api'
+import { generateMytho, uploadToSupabase, KieBlockedError } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import type { AspectRatio } from '@/lib/kie-api'
 import {
@@ -36,6 +36,8 @@ function clearPendingMytho() {
 }
 
 // ─── Retry helper avec backoff exponentiel ─────────────────────────────────
+// On ne retente JAMAIS sur un blocage de modération (l'IA refusera tout pareil)
+// → on remonte l'erreur immédiatement.
 async function withRetry<T>(
   label: string,
   fn: () => Promise<T>,
@@ -49,6 +51,7 @@ async function withRetry<T>(
       return result
     } catch (err) {
       lastErr = err
+      if (err instanceof KieBlockedError) throw err
       console.warn(`[autoGen] ${label} échec tentative ${i}/${attempts}:`, err)
       if (i < attempts) {
         const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
@@ -135,6 +138,26 @@ async function tryAutoGenerate(userId: string): Promise<boolean> {
     return true
   } catch (err) {
     console.error('[autoGen] échec définitif après retries :', err)
+    // Stockage du dernier message d'erreur pour affichage côté UI (banner).
+    try {
+      if (err instanceof KieBlockedError) {
+        sessionStorage.setItem(
+          'gomytho_last_gen_error',
+          JSON.stringify({ code: err.code, message: err.message, blocked: true })
+        )
+      } else {
+        sessionStorage.setItem(
+          'gomytho_last_gen_error',
+          JSON.stringify({
+            code: 'GEN_FAILED',
+            message:
+              (err as Error)?.message ||
+              "La génération a échoué. Vérifie ta connexion et relance depuis l'onglet Créer.",
+            blocked: false,
+          })
+        )
+      }
+    } catch { /* ignore */ }
     // On NE clear PAS les pending data → relance manuelle possible depuis /makemytho.
     return false
   }
@@ -270,7 +293,7 @@ export default function AppLayout() {
       // le user comme initialisé, ce qui ferait sauter à tort l'auto-gen.
       if (hasPending && hasFreshPayment) {
         setAutoGen(true)
-        const ok = await tryAutoGenerate(authUser.id)
+        await tryAutoGenerate(authUser.id)
         setAutoGen(false)
         // Dans TOUS les cas (succès comme échec), on atterrit sur /résultats.
         // - Succès → le mytho est dans le cache local (saveMythoToCloud) →
@@ -278,14 +301,9 @@ export default function AppLayout() {
         // - Échec  → /résultats vide, mais les pending data sont conservées
         //   pour permettre au user de relancer manuellement depuis /makemytho.
         navigate('/resultats', { replace: true })
-        if (!ok) {
-          // Notification douce (sans bloquer l'UI)
-          setTimeout(() => {
-            try {
-              alert('La génération automatique a échoué. Tu peux relancer depuis l\'onglet "Créer".')
-            } catch { /* ignore */ }
-          }, 300)
-        }
+        // En cas d'échec, l'erreur a été stockée dans sessionStorage par
+        // tryAutoGenerate → AppCreations / AppCreate l'affichera comme un
+        // banner stylé (au lieu d'un alert moche).
       } else if (hasPending) {
         clearPendingMytho()
       }
