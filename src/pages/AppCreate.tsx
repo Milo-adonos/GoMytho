@@ -6,6 +6,7 @@ import { generateMytho, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
+import PhotoCard from '@/components/PhotoCard'
 import { cachePlanLocally } from '@/lib/plan'
 
 const CREDITS_PER_IMAGE = 8
@@ -297,7 +298,7 @@ export default function AppCreate() {
         )}
       </AnimatePresence>
 
-      {/* Upload zone */}
+      {/* Upload — état initial (avant photo 1) : un gros bloc cliquable */}
       {!imagePreview ? (
         <div
           onClick={() => !isConverting && document.getElementById('file-upload-app')?.click()}
@@ -332,84 +333,60 @@ export default function AppCreate() {
           />
         </div>
       ) : (
-        <div className="relative rounded-2xl overflow-hidden mb-3" style={{ border: '1px solid rgba(198,255,60,0.2)' }}>
-          <div
-            className="absolute top-2 left-2 z-10 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider"
-            style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
-          >
-            Photo 1 · Sujet
-          </div>
-          <img src={imagePreview} alt="Preview" className="w-full max-h-56 object-cover" />
-          <button
-            onClick={() => {
-              setImage(null)
-              setImagePreview(null)
-            }}
-            className="absolute top-2 right-2 px-3 py-1.5 rounded-full text-xs font-bold"
-            style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
-          >
-            Changer
-          </button>
-        </div>
-      )}
-
-      {/* Photo 2 — optionnelle, image-to-image (Nano Banana 2) */}
-      {imagePreview && (
+        // Une fois la photo 1 uploadée : grille 2 colonnes Sujet + Scène
         <div className="mb-5">
-          {!imagePreview2 ? (
-            <div
+          <div className="grid grid-cols-2 gap-3">
+            <PhotoCard
+              label="Photo 1"
+              sublabel="Sujet"
+              required
+              preview={imagePreview}
+              isConverting={false}
+              onChange={() => {
+                setImage(null)
+                setImagePreview(null)
+              }}
+              onClick={() => document.getElementById('file-upload-app')?.click()}
+            />
+            <input
+              id="file-upload-app"
+              type="file"
+              accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+              className="hidden"
+              onChange={async (e) => {
+                if (e.target.files?.[0]) await handleFile(e.target.files[0])
+              }}
+            />
+
+            <PhotoCard
+              label="Photo 2"
+              sublabel="Scène"
+              optional
+              preview={imagePreview2}
+              isConverting={isConverting2}
+              onChange={removeImage2}
               onClick={() => !isConverting2 && document.getElementById('file-upload-app-2')?.click()}
-              className="rounded-2xl p-5 text-center cursor-pointer active:scale-95 transition-all"
-              style={{ background: 'rgba(20,24,38,0.35)', border: '2px dashed rgba(198,255,60,0.18)' }}
-            >
-              {isConverting2 ? (
-                <>
-                  <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-lime mx-auto mb-2" />
-                  <p className="text-lime font-bold text-xs">Traitement...</p>
-                </>
-              ) : (
-                <>
-                  <div
-                    className="w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-2 text-xl"
-                    style={{ background: 'rgba(198,255,60,0.06)', border: '1px solid rgba(198,255,60,0.15)' }}
-                  >
-                    🪄
-                  </div>
-                  <p className="font-bold text-sm mb-0.5">+ Ajouter une 2<sup>e</sup> photo (optionnel)</p>
-                  <p className="text-[11px] text-text-secondary leading-relaxed">
-                    Pour fusionner deux images. Ex&nbsp;: <em>"Mets cet homme sur cette plage"</em><br />
-                    Photo 1 = le sujet · Photo 2 = la scène
-                  </p>
-                </>
-              )}
-              <input
-                id="file-upload-app-2"
-                type="file"
-                accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
-                className="hidden"
-                onChange={async (e) => {
-                  if (e.target.files?.[0]) await handleFile2(e.target.files[0])
-                }}
-              />
-            </div>
-          ) : (
-            <div className="relative rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(198,255,60,0.2)' }}>
-              <div
-                className="absolute top-2 left-2 z-10 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider"
-                style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
-              >
-                Photo 2 · Scène
-              </div>
-              <img src={imagePreview2} alt="Preview 2" className="w-full max-h-56 object-cover" />
-              <button
-                onClick={removeImage2}
-                className="absolute top-2 right-2 px-3 py-1.5 rounded-full text-xs font-bold"
-                style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}
-              >
-                Retirer
-              </button>
-            </div>
-          )}
+            />
+            <input
+              id="file-upload-app-2"
+              type="file"
+              accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+              className="hidden"
+              onChange={async (e) => {
+                if (e.target.files?.[0]) await handleFile2(e.target.files[0])
+              }}
+            />
+          </div>
+
+          <p className="mt-3 text-center text-[11px] text-text-secondary leading-relaxed">
+            {imagePreview2 ? (
+              <>
+                ✨ <span className="text-lime font-semibold">Mode fusion activé</span> · l'IA placera ton sujet dans la scène
+              </>
+            ) : (
+              <>Ajoute une 2<sup>e</sup> photo pour fusionner — ex&nbsp;: <em>"Mets cet homme sur cette plage"</em></>
+            )}
+          </p>
         </div>
       )}
 

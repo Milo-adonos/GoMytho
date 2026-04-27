@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Header from '@/components/Header'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
+import PhotoCard from '@/components/PhotoCard'
 import { AspectRatio } from '@/lib/kie-api'
 import { convertToJpeg } from '@/lib/image-utils'
 
@@ -89,7 +90,7 @@ export default function Create() {
             <p className="text-text-secondary">Plus elle est nette, plus le résultat sera bluffant</p>
           </div>
 
-          {/* Zone d'upload — Photo 1 (obligatoire) */}
+          {/* Zone d'upload — état initial (avant la photo 1) : un seul gros bloc */}
           {!imagePreview ? (
             <div
               onDrop={handleDrop}
@@ -122,73 +123,53 @@ export default function Create() {
               />
             </div>
           ) : (
-            <div className="relative rounded-3xl overflow-hidden border mb-4" style={{ borderColor: 'rgba(198,255,60,0.3)' }}>
-              <div className="absolute top-3 left-3 z-10 px-3 py-1 rounded-full text-xs font-bold"
-                style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}>
-                Photo 1 · Sujet
-              </div>
-              <img src={imagePreview} alt="Preview" className="w-full h-auto max-h-72 object-cover" />
-              <button
-                onClick={() => { setImage(null); setImagePreview(null) }}
-                className="absolute top-3 right-3 bg-primary-bg/90 text-lime text-sm font-bold px-4 py-2 rounded-full active:scale-95 transition-all"
-                style={{ border: '1px solid rgba(198,255,60,0.3)' }}
-              >
-                Changer
-              </button>
-            </div>
-          )}
+            // Une fois la photo 1 uploadée → grille 2 colonnes : Sujet + Scène
+            <div className="mb-6">
+              <div className="grid grid-cols-2 gap-3">
+                {/* Carte Photo 1 — Sujet */}
+                <PhotoCard
+                  label="Photo 1"
+                  sublabel="Sujet"
+                  required
+                  preview={imagePreview}
+                  isConverting={false}
+                  onChange={() => { setImage(null); setImagePreview(null) }}
+                  onClick={() => document.getElementById('file-upload')?.click()}
+                />
+                <input
+                  id="file-upload"
+                  type="file"
+                  accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                  onChange={async e => { if (e.target.files?.[0]) await handleFile(e.target.files[0]) }}
+                  className="hidden"
+                />
 
-          {/* Zone d'upload — Photo 2 (optionnelle, image-to-image) */}
-          {imagePreview && (
-            <div className="mb-8">
-              {!imagePreview2 ? (
-                <div
+                {/* Carte Photo 2 — Scène (optionnelle) */}
+                <PhotoCard
+                  label="Photo 2"
+                  sublabel="Scène"
+                  optional
+                  preview={imagePreview2}
+                  isConverting={isConverting2}
+                  onChange={removeImage2}
                   onClick={() => !isConverting2 && document.getElementById('file-upload-2')?.click()}
-                  className="rounded-3xl p-6 text-center active:scale-95 transition-all duration-200 cursor-pointer"
-                  style={{ borderColor: 'rgba(198,255,60,0.18)', background: 'rgba(20,24,38,0.35)', border: '2px dashed rgba(198,255,60,0.18)' }}
-                >
-                  {isConverting2 ? (
-                    <>
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-lime mx-auto mb-2" />
-                      <p className="text-lime font-bold text-sm">Traitement...</p>
-                    </>
-                  ) : (
-                    <>
-                      <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3 text-2xl"
-                        style={{ background: 'rgba(198,255,60,0.06)', border: '1px solid rgba(198,255,60,0.15)' }}>
-                        🪄
-                      </div>
-                      <p className="font-bold text-sm mb-1">+ Ajouter une 2<sup>e</sup> photo (optionnel)</p>
-                      <p className="text-text-secondary text-xs leading-relaxed">
-                        Pour fusionner deux images. Ex&nbsp;: <em>"Mets cet homme sur cette plage"</em>
-                        <br/>Photo 1 = le sujet · Photo 2 = la scène / décor
-                      </p>
-                    </>
-                  )}
-                  <input
-                    id="file-upload-2"
-                    type="file"
-                    accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
-                    onChange={async e => { if (e.target.files?.[0]) await handleFile2(e.target.files[0]) }}
-                    className="hidden"
-                  />
-                </div>
-              ) : (
-                <div className="relative rounded-3xl overflow-hidden border" style={{ borderColor: 'rgba(198,255,60,0.3)' }}>
-                  <div className="absolute top-3 left-3 z-10 px-3 py-1 rounded-full text-xs font-bold"
-                    style={{ background: 'rgba(10,14,26,0.85)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.3)' }}>
-                    Photo 2 · Scène
-                  </div>
-                  <img src={imagePreview2} alt="Preview 2" className="w-full h-auto max-h-72 object-cover" />
-                  <button
-                    onClick={removeImage2}
-                    className="absolute top-3 right-3 bg-primary-bg/90 text-lime text-sm font-bold px-4 py-2 rounded-full active:scale-95 transition-all"
-                    style={{ border: '1px solid rgba(198,255,60,0.3)' }}
-                  >
-                    Retirer
-                  </button>
-                </div>
-              )}
+                />
+                <input
+                  id="file-upload-2"
+                  type="file"
+                  accept="image/*,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif,.bmp"
+                  onChange={async e => { if (e.target.files?.[0]) await handleFile2(e.target.files[0]) }}
+                  className="hidden"
+                />
+              </div>
+
+              {/* Légende sous les deux cartes */}
+              <p className="mt-3 text-center text-xs text-text-secondary leading-relaxed">
+                {imagePreview2
+                  ? <>✨ <span className="text-lime font-semibold">Mode fusion activé</span> · l'IA placera ton sujet dans la scène</>
+                  : <>Ajoute une 2<sup>e</sup> photo pour fusionner — ex&nbsp;: <em>"Mets cet homme sur cette plage"</em></>
+                }
+              </p>
             </div>
           )}
 
