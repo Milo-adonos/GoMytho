@@ -12,10 +12,13 @@ export default function AppCreations() {
 
   useEffect(() => {
     if (!user) return
+    setLoading(true)
     supabase.from('mythos').select('*').eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .then(({ data }) => { setMythos(data || []); setLoading(false) })
-  }, [user])
+  // Refetch à chaque fois que la page est montée (user.id stable, Date.now() force le refresh)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id])
 
   const handleDelete = async (id: string) => {
     await supabase.from('mythos').delete().eq('id', id)

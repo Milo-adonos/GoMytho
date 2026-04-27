@@ -53,6 +53,9 @@ export default function AppCreate() {
       ])
 
       setUser({ ...user, credits_remaining: credits - CREDITS_PER_IMAGE })
+
+      // Rediriger vers les résultats après 2 secondes
+      setTimeout(() => { window.location.href = '/resultats' }, 2000)
     } catch (err) {
       console.error(err)
       alert('Erreur lors de la génération. Réessaie.')
@@ -61,8 +64,6 @@ export default function AppCreate() {
       setStep('')
     }
   }
-
-  const reset = () => { setImage(null); setImagePreview(null); setPrompt(''); setResultUrl(null) }
 
   return (
     <div className="px-4 py-5 max-w-lg mx-auto">
@@ -89,13 +90,16 @@ export default function AppCreate() {
         {resultUrl && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mb-5 rounded-2xl overflow-hidden" style={{ border: '1.5px solid rgba(198,255,60,0.4)', boxShadow: '0 0 30px rgba(198,255,60,0.15)' }}>
             <img src={resultUrl} alt="Résultat" className="w-full" />
+            <div className="px-4 pt-3 pb-1 text-center" style={{ background: '#141826' }}>
+              <p className="text-lime text-xs font-bold animate-pulse">✅ Sauvegardé — redirection vers tes résultats...</p>
+            </div>
             <div className="p-4 flex gap-3" style={{ background: '#141826' }}>
               <a href={resultUrl} download={`mytho-${Date.now()}.jpg`} className="flex-1 py-3 rounded-xl font-black bg-lime text-primary-bg text-center active:scale-95 transition-all text-sm">
                 ⬇️ Télécharger
               </a>
-              <button onClick={reset} className="flex-1 py-3 rounded-xl font-bold text-sm active:scale-95 transition-all" style={{ background: 'rgba(198,255,60,0.08)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.2)' }}>
-                + Nouveau
-              </button>
+              <a href="/resultats" className="flex-1 py-3 rounded-xl font-bold text-sm active:scale-95 transition-all text-center" style={{ background: 'rgba(198,255,60,0.08)', color: '#C6FF3C', border: '1px solid rgba(198,255,60,0.2)' }}>
+                🎨 Voir tout
+              </a>
             </div>
           </motion.div>
         )}
