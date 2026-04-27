@@ -2,19 +2,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { serialize } from 'cookie'
 import { generateToken, checkRateLimit } from './_middleware'
 
-function readBody(req: VercelRequest): Promise<any> {
-  return new Promise(resolve => {
-    if (req.body && typeof req.body === 'object') return resolve(req.body)
-    if (typeof req.body === 'string') {
-      try { return resolve(JSON.parse(req.body)) } catch { return resolve({}) }
-    }
-    let raw = ''
-    req.on('data', chunk => { raw += chunk })
-    req.on('end', () => {
-      try { resolve(raw ? JSON.parse(raw) : {}) } catch { resolve({}) }
-    })
-    req.on('error', () => resolve({}))
-  })
+function parseBody(raw: unknown): any {
+  if (raw && typeof raw === 'object') return raw
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) } catch { return {} }
+  }
+  return {}
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -27,13 +20,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(405).json({ error: 'Méthode non autorisée' })
     }
 
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket?.remoteAddress || 'unknown'
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      || req.socket?.remoteAddress
+      || 'unknown'
 
     if (!checkRateLimit(ip)) {
       return res.status(429).json({ error: 'Trop de tentatives. Réessaie dans 1 heure.' })
     }
 
-    const body = await readBody(req)
+    const body = parseBody(req.body)
     const password = body?.password
     const normalizedPassword = typeof password === 'string' ? password.trim() : ''
 
@@ -43,10 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || 'GoMytho@Admin2026!').trim()
 
-    await new Promise(r => setTimeout(r, 300))
-
     if (normalizedPassword !== ADMIN_PASSWORD) {
-      await new Promise(r => setTimeout(r, 1200))
+      await new Promise(r => setTimeout(r, 1000))
       return res.status(401).json({ error: 'Accès refusé' })
     }
 
