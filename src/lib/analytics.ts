@@ -13,6 +13,44 @@ const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https
 
 let initialized = false
 
+// ─── Mapping pathname → nom lisible pour PostHog ──────────────────────────
+// Avec ces noms, dans PostHog tu peux :
+//   • Trends → group by "page_name"
+//   • Funnels → étape "Pageview" filtrée sur page_name = "Upload Photo"
+//   • Paths → savoir exactement où les users décrochent
+const PAGE_NAMES: Array<{ pattern: RegExp; name: string; funnel_step?: number }> = [
+  // Funnel public ITO (Initial Try-Out) — numérotation pour ordonner dans les rapports
+  { pattern: /^\/$/, name: 'Landing', funnel_step: 1 },
+  { pattern: /^\/uploadphoto/, name: 'Upload Photo', funnel_step: 2 },
+  { pattern: /^\/chargementmytho/, name: 'Chargement Mytho', funnel_step: 3 },
+  { pattern: /^\/choixoffre/, name: 'Choix Offre', funnel_step: 4 },
+  { pattern: /^\/signup/, name: 'Signup', funnel_step: 5 },
+  { pattern: /^\/login/, name: 'Login' },
+  { pattern: /^\/auth\/callback/, name: 'Auth Callback' },
+
+  // App interne (post-login) — funnel d'usage
+  { pattern: /^\/resultats/, name: 'Mes Creations', funnel_step: 6 },
+  { pattern: /^\/makemytho/, name: 'Creer un Mytho' },
+  { pattern: /^\/settings/, name: 'Parametres' },
+
+  // Admin (visible mais isolable via filtre page_name LIKE 'Admin:%')
+  { pattern: /^\/admin-login/, name: 'Admin: Login' },
+  { pattern: /^\/admin\/users/, name: 'Admin: Users' },
+  { pattern: /^\/admin\/mythos/, name: 'Admin: Mythos' },
+  { pattern: /^\/admin\/finance/, name: 'Admin: Finance' },
+  { pattern: /^\/admin\/settings/, name: 'Admin: Settings' },
+  { pattern: /^\/admin/, name: 'Admin: Dashboard' },
+]
+
+function resolvePage(pathname: string): { name: string; funnel_step?: number } {
+  for (const entry of PAGE_NAMES) {
+    if (entry.pattern.test(pathname)) {
+      return { name: entry.name, funnel_step: entry.funnel_step }
+    }
+  }
+  return { name: pathname || '/' }
+}
+
 export function initAnalytics(): void {
   if (initialized) return
   if (typeof window === 'undefined') return
@@ -48,9 +86,20 @@ export function initAnalytics(): void {
 export function capturePageview(): void {
   if (!initialized || !KEY) return
   try {
+    const pathname = window.location.pathname
+    const { name, funnel_step } = resolvePage(pathname)
+
+    // Met aussi à jour document.title pour avoir un breadcrumb propre dans
+    // PostHog (la propriété auto $title est lue depuis là).
+    if (typeof document !== 'undefined') {
+      document.title = `GoMytho — ${name}`
+    }
+
     posthog.capture('$pageview', {
       $current_url: window.location.href,
-      $pathname: window.location.pathname,
+      $pathname: pathname,
+      page_name: name,
+      ...(typeof funnel_step === 'number' ? { funnel_step } : {}),
     })
   } catch { /* ignore */ }
 }
