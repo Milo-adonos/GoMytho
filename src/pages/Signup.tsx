@@ -6,16 +6,18 @@ import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
 
 const PLAN_CONFIG = {
-  weekly:  { credits: 70,  label: 'hebdomadaire' },
-  monthly: { credits: 610, label: 'mensuel' },
+  weekly:  { credits: 160, label: 'hebdomadaire' },  // 20 images × 8 crédits
+  monthly: { credits: 560, label: 'mensuel' },        // 70 images × 8 crédits
   free:    { credits: 3,   label: 'gratuit' },
 }
 
 export default function Signup() {
   const [searchParams] = useSearchParams()
-  // Récupère le plan depuis l'URL (?plan=weekly ou ?plan=monthly)
-  const planParam = (searchParams.get('plan') || 'monthly') as keyof typeof PLAN_CONFIG
-  const plan = PLAN_CONFIG[planParam] ? planParam : 'monthly'
+  // Priorité : URL param > localStorage (sauvegardé avant le redirect Stripe)
+  const urlPlan = searchParams.get('plan')
+  const storedPlan = localStorage.getItem('gomytho_pending_plan')
+  const rawPlan = (urlPlan || storedPlan || 'monthly') as keyof typeof PLAN_CONFIG
+  const plan = PLAN_CONFIG[rawPlan] ? rawPlan : 'monthly'
   const { credits } = PLAN_CONFIG[plan]
 
   const [email, setEmail] = useState('')
@@ -45,12 +47,19 @@ export default function Signup() {
           plan,
         }], { onConflict: 'id' })
 
+        // Nettoyer le plan sauvegardé
+        localStorage.removeItem('gomytho_pending_plan')
+
+        // S'il y a un prompt en attente → aller directement créer le mytho
+        const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
+        const dest = pendingPrompt ? '/makemytho?pending=1' : '/resultats'
+
         if (_data.session) {
-          window.location.href = '/resultats'
+          window.location.href = dest
         } else {
           const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
           if (signInData?.session) {
-            window.location.href = '/resultats'
+            window.location.href = dest
           } else {
             window.location.href = '/login'
           }

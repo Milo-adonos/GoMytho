@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useSearchParams } from 'react-router-dom'
 import { supabase, User } from '@/lib/supabase'
 
-const PLAN_CREDITS: Record<string, number> = { weekly: 70, monthly: 610, free: 3 }
+const PLAN_CREDITS: Record<string, number> = { weekly: 160, monthly: 560, free: 3 }
 
 export interface AppUser extends User {}
 

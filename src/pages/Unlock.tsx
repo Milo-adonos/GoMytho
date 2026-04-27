@@ -44,6 +44,15 @@ export default function Unlock() {
   }
 
   const handleCheckout = () => {
+    // Sauvegarder le plan et le prompt en localStorage avant le redirect Stripe
+    // (sessionStorage est effacé par les redirects externes)
+    localStorage.setItem('gomytho_pending_plan', selectedPlan)
+    const savedPrompt = sessionStorage.getItem('userPrompt') || ''
+    const savedAspectRatio = sessionStorage.getItem('aspectRatio') || '9:16'
+    if (savedPrompt) {
+      localStorage.setItem('gomytho_pending_prompt', savedPrompt)
+      localStorage.setItem('gomytho_pending_ratio', savedAspectRatio)
+    }
     window.location.href = PAYMENT_LINKS[selectedPlan]
   }
 

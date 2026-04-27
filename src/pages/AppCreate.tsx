@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useNavigate, useOutletContext } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
 import { generateImage, uploadToSupabase, AspectRatio } from '@/lib/kie-api'
@@ -10,12 +10,29 @@ const CREDITS_PER_IMAGE = 8
 
 export default function AppCreate() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { user, setUser } = useOutletContext<{ user: User | null; setUser: (u: User) => void }>()
 
   const [image, setImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16')
+  const [pendingBanner, setPendingBanner] = useState(false)
+
+  useEffect(() => {
+    // Pré-remplir avec le prompt sauvegardé avant le paiement
+    if (searchParams.get('pending')) {
+      const savedPrompt = localStorage.getItem('gomytho_pending_prompt')
+      const savedRatio = localStorage.getItem('gomytho_pending_ratio') as AspectRatio | null
+      if (savedPrompt) {
+        setPrompt(savedPrompt)
+        setPendingBanner(true)
+        if (savedRatio) setAspectRatio(savedRatio)
+        localStorage.removeItem('gomytho_pending_prompt')
+        localStorage.removeItem('gomytho_pending_ratio')
+      }
+    }
+  }, [searchParams])
   const [isGenerating, setIsGenerating] = useState(false)
   const [isConverting, setIsConverting] = useState(false)
   const [step, setStep] = useState('')
@@ -72,6 +89,18 @@ export default function AppCreate() {
 
   return (
     <div className="px-4 py-5 max-w-lg mx-auto">
+
+      {/* Bannière prompt pré-rempli */}
+      {pendingBanner && (
+        <div className="rounded-2xl p-4 mb-5 flex items-center gap-3" style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.3)' }}>
+          <span className="text-2xl">🎯</span>
+          <div>
+            <p className="text-lime font-bold text-sm">Ton prompt a été récupéré !</p>
+            <p className="text-text-secondary text-xs">Upload ta photo pour lancer la génération</p>
+          </div>
+          <button onClick={() => setPendingBanner(false)} className="ml-auto text-text-secondary text-lg">×</button>
+        </div>
+      )}
 
       {/* Crédits restants */}
       <div className="rounded-2xl p-4 mb-5 flex items-center justify-between"
