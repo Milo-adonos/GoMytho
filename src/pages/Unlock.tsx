@@ -5,7 +5,7 @@ import Button from '@/components/Button'
 import { PRICE_IDS } from '@/lib/stripe'
 
 export default function Unlock() {
-  const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('monthly')
+  const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('weekly')
   const [isLoading] = useState(false)
 
   const plans = {
