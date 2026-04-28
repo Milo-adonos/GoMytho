@@ -8,8 +8,11 @@
 
 import posthog from 'posthog-js'
 
-const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined
-const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https://eu.i.posthog.com'
+const RAW_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined
+const KEY = typeof RAW_KEY === 'string' ? RAW_KEY.trim() || undefined : undefined
+const RAW_HOST = import.meta.env.VITE_POSTHOG_HOST as string | undefined
+const HOST =
+  (RAW_HOST?.trim() ?? '').replace(/\/$/, '') || 'https://eu.i.posthog.com'
 
 let initialized = false
 
@@ -69,7 +72,9 @@ export function initAnalytics(): void {
       capture_pageleave: true,
       autocapture: true, // clics, formulaires, sélecteurs
       persistence: 'localStorage+cookie',
-      person_profiles: 'identified_only',
+      // `identified_only` peut masquer une partie du trafic anonyme selon la config
+      // projet ; `always` garantit que chaque visiteur apparaît dans les rapports.
+      person_profiles: 'always',
       loaded: (ph) => {
         if (import.meta.env.DEV) {
           ph.debug(true)
@@ -95,12 +100,16 @@ export function capturePageview(): void {
       document.title = `GoMytho — ${name}`
     }
 
-    posthog.capture('$pageview', {
-      $current_url: window.location.href,
-      $pathname: pathname,
-      page_name: name,
-      ...(typeof funnel_step === 'number' ? { funnel_step } : {}),
-    })
+    posthog.capture(
+      '$pageview',
+      {
+        $current_url: window.location.href,
+        $pathname: pathname,
+        page_name: name,
+        ...(typeof funnel_step === 'number' ? { funnel_step } : {}),
+      },
+      { send_instantly: true },
+    )
   } catch { /* ignore */ }
 }
 

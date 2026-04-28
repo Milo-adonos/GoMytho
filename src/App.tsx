@@ -43,49 +43,55 @@ function PageviewTracker() {
 }
 
 function App() {
+  // PageviewTracker hors Suspense : sinon, tant qu'une route lazy est en
+  // chargement, React peut retarder le commit des effets du même boundary
+  // → aucun $pageview jusqu'au prochain chargement complet, et parfois
+  // des navigations sans capture si le chunk tarde.
   return (
-    <Suspense fallback={<LoadingFallback />}>
+    <>
       <PageviewTracker />
-      <Routes>
-        {/* Funnel public */}
-        <Route path="/" element={<Landing />} />
-        <Route path="/uploadphoto" element={<Create />} />
-        <Route path="/chargementmytho" element={<Analyzing />} />
-        <Route path="/choixoffre" element={<Unlock />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/auth/callback" element={<AuthCallback />} />
+      <Suspense fallback={<LoadingFallback />}>
+        <Routes>
+          {/* Funnel public */}
+          <Route path="/" element={<Landing />} />
+          <Route path="/uploadphoto" element={<Create />} />
+          <Route path="/chargementmytho" element={<Analyzing />} />
+          <Route path="/choixoffre" element={<Unlock />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
 
-        {/* App interne — layout avec bottom nav */}
-        <Route element={<AppLayout />}>
-          <Route path="/resultats" element={<AppCreations />} />
-          <Route path="/makemytho" element={<AppCreate />} />
-          <Route path="/settings" element={<AppSettings />} />
-        </Route>
+          {/* App interne — layout avec bottom nav */}
+          <Route element={<AppLayout />}>
+            <Route path="/resultats" element={<AppCreations />} />
+            <Route path="/makemytho" element={<AppCreate />} />
+            <Route path="/settings" element={<AppSettings />} />
+          </Route>
 
-        {/* Redirections des anciennes URLs */}
-        <Route path="/create" element={<Navigate to="/uploadphoto" replace />} />
-        <Route path="/analyzing" element={<Navigate to="/chargementmytho" replace />} />
-        <Route path="/unlock" element={<Navigate to="/choixoffre" replace />} />
-        <Route path="/app" element={<Navigate to="/resultats" replace />} />
-        <Route path="/app/dashboard" element={<Navigate to="/makemytho" replace />} />
-        <Route path="/app/new" element={<Navigate to="/makemytho" replace />} />
-        <Route path="/app/settings" element={<Navigate to="/settings" replace />} />
-        <Route path="/app/creations" element={<Navigate to="/resultats" replace />} />
-        <Route path="/dashboard" element={<Navigate to="/makemytho" replace />} />
-        <Route path="/creations" element={<Navigate to="/resultats" replace />} />
+          {/* Redirections des anciennes URLs */}
+          <Route path="/create" element={<Navigate to="/uploadphoto" replace />} />
+          <Route path="/analyzing" element={<Navigate to="/chargementmytho" replace />} />
+          <Route path="/unlock" element={<Navigate to="/choixoffre" replace />} />
+          <Route path="/app" element={<Navigate to="/resultats" replace />} />
+          <Route path="/app/dashboard" element={<Navigate to="/makemytho" replace />} />
+          <Route path="/app/new" element={<Navigate to="/makemytho" replace />} />
+          <Route path="/app/settings" element={<Navigate to="/settings" replace />} />
+          <Route path="/app/creations" element={<Navigate to="/resultats" replace />} />
+          <Route path="/dashboard" element={<Navigate to="/makemytho" replace />} />
+          <Route path="/creations" element={<Navigate to="/resultats" replace />} />
 
-        {/* Admin */}
-        <Route path="/admin-login" element={<AdminLogin />} />
-        <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<AdminDashboard />} />
-          <Route path="users" element={<AdminUsers />} />
-          <Route path="mythos" element={<AdminMythos />} />
-          <Route path="finance" element={<AdminFinance />} />
-          <Route path="settings" element={<AdminSettings />} />
-        </Route>
-      </Routes>
-    </Suspense>
+          {/* Admin */}
+          <Route path="/admin-login" element={<AdminLogin />} />
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<AdminDashboard />} />
+            <Route path="users" element={<AdminUsers />} />
+            <Route path="mythos" element={<AdminMythos />} />
+            <Route path="finance" element={<AdminFinance />} />
+            <Route path="settings" element={<AdminSettings />} />
+          </Route>
+        </Routes>
+      </Suspense>
+    </>
   )
 }
 
