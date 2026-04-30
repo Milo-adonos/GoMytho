@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
-import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+import { hasPaidGoMythoAccess, resolveAccessProfile } from '@/lib/auth-access'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 
@@ -58,11 +58,9 @@ export default function Login() {
         return
       }
 
-      const { data: profile } = await supabase
-        .from('users')
-        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
-        .eq('id', session.user.id)
-        .maybeSingle()
+      // Lookup avec fallback par email (utile si l'utilisateur a payé sous
+      // une autre méthode d'auth) — voir resolveAccessProfile pour le détail.
+      const profile = await resolveAccessProfile(session.user.id, session.user.email)
 
       if (!hasPaidGoMythoAccess(profile)) {
         try {

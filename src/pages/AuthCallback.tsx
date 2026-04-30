@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+import { hasPaidGoMythoAccess, resolveAccessProfile } from '@/lib/auth-access'
 import type { Session } from '@supabase/supabase-js'
 
 // ─── Page de redirect post-OAuth ──────────────────────────────────────────
@@ -55,11 +55,11 @@ export default function AuthCallback() {
         goToApp()
         return
       }
-      const { data: profile } = await supabase
-        .from('users')
-        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
-        .eq('id', session.user.id)
-        .maybeSingle()
+      // Cherche le profil payé : d'abord par id (cas nominal), puis fallback
+      // par email — couvre le cas du client qui a payé sous email/mot de passe
+      // mais essaye de revenir via Google (Supabase peut créer une nouvelle
+      // auth.user avec un id différent si l'identity linking n'est pas activé).
+      const profile = await resolveAccessProfile(session.user.id, session.user.email)
       if (!hasPaidGoMythoAccess(profile)) {
         resolved = true
         try {

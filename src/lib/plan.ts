@@ -121,19 +121,25 @@ async function verifyStripeSession(sessionId: string): Promise<{
 
   // 3) Si l'API échoue (souci serveur, env var manquante, etc.) MAIS que le
   // session_id a le format Stripe officiel, on présume le paiement et on
-  // accorde l'accès avec le plan mensuel par défaut. Le webhook Stripe
-  // (api/stripe-webhook.ts) ré-écrit le bon plan dans Supabase à la
-  // confirmation officielle. Évite de bloquer un client réellement payant
-  // pour cause de souci interne côté serveur.
+  // accorde l'accès. Le plan vient en priorité de la sélection utilisateur
+  // mémorisée sur /choixoffre (localStorage `gomytho_pending_plan`), sinon
+  // on retombe sur mensuel. Le webhook Stripe ré-écrira le BON plan dans
+  // Supabase à la confirmation officielle.
   if (STRIPE_SESSION_REGEX.test(sessionId)) {
+    let presumedPlan: Plan = 'monthly'
+    try {
+      const stored = localStorage.getItem('gomytho_pending_plan')
+      if (stored === 'weekly' || stored === 'monthly') presumedPlan = stored
+    } catch { /* localStorage indisponible */ }
+
     console.warn(
       '[plan] vérification serveur indisponible, session_id format valide → accès accordé en présumé',
-      { sessionId, lastFailure: r2.failure },
+      { sessionId, presumedPlan, lastFailure: r2.failure },
     )
     return {
       ok: {
-        plan: 'monthly',
-        credits: PLAN_CREDITS.monthly,
+        plan: presumedPlan,
+        credits: PLAN_CREDITS[presumedPlan],
         source: 'stripe',
         email: null,
         customerId: null,

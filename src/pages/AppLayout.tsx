@@ -12,7 +12,7 @@ import {
   CREDITS_PER_IMAGE,
   type Plan,
 } from '@/lib/plan'
-import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+import { hasPaidGoMythoAccess, resolveAccessProfile } from '@/lib/auth-access'
 
 export interface AppUser extends User {}
 
@@ -312,14 +312,24 @@ export default function AppLayout() {
 
       // ─── 2c. Accès app réservé aux comptes payants (ou parcours achat en cours) ─
       // OAuth / trigger Supabase crée auth + users free sans paiement — on coupe ici.
+      // Avant de rejeter, on tente un fallback par email : utile si le client a
+      // payé via email/mot de passe puis revient via Google (ou inverse) — auquel
+      // cas Supabase peut créer un nouvel auth.user dont l'id ne matche pas le
+      // profil payant existant. resolveAccessProfile re-synchronise alors les
+      // données payantes vers le user_id courant.
       if (!hasFreshPayment && (!dbUser || !hasPaidGoMythoAccess(dbUser))) {
-        try {
-          const { resetAnalytics } = await import('@/lib/analytics')
-          resetAnalytics()
-        } catch { /* ignore */ }
-        await supabase.auth.signOut()
-        window.location.href = '/login?reason=no_access'
-        return
+        const fallback = await resolveAccessProfile(authUser.id, authUser.email)
+        if (fallback && hasPaidGoMythoAccess(fallback)) {
+          dbUser = fallback as any
+        } else {
+          try {
+            const { resetAnalytics } = await import('@/lib/analytics')
+            resetAnalytics()
+          } catch { /* ignore */ }
+          await supabase.auth.signOut()
+          window.location.href = '/login?reason=no_access'
+          return
+        }
       }
 
       // ─── 3. Construction de l'objet user (DB > cache local > défaut) ────────
