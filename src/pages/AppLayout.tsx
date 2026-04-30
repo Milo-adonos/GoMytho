@@ -237,12 +237,10 @@ export default function AppLayout() {
       } catch { /* ignore */ }
 
       const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
-      // "Fresh payment" = signal explicite qu'on revient d'un parcours d'achat
-      // (URL Stripe redirect ou plan en attente non encore consommé). Sans ce
-      // signal, on NE déclenche JAMAIS l'auto-génération même si des pending
-      // photos traînent dans localStorage : ce sont alors des résidus d'une
-      // session précédente abandonnée — pas la volonté actuelle de l'user.
-      const hasFreshPayment = !!searchParams.get('session_id') || !!searchParams.get('plan') || !!localStorage.getItem('gomytho_pending_plan')
+      // "Fresh payment" = retour explicite du flux Stripe Checkout avec session_id
+      // (vérifiable côté serveur). localStorage / ?plan= seuls ne prouvent pas un
+      // paiement — ils ne doivent pas ouvrir l’app ni attribuer de crédits payants.
+      const hasFreshPayment = !!searchParams.get('session_id')
 
       // ─── 2. Si user fraîchement payé OU profil DB non initialisé → upsert ──
       // Le trigger Supabase crée la ligne avec credits=0/plan='free'. Si on

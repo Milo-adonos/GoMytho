@@ -223,6 +223,14 @@ export default function Signup() {
 
     const planToAssign = verified ?? (await resolveNewUserPlan(searchParams))
 
+    if (planToAssign.source !== 'stripe') {
+      setError(
+        'Pour créer un compte, finalise d’abord le paiement sur la page « Choix de l’offre ». Après Stripe, reviens via le lien de retour (avec confirmation sécurisée) — sans ça, aucun abonnement n’est détecté.',
+      )
+      setIsLoading(false)
+      return
+    }
+
     try {
       const { data, error: signUpErr } = await supabase.auth.signUp({ email, password })
 
@@ -281,7 +289,15 @@ export default function Signup() {
     setError('')
 
     try {
-      const planQuery = verified?.plan || 'monthly'
+      const planResolved = verified ?? (await resolveNewUserPlan(searchParams))
+      if (planResolved.source !== 'stripe') {
+        setError(
+          'Connecte-toi avec Google uniquement après avoir payé : tu seras renvoyé depuis Stripe avec une confirmation sécurisée. Sinon, commence par « Choix de l’offre ».',
+        )
+        setIsLoading(false)
+        return
+      }
+      const planQuery = planResolved.plan === 'weekly' || planResolved.plan === 'monthly' ? planResolved.plan : 'monthly'
       const sessionParam = searchParams.get('session_id')
       const sidQuery = sessionParam ? `&session_id=${encodeURIComponent(sessionParam)}` : ''
       const origin = window.location.origin
@@ -334,14 +350,23 @@ export default function Signup() {
             <p className="text-text-secondary mb-3">
               Pour accéder à tes mythos depuis n'importe où
             </p>
-            {verified && (
+            {verified?.source === 'stripe' && (
               <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
                 <span className="w-2 h-2 rounded-full bg-lime animate-pulse" />
                 <span className="text-lime text-sm font-semibold">
                   Plan {PLAN_LABELS[verified.plan]} — {verified.credits} crédits
-                  {verified.source === 'stripe' && <span className="ml-1 opacity-70">· Paiement vérifié ✓</span>}
+                  <span className="ml-1 opacity-70">· Paiement vérifié ✓</span>
                 </span>
               </div>
+            )}
+            {verified?.source === 'unpaid' && (
+              <p className="text-sm text-orange-300/95 max-w-sm mx-auto">
+                Aucun paiement Stripe détecté sur cette page.{' '}
+                <Link to="/choixoffre" className="text-lime underline font-semibold">
+                  Choisis d’abord une offre
+                </Link>
+                , puis reviens ici après le paiement.
+              </p>
             )}
           </motion.div>
 

@@ -40,6 +40,7 @@ export default function Unlock() {
     },
   }
 
+  // URL de succès Stripe : inclure ?session_id={CHECKOUT_SESSION_ID} pour que l’app vérifie le paiement.
   const PAYMENT_LINKS = {
     monthly: 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00',
     weekly: 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01',
