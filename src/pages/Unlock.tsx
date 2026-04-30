@@ -7,55 +7,16 @@ import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
 import { PRICE_IDS } from '@/lib/stripe'
 import { supabase } from '@/lib/supabase'
 import { hasPaidGoMythoAccess } from '@/lib/auth-access'
-
-const COUNTDOWN_DURATION_MS = 10 * 60 * 1000 // 10 minutes
-const COUNTDOWN_STORAGE_KEY = 'gomytho_offer_countdown_started_at'
-
-function formatRemaining(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-}
-
-function readCountdownStart(): number {
-  try {
-    const raw = sessionStorage.getItem(COUNTDOWN_STORAGE_KEY)
-    if (raw) {
-      const v = Number(raw)
-      // On garde la valeur uniquement si le compte à rebours n'est pas déjà
-      // épuisé. Sinon (visite plus longue qu'une session, retour après une
-      // pause, etc.), on relance proprement les 10 min : un client qui
-      // tomberait sur « Expirée » dès l'arrivée perdrait totalement le
-      // signal d'urgence — pire UX que de remettre 10:00.
-      if (Number.isFinite(v) && v > 0 && Date.now() - v < COUNTDOWN_DURATION_MS) {
-        return v
-      }
-    }
-  } catch { /* sessionStorage indispo */ }
-  const now = Date.now()
-  try { sessionStorage.setItem(COUNTDOWN_STORAGE_KEY, String(now)) } catch { /* ignore */ }
-  return now
-}
+import { getDailyMythoCount } from '@/lib/daily-counter'
 
 export default function Unlock() {
   const navigate = useNavigate()
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('weekly')
   const [isLoading] = useState(false)
 
-  // Countdown 10 min depuis l'arrivée sur la page (persistant au sein de la
-  // session, pour éviter que le timer ne reparte à 10:00 à chaque navigation
-  // interne — ce qui détruirait l'effet d'urgence).
-  const startedAt = useMemo(() => readCountdownStart(), [])
-  const [remaining, setRemaining] = useState(() => Math.max(0, COUNTDOWN_DURATION_MS - (Date.now() - startedAt)))
-  useEffect(() => {
-    const id = setInterval(() => {
-      const next = Math.max(0, COUNTDOWN_DURATION_MS - (Date.now() - startedAt))
-      setRemaining(next)
-    }, 1000)
-    return () => clearInterval(id)
-  }, [startedAt])
-  const offerExpired = remaining <= 0
+  // Compteur de la journée — partagé avec la landing pour que la valeur
+  // soit cohérente d'une page à l'autre (cf. src/lib/daily-counter.ts).
+  const dailyCount = useMemo(() => getDailyMythoCount(), [])
 
   const plans = {
     weekly: {
@@ -162,30 +123,33 @@ export default function Unlock() {
             transition={{ delay: 0.05 }}
             className="relative mb-5"
           >
-            {/* Ruban flottant — palette « cadeau 🎁 » + clignotement doux
-                pour attirer l'œil. Le « LE » devant transforme la mention
-                en phrase complète : « LE plus choisi ». */}
+            {/* ─── Ruban « LE Plus choisi » premium ────────────────────────
+                Or pâle dégradé + texte sombre = look billet de loterie /
+                ticket VIP, lit comme « premium / best-seller » sans crier.
+                Mini-pulse subtil sur le scale (plus élégant qu'un blink). */}
             <motion.div
-              animate={{ opacity: [1, 0.6, 1] }}
-              transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+              animate={{ scale: [1, 1.04, 1] }}
+              transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
               className={`absolute -top-2.5 z-10 ${POPULAR_PLAN === 'weekly' ? 'left-6' : 'right-6'}`}
             >
               <span
-                className="inline-flex items-center gap-1.5 px-2.5 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
+                className="inline-flex items-center gap-1.5 px-2.5 py-[3px] rounded-full text-[10px] font-black uppercase tracking-[0.18em]"
                 style={{
-                  background: 'linear-gradient(135deg, #ef4444 0%, #f97316 55%, #fbbf24 100%)',
-                  color: '#fff',
+                  background:
+                    'linear-gradient(135deg, #fde68a 0%, #fbbf24 35%, #f59e0b 70%, #fde68a 100%)',
+                  color: '#3a1a05',
+                  border: '1px solid rgba(251,191,36,0.85)',
                   boxShadow:
-                    '0 0 12px rgba(239,68,68,0.6), 0 0 26px rgba(251,191,36,0.35), inset 0 0 8px rgba(255,255,255,0.22)',
-                  textShadow: '0 1px 2px rgba(0,0,0,0.35)',
+                    '0 2px 8px rgba(0,0,0,0.35), 0 0 14px rgba(251,191,36,0.55), 0 0 28px rgba(251,191,36,0.25), inset 0 1px 0 rgba(255,255,255,0.5)',
+                  textShadow: '0 1px 0 rgba(255,255,255,0.25)',
                 }}
               >
                 <span
-                  className="px-1 rounded-full text-[8px] tracking-[0.20em]"
+                  className="px-[5px] py-px rounded-full text-[9px] tracking-[0.18em]"
                   style={{
-                    background: 'rgba(0,0,0,0.30)',
+                    background: '#dc2626',
                     color: '#fff',
-                    boxShadow: 'inset 0 0 4px rgba(255,255,255,0.25)',
+                    boxShadow: '0 0 6px rgba(220,38,38,0.55), inset 0 0 4px rgba(0,0,0,0.25)',
                   }}
                 >
                   LE
@@ -234,61 +198,32 @@ export default function Unlock() {
               boxShadow: '0 0 30px rgba(198,255,60,0.08)',
             }}
           >
-            {/* ─── Badge -50% + chrono — coin sup. gauche, design néon ─── */}
+            {/* ─── Sticker « -50% » incliné dans le coin sup. gauche ──────
+                Style « stamp / autocollant » : posé légèrement de travers
+                au-dessus du prix barré pour qu'on capte la promo en moins
+                d'une seconde. Gradient lime → orange (notre DA) + glow
+                doux + ombre portée pour le relief. */}
             <motion.div
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: 0.08 }}
-              className="absolute -top-3 left-4 z-10"
+              initial={{ opacity: 0, scale: 0.85, rotate: -14 }}
+              animate={{ opacity: 1, scale: 1, rotate: -10 }}
+              transition={{ duration: 0.4, delay: 0.08, ease: 'easeOut' }}
+              className="absolute -top-4 -left-3 z-20"
+              style={{ transformOrigin: 'center' }}
             >
               <div
-                className="relative inline-flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full text-[12px] font-black tracking-wide"
+                className="px-3 py-1 rounded-md text-2xl font-black tabular-nums"
                 style={{
-                  background: offerExpired
-                    ? 'linear-gradient(135deg, rgba(248,113,113,0.28) 0%, rgba(20,24,38,0.96) 70%)'
-                    : 'linear-gradient(135deg, rgba(198,255,60,0.32) 0%, rgba(249,115,22,0.18) 50%, rgba(20,24,38,0.96) 100%)',
-                  border: `1.5px solid ${offerExpired ? 'rgba(248,113,113,0.65)' : 'rgba(198,255,60,0.7)'}`,
-                  color: offerExpired ? '#fca5a5' : '#C6FF3C',
-                  boxShadow: offerExpired
-                    ? '0 0 14px rgba(248,113,113,0.4), 0 0 28px rgba(248,113,113,0.18)'
-                    : '0 0 16px rgba(198,255,60,0.5), 0 0 32px rgba(249,115,22,0.22), inset 0 0 10px rgba(198,255,60,0.10)',
+                  background:
+                    'linear-gradient(135deg, #C6FF3C 0%, #facc15 45%, #f97316 100%)',
+                  color: '#0A0E1A',
+                  letterSpacing: '0.02em',
+                  border: '1.5px solid rgba(255,255,255,0.4)',
+                  boxShadow:
+                    '0 6px 18px rgba(0,0,0,0.45), 0 0 18px rgba(198,255,60,0.55), 0 0 34px rgba(249,115,22,0.30), inset 0 1px 0 rgba(255,255,255,0.55)',
+                  textShadow: '0 1px 1px rgba(255,255,255,0.25)',
                 }}
               >
-                <span
-                  aria-hidden
-                  className="text-sm"
-                  style={{
-                    filter: offerExpired
-                      ? 'none'
-                      : 'drop-shadow(0 0 4px rgba(198,255,60,0.85)) drop-shadow(0 0 8px rgba(249,115,22,0.55))',
-                  }}
-                >
-                  ⚡
-                </span>
-                <span style={{ letterSpacing: '0.06em' }}>−50%</span>
-                <span
-                  aria-hidden
-                  className="w-[1.5px] h-4 rounded-full"
-                  style={{
-                    background: offerExpired
-                      ? 'rgba(248,113,113,0.5)'
-                      : 'rgba(198,255,60,0.6)',
-                  }}
-                />
-                {offerExpired ? (
-                  <span className="uppercase">Expirée</span>
-                ) : (
-                  <span
-                    className="tabular-nums text-[13px]"
-                    style={{
-                      color: '#fff',
-                      textShadow:
-                        '0 0 8px rgba(198,255,60,0.9), 0 0 18px rgba(249,115,22,0.55)',
-                    }}
-                  >
-                    {formatRemaining(remaining)}
-                  </span>
-                )}
+                −50%
               </div>
             </motion.div>
 
@@ -318,21 +253,47 @@ export default function Unlock() {
             </ul>
           </motion.div>
 
-          {/* Garantie : pleine largeur mais petite/discrète */}
+          {/* Garantie + compteur social : taille bumpée, garantie pleine
+              largeur, suivie en dessous d'un mini-compteur dynamique. */}
           <div
-            className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-bold mb-3"
+            className="flex items-center justify-center gap-2 px-4 py-2 rounded-full text-[13px] font-bold mb-1.5"
             style={{
-              background: 'rgba(198,255,60,0.06)',
-              border: '1px solid rgba(198,255,60,0.2)',
+              background: 'rgba(198,255,60,0.07)',
+              border: '1px solid rgba(198,255,60,0.22)',
               color: '#C6FF3C',
             }}
           >
-            <span className="text-xs">🛡️</span>
+            <span className="text-sm">🛡️</span>
             <span>Satisfait ou remboursé</span>
           </div>
 
-          {/* CTA — wrappé pour superposer un shimmer va-et-vient */}
-          <div className="relative mb-2">
+          <p className="text-center text-[11px] text-text-secondary mb-3">
+            <span
+              className="font-black tabular-nums mr-1"
+              style={{
+                color: '#C6FF3C',
+                textShadow: '0 0 6px rgba(198,255,60,0.5)',
+              }}
+            >
+              {dailyCount.toLocaleString('fr-FR')}
+            </span>
+            mythos créés aujourd'hui
+          </p>
+
+          {/* CTA — pulse léger pour attirer l'œil sans saturer.
+              On anime l'opacité du glow + un mini scale pour que ça respire. */}
+          <motion.div
+            className="mb-2"
+            animate={{
+              scale: [1, 1.025, 1],
+              filter: [
+                'drop-shadow(0 0 0px rgba(198,255,60,0))',
+                'drop-shadow(0 0 16px rgba(198,255,60,0.55))',
+                'drop-shadow(0 0 0px rgba(198,255,60,0))',
+              ],
+            }}
+            transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+          >
             <Button
               onClick={handleCheckout}
               disabled={isLoading}
@@ -341,32 +302,7 @@ export default function Unlock() {
             >
               {isLoading ? 'Chargement...' : 'DÉBLOQUER MON MYTHO →'}
             </Button>
-
-            {/* Reflet qui balaie le bouton de gauche à droite et inversement.
-                pointer-events-none pour ne pas gêner le clic, mix-blend-mode
-                pour rester délicat sur fond lime. */}
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 rounded-full overflow-hidden"
-              style={{ mixBlendMode: 'overlay' }}
-            >
-              <motion.div
-                className="absolute top-0 bottom-0 w-1/3"
-                animate={{ x: ['-110%', '210%'] }}
-                transition={{
-                  duration: 2.6,
-                  repeat: Infinity,
-                  repeatType: 'reverse',
-                  ease: 'easeInOut',
-                }}
-                style={{
-                  background:
-                    'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.55) 50%, transparent 100%)',
-                  filter: 'blur(2px)',
-                }}
-              />
-            </div>
-          </div>
+          </motion.div>
 
           <p className="text-center text-[11px] text-text-secondary leading-snug">
             🔒 Paiement sécurisé Stripe · Annulable en un clic, remboursé si pas satisfait
