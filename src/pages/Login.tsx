@@ -6,14 +6,15 @@ import { hasPaidGoMythoAccess, resolveAccessProfile } from '@/lib/auth-access'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 
-async function waitForSession(maxAttempts = 12, delayMs = 250) {
-  for (let i = 0; i < maxAttempts; i += 1) {
-    const { data } = await supabase.auth.getSession()
-    if (data?.session) return data.session
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  return null
-}
+// ─── Page Connexion (utilisateur déjà payant qui revient) ─────────────────
+//
+// Flux simple :
+//   1. Email + mot de passe (ou Google)
+//   2. Connexion Supabase
+//   3. On vérifie qu'un abonnement actif existe pour ce compte
+//   4. OK → /makemytho        Pas de paiement → message + lien vers /choixoffre
+//
+// L'inscription se fait sur /signup après paiement Stripe (avec session_id).
 
 export default function Login() {
   const [searchParams] = useSearchParams()
@@ -24,59 +25,48 @@ export default function Login() {
 
   useEffect(() => {
     if (searchParams.get('reason') === 'no_access') {
-      setError(
-        "❌ Ce compte n'a pas d'abonnement GoMytho actif. Tu dois d'abord souscrire depuis la page d'offre — la connexion Google ou email seule ne crée pas d'accès payant.",
-      )
+      setError("Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.")
     }
   }, [searchParams])
-  const handleLogin = async (e: React.FormEvent) => {
+
+  const goToApp = () => {
+    window.location.href = '/makemytho'
+  }
+
+  const checkAccessAndRedirect = async (userId: string, userEmail: string | null | undefined) => {
+    const profile = await resolveAccessProfile(userId, userEmail)
+    if (hasPaidGoMythoAccess(profile)) {
+      goToApp()
+      return true
+    }
+    await supabase.auth.signOut()
+    setError("Aucun abonnement actif lié à ce compte. Choisis une offre pour t'inscrire.")
+    return false
+  }
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     setError('')
-
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-
-      if (error) {
-        if (error.message?.includes('Invalid login credentials')) {
-          setError('❌ Email ou mot de passe incorrect. Pas encore de compte ? Commence par payer ton abonnement.')
-        } else if (error.message?.includes('Email not confirmed')) {
-          // Email non confirmé → on tente quand même de récupérer la session
-          const { data: { session } } = await supabase.auth.getSession()
-          if (session) { window.location.href = '/makemytho'; return }
-          setError('❌ Confirme ton email avant de te connecter.')
+      const { data, error: signInErr } = await supabase.auth.signInWithPassword({ email, password })
+      if (signInErr) {
+        if (/Invalid login credentials/i.test(signInErr.message)) {
+          setError('Email ou mot de passe incorrect.')
         } else {
-          setError(error.message || 'Une erreur est survenue')
+          setError(signInErr.message || 'Connexion impossible.')
         }
         return
       }
-
-      // Connexion réussie → attendre que la session soit réellement persistée
-      const session = await waitForSession()
+      const session = data.session
       if (!session) {
-        setError('Connexion réussie, mais session non détectée. Réessaie une fois.')
+        setError('Session non détectée. Réessaie.')
         return
       }
-
-      // Lookup avec fallback par email (utile si l'utilisateur a payé sous
-      // une autre méthode d'auth) — voir resolveAccessProfile pour le détail.
-      const profile = await resolveAccessProfile(session.user.id, session.user.email)
-
-      if (!hasPaidGoMythoAccess(profile)) {
-        try {
-          const { resetAnalytics } = await import('@/lib/analytics')
-          resetAnalytics()
-        } catch { /* ignore */ }
-        await supabase.auth.signOut()
-        setError(
-          "❌ Aucun abonnement associé à ce compte. Commence par choisir une offre et finalise le paiement sur Stripe pour créer ton accès.",
-        )
-        return
-      }
-
-      window.location.href = '/makemytho'
-    } catch {
-      setError('Une erreur est survenue. Réessaie.')
+      await checkAccessAndRedirect(session.user.id, session.user.email)
+    } catch (err) {
+      const e = err as { message?: string }
+      setError(e.message || 'Une erreur est survenue. Réessaie.')
     } finally {
       setIsLoading(false)
     }
@@ -86,20 +76,16 @@ export default function Login() {
     setIsLoading(true)
     setError('')
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // /auth/callback est le SEUL redirect URL à inscrire en allowlist
-          // côté Supabase Dashboard. Cette page attend que la session soit
-          // bien établie avant de naviguer vers /resultats — sans ça, le
-          // hash #access_token=... est perdu et le user est jeté.
           redirectTo: `${window.location.origin}/auth/callback`,
         },
       })
-      if (error) throw error
-    } catch (error: unknown) {
-      const err = error as { message?: string }
-      setError(err.message || 'Une erreur est survenue')
+      if (oauthErr) throw oauthErr
+    } catch (err) {
+      const e = err as { message?: string }
+      setError(e.message || 'Connexion Google impossible.')
       setIsLoading(false)
     }
   }
@@ -115,12 +101,8 @@ export default function Login() {
             animate={{ opacity: 1, y: 0 }}
             className="text-center mb-12"
           >
-            <h1 className="text-4xl md:text-5xl font-black mb-4">
-              Connexion
-            </h1>
-            <p className="text-text-secondary">
-              Content de te revoir 👋
-            </p>
+            <h1 className="text-4xl md:text-5xl font-black mb-4">Connexion</h1>
+            <p className="text-text-secondary">Content de te revoir 👋</p>
           </motion.div>
 
           <motion.div
@@ -130,20 +112,18 @@ export default function Login() {
             className="bg-secondary-bg rounded-3xl p-8 border border-lime/10"
           >
             {error && (
-              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-sm space-y-2">
+              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-sm space-y-3">
                 <p className="text-red-400">{error}</p>
-                {error.includes('incorrect') && (
-                  <a
-                    href="/uploadphoto"
-                    className="block text-center mt-2 text-lime font-semibold hover:underline"
-                  >
-                    → Essayer GoMytho gratuitement
-                  </a>
-                )}
+                <Link
+                  to="/choixoffre"
+                  className="block text-center text-lime font-semibold hover:underline"
+                >
+                  → Choisir une offre
+                </Link>
               </div>
             )}
 
-            <form onSubmit={handleLogin} className="space-y-6">
+            <form onSubmit={handleEmailLogin} className="space-y-6">
               <div>
                 <label htmlFor="email" className="block text-sm font-semibold mb-2">
                   Email
@@ -174,12 +154,7 @@ export default function Login() {
                 />
               </div>
 
-              <Button
-                type="submit"
-                disabled={isLoading}
-                size="lg"
-                fullWidth
-              >
+              <Button type="submit" disabled={isLoading} size="lg" fullWidth>
                 {isLoading ? 'Connexion...' : 'Se connecter'}
               </Button>
             </form>
@@ -209,8 +184,8 @@ export default function Login() {
 
             <p className="text-center text-sm text-text-secondary mt-8">
               Pas encore de compte ?{' '}
-              <Link to="/signup" className="text-lime hover:underline font-semibold">
-                Créer un compte
+              <Link to="/choixoffre" className="text-lime hover:underline font-semibold">
+                Choisir une offre
               </Link>
             </p>
           </motion.div>
