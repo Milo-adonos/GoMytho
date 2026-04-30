@@ -70,20 +70,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ error: 'Aucun client Stripe trouvé pour cet email' })
     }
 
-    // ─── Lister les subscriptions actives ───────────────────────────────────
-    const subs = await stripe.subscriptions.list({
+    // ─── Lister les subscriptions actives ou en essai ─────────────────────────
+    const allOpenSubs = await stripe.subscriptions.list({
       customer: customerId,
-      status: 'active',
-      limit: 10,
+      status: 'all',
+      limit: 20,
     })
+    const subs = {
+      data: allOpenSubs.data.filter((s) => s.status === 'active' || s.status === 'trialing'),
+    }
 
     if (subs.data.length === 0) {
       // Peut-être déjà en cancel_at_period_end ou dans un autre status
-      const allSubs = await stripe.subscriptions.list({
-        customer: customerId,
-        limit: 10,
-      })
-      const alreadyCancelling = allSubs.data.find(
+      const alreadyCancelling = allOpenSubs.data.find(
         (s) => s.cancel_at_period_end || s.status === 'canceled',
       )
       if (alreadyCancelling) {

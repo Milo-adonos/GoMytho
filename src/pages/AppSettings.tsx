@@ -89,7 +89,15 @@ export default function AppSettings() {
   }
 
   const planLabel = inferredPlan === 'weekly' ? 'Hebdo' : inferredPlan === 'monthly' ? 'Mensuel' : 'Gratuit'
-  const planColor = user?.subscription_status === 'active' ? '#C6FF3C' : '#8A8FA0'
+  const hasPaidAccess = user?.subscription_status === 'active' || user?.subscription_status === 'trialing'
+  const planColor = hasPaidAccess ? '#C6FF3C' : '#8A8FA0'
+
+  const creditDenom =
+    user?.subscription_status === 'trialing' && inferredPlan === 'monthly'
+      ? 8
+      : inferredPlan === 'monthly'
+        ? 560
+        : 160
 
   const menuItems = [
     {
@@ -127,7 +135,7 @@ export default function AppSettings() {
       label: isOpeningPortal ? 'Ouverture du portail...' : 'Annuler l\'abonnement',
       sub: 'Gérer directement sur Stripe',
       action: openStripePortal,
-      show: user?.subscription_status === 'active',
+      show: hasPaidAccess,
       danger: true,
       disabled: isOpeningPortal,
     },
@@ -151,6 +159,9 @@ export default function AppSettings() {
               {user?.subscription_status === 'active' && (
                 <span className="text-xs text-text-secondary">· Actif</span>
               )}
+              {user?.subscription_status === 'trialing' && (
+                <span className="text-xs text-text-secondary">· Essai gratuit</span>
+              )}
             </div>
           </div>
         </div>
@@ -165,7 +176,7 @@ export default function AppSettings() {
         </div>
         <div className="mt-3 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(198,255,60,0.1)' }}>
           <div className="h-full rounded-full bg-lime transition-all"
-            style={{ width: `${Math.min(100, ((user?.credits_remaining ?? 0) / (inferredPlan === 'monthly' ? 560 : 160)) * 100)}%` }} />
+            style={{ width: `${Math.min(100, ((user?.credits_remaining ?? 0) / creditDenom) * 100)}%` }} />
         </div>
       </div>
 

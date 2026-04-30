@@ -24,6 +24,22 @@ const COST_PER_IMAGE = 0.037
 const MONTH_LABELS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_gomytho_2026'
 
+/**
+ * Baseline du panel admin : agrégats et listes n’incluent que les données à
+ * partir du 30 avril 2026 minuit (Europe/Paris). Le 29 et avant = ignorés.
+ */
+const ADMIN_STATS_EPOCH_ISO = '2026-04-30T00:00:00+02:00'
+const ADMIN_STATS_EPOCH_MS = new Date(ADMIN_STATS_EPOCH_ISO).getTime()
+
+function stripeCreatedOnOrAfterEpoch(tsSeconds: number): boolean {
+  return tsSeconds * 1000 >= ADMIN_STATS_EPOCH_MS
+}
+
+function mythoOnOrAfterEpoch(iso: string): boolean {
+  const t = new Date(iso).getTime()
+  return !Number.isNaN(t) && t >= ADMIN_STATS_EPOCH_MS
+}
+
 const HEBDO_PRICE_ID = process.env.HEBDO_PRICE_ID || ''
 const MENSU_PRICE_ID = process.env.MENSU_PRICE_ID || ''
 
@@ -89,10 +105,12 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
   // Liste des paiements (invoices) des 60 derniers jours pour calculer CA
   const invoices: Stripe.Invoice[] = []
   let starting_after: string | undefined = undefined
+  // Invoices : fenêtre 60 j, mais jamais avant la baseline stats admin
+  const invoiceListGte = Math.max(sixtyDaysAgo, Math.floor(ADMIN_STATS_EPOCH_MS / 1000))
   for (let i = 0; i < 5; i++) {
     const page: Stripe.ApiList<Stripe.Invoice> = await stripe.invoices.list({
       status: 'paid',
-      created: { gte: sixtyDaysAgo },
+      created: { gte: invoiceListGte },
       limit: 100,
       ...(starting_after ? { starting_after } : {}),
     })
@@ -105,6 +123,7 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
   let revenue30d = 0
   let revenuePrev30d = 0
   for (const inv of invoices) {
+    if (!stripeCreatedOnOrAfterEpoch(inv.created)) continue
     const ts = inv.created
     const amount = (inv.amount_paid || 0) / 100
     if (ts >= thirtyDaysAgo) revenue30d += amount
@@ -113,9 +132,11 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
     dailyRevenue[day] = (dailyRevenue[day] || 0) + amount
   }
 
-  // CA cumulé = somme des invoices toutes époques (approximation = 60j) +
-  // estimation MRR pour l'historique antérieur
-  const totalRevenueAllTime = invoices.reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
+  // CA cumulé (fenêtre Stripe récupérée, exclut l’historique avant la baseline admin)
+  const totalRevenueAllTime = invoices.reduce((acc, inv) => {
+    if (!stripeCreatedOnOrAfterEpoch(inv.created)) return acc
+    return acc + (inv.amount_paid || 0) / 100
+  }, 0)
 
   let weeklySubscribers = 0
   let monthlySubscribers = 0
@@ -129,8 +150,10 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
     if (plan === 'weekly') weeklySubscribers++
     else if (plan === 'monthly') monthlySubscribers++
 
-    if (sub.created >= thirtyDaysAgo) newSubscribers30d++
-    else if (sub.created >= sixtyDaysAgo) newSubscribersPrev30d++
+    if (stripeCreatedOnOrAfterEpoch(sub.created)) {
+      if (sub.created >= thirtyDaysAgo) newSubscribers30d++
+      else if (sub.created >= sixtyDaysAgo) newSubscribersPrev30d++
+    }
 
     const customer = sub.customer
     const email = typeof customer === 'string'
@@ -149,13 +172,14 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
 
   let cancelledLast30d = 0
   for (const sub of canceledSubs.data) {
-    if ((sub.canceled_at || 0) >= thirtyDaysAgo) cancelledLast30d++
+    const cat = sub.canceled_at || 0
+    if (cat >= thirtyDaysAgo && stripeCreatedOnOrAfterEpoch(cat)) cancelledLast30d++
   }
 
   const activeSubscribers = weeklySubscribers + monthlySubscribers
-  // Total cumulé = abonnés actifs + tous les abonnements canceled remontés
-  // par Stripe (la limite de 100 reste large pour notre échelle).
-  const cancelledAllTime = canceledSubs.data.length
+  const cancelledAllTime = canceledSubs.data.filter((s) =>
+    stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
+  ).length
   const totalSubscribersAllTime = activeSubscribers + cancelledAllTime
 
   return {
@@ -171,7 +195,7 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
     cancelledAllTime,
     totalSubscribersAllTime,
     dailyRevenue,
-    subscriptions,
+    subscriptions: subscriptions.filter((s) => s.createdAt >= ADMIN_STATS_EPOCH_MS),
   }
 }
 
@@ -236,6 +260,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case 'users': return await handleUsers(req, res)
       case 'settings': return await handleSettings(req, res)
       case 'migrate': return await handleMigrate(res)
+      case 'purge-stats-epoch': {
+        if (req.method !== 'POST') {
+          res.status(405).json({ error: 'POST requis' })
+          return
+        }
+        return await handlePurgeStatsEpoch(res)
+      }
       default:
         return res.status(404).json({ error: 'Action inconnue' })
     }
@@ -252,6 +283,7 @@ function emptyForAction(action: string) {
     case 'mythos': return { mythos: [], total: 0 }
     case 'users': return { users: [], total: 0 }
     case 'settings': return { costPerImage: COST_PER_IMAGE, maintenanceMode: false, notificationEmail: '' }
+    case 'purge-stats-epoch': return { ok: false }
     default: return {}
   }
 }
@@ -276,7 +308,7 @@ async function handleDashboard(res: VercelResponse) {
       console.error('[admin/dashboard] stripe error:', e?.message || e)
       return null
     }) : Promise.resolve(null),
-    supabase ? supabase.from('mythos').select('id, created_at') : Promise.resolve({ data: [] as any[] }),
+    supabase ? supabase.from('mythos').select('id, created_at').gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString()) : Promise.resolve({ data: [] as any[] }),
     supabase ? collectMythosFromStorage(supabase).catch((e) => {
       console.error('[admin/dashboard] storage scan error:', e?.message || e)
       return [] as Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>
@@ -295,6 +327,7 @@ async function handleDashboard(res: VercelResponse) {
   }))
   let storageOnlyCount = 0
   for (const e of storageMythos) {
+    if (!mythoOnOrAfterEpoch(e.created_at)) continue
     const sqlId = localIdToUuid(e.id)
     if (sqlIds.has(sqlId)) continue
     merged.push({ id: sqlId, created_at: e.created_at })
@@ -350,8 +383,10 @@ async function handleDashboard(res: VercelResponse) {
   const dailyChartData = Object.entries(dailyMap).map(([date, v]) => ({ date, ...v }))
 
   // Filtrer les mythos sur les 30 derniers jours pour stat
-  const mythos30dCount = allMythos.filter((m: any) =>
-    new Date(m.created_at) >= thirtyDaysAgo
+  const thirtyDaysAgoMs = thirtyDaysAgo.getTime()
+  const mythosWindowStart = Math.max(thirtyDaysAgoMs, ADMIN_STATS_EPOCH_MS)
+  const mythos30dCount = allMythos.filter(
+    (m: any) => new Date(m.created_at).getTime() >= mythosWindowStart,
   ).length
 
   return res.status(200).json({
@@ -406,10 +441,12 @@ async function collectMythosFromStorage(
         const entries = Array.isArray(manifest?.entries) ? manifest.entries : []
         for (const entry of entries) {
           if (!entry?.id || !entry?.image_path || !entry?.prompt) continue
+          const created = String(entry.created_at || new Date().toISOString())
+          if (!mythoOnOrAfterEpoch(created)) continue
           out.push({
             id: String(entry.id),
             user_id: uid,
-            created_at: String(entry.created_at || new Date().toISOString()),
+            created_at: created,
             image_path: String(entry.image_path),
             prompt: String(entry.prompt),
           })
@@ -535,19 +572,26 @@ async function handleFinance(res: VercelResponse) {
     }
   }
 
+  const stripeInvoicesFiltered = stripeInvoices.filter((inv) => stripeCreatedOnOrAfterEpoch(inv.created))
+
   // ─── 2. Supabase : analyses (mythos) des 6 derniers mois ──────────────────
   let mythos: Array<{ id: string; user_id: string; created_at: string }> = []
   if (supabase) {
-    const { data } = await supabase.from('mythos').select('id, user_id, created_at').gte('created_at', sixMonthsAgo.toISOString())
+    const mythosSince = new Date(Math.max(sixMonthsAgo.getTime(), ADMIN_STATS_EPOCH_MS)).toISOString()
+    const { data } = await supabase.from('mythos').select('id, user_id, created_at').gte('created_at', mythosSince)
     mythos = (data || []) as any
   }
 
   // ─── 3. Stats du mois en cours ────────────────────────────────────────────
   const startOfMonthTs = Math.floor(startOfMonth.getTime() / 1000)
-  const invoicesThisMonth = stripeInvoices.filter(inv => inv.created >= startOfMonthTs)
+  const invoicesThisMonth = stripeInvoicesFiltered.filter((inv) => inv.created >= startOfMonthTs)
   const revenueThisMonth = invoicesThisMonth.reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
-  const newSubsThisMonth = stripeSubsActive.filter(s => s.created >= startOfMonthTs).length
-  const cancelledThisMonth = stripeSubsCanceled.filter(s => (s.canceled_at || 0) >= startOfMonthTs).length
+  const newSubsThisMonth = stripeSubsActive.filter(
+    (s) => s.created >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.created),
+  ).length
+  const cancelledThisMonth = stripeSubsCanceled.filter(
+    (s) => (s.canceled_at || 0) >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
+  ).length
 
   const mythosThisMonth = mythos.filter(m => new Date(m.created_at) >= startOfMonth)
   const costThisMonth = mythosThisMonth.length * COST_PER_IMAGE
@@ -565,7 +609,7 @@ async function handleFinance(res: VercelResponse) {
     const mEndTs = Math.floor(mEnd.getTime() / 1000)
     const label = MONTH_LABELS[m.getMonth()]
 
-    const rev = stripeInvoices
+    const rev = stripeInvoicesFiltered
       .filter(inv => inv.created >= mStart && inv.created < mEndTs)
       .reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
     const mythosInMonth = mythos.filter(mt =>
@@ -667,6 +711,7 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   const { data, count } = await supabase
     .from('mythos')
     .select('id, user_id, prompt, image_url, created_at', { count: 'exact' })
+    .gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString())
     .range((page - 1) * limit, page * limit - 1)
     .order('created_at', { ascending: false })
 
@@ -739,15 +784,20 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     plan?: string
     subscription_status?: string
     created_at: string
-    mythos?: Array<{ count: number }>
   }
   let dbUsers: DbUser[] = []
+  let mythoCountByUser: Record<string, number> = {}
   if (supabase) {
-    const { data } = await supabase.from('users').select(`
-      id, email, plan, subscription_status, created_at,
-      mythos(count)
-    `)
-    dbUsers = (data || []) as any
+    const epochIso = new Date(ADMIN_STATS_EPOCH_MS).toISOString()
+    const [{ data: userRows }, { data: mythoRows }] = await Promise.all([
+      supabase.from('users').select('id, email, plan, subscription_status, created_at'),
+      supabase.from('mythos').select('user_id').gte('created_at', epochIso),
+    ])
+    dbUsers = (userRows || []) as any
+    for (const row of mythoRows || []) {
+      const uid = String((row as { user_id: string }).user_id)
+      mythoCountByUser[uid] = (mythoCountByUser[uid] || 0) + 1
+    }
   }
 
   // ─── 3. Fusion par email — Stripe = vérité paiement, Supabase = analyses ──
@@ -757,7 +807,7 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     const key = (dbUser.email || '').toLowerCase()
     if (!key) continue
     const stripeData = stripeUsersByEmail.get(key)
-    const totalMythos = dbUser.mythos?.[0]?.count || 0
+    const totalMythos = mythoCountByUser[dbUser.id] || 0
     merged.set(key, {
       id: dbUser.id,
       email: dbUser.email,
@@ -817,6 +867,27 @@ async function handleSettings(req: VercelRequest, res: VercelResponse) {
   return res.status(405).json({ error: 'Méthode non autorisée' })
 }
 
+// Supprime les lignes public.mythos antérieures à la baseline stats admin
+// (aligné sur les agrégats du panel). Idempotent.
+async function handlePurgeStatsEpoch(res: VercelResponse) {
+  const supabase = getSupabase()
+  if (!supabase) return res.status(500).json({ error: 'Supabase non configuré' })
+  const iso = new Date(ADMIN_STATS_EPOCH_MS).toISOString()
+  try {
+    const { count, error: cntErr } = await supabase
+      .from('mythos')
+      .select('*', { count: 'exact', head: true })
+      .lt('created_at', iso)
+    if (cntErr) throw cntErr
+    const { error: delErr } = await supabase.from('mythos').delete().lt('created_at', iso)
+    if (delErr) throw delErr
+    return res.status(200).json({ ok: true, deleted: count ?? 0, cutoff: iso })
+  } catch (e: any) {
+    console.error('[admin/purge-stats-epoch]', e?.message || e)
+    return res.status(500).json({ error: e?.message || 'Purge impossible' })
+  }
+}
+
 // ─── Backfill historique : Storage manifests → table SQL public.mythos ───────
 //
 // Pour chaque manifeste {uid}/index.json présent dans le bucket :
@@ -872,6 +943,11 @@ async function handleMigrate(res: VercelResponse) {
           mythosSkipped++
           continue
         }
+        const entryCreated = String(entry.created_at || new Date().toISOString())
+        if (!mythoOnOrAfterEpoch(entryCreated)) {
+          mythosSkipped++
+          continue
+        }
         try {
           let imageUrl: string | null = null
           if (/^https?:\/\//.test(entry.image_path)) {
@@ -892,7 +968,7 @@ async function handleMigrate(res: VercelResponse) {
               user_id: uid,
               image_url: imageUrl,
               prompt: String(entry.prompt),
-              created_at: entry.created_at || new Date().toISOString(),
+              created_at: entryCreated,
             }],
             { onConflict: 'id' }
           )

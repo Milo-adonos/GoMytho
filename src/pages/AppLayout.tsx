@@ -9,6 +9,7 @@ import {
   PLAN_CREDITS,
   readCachedPlan,
   resolveNewUserPlan,
+  CREDITS_PER_IMAGE,
   type Plan,
 } from '@/lib/plan'
 
@@ -135,6 +136,22 @@ async function tryAutoGenerate(userId: string): Promise<boolean> {
 
     console.info('[autoGen] step 4/4 — clean pending data ✅')
     clearPendingMytho()
+
+    try {
+      const { data: row } = await supabase.from('users').select('credits_remaining').eq('id', userId).single()
+      const cur = Number(row?.credits_remaining ?? 0)
+      const next = Math.max(0, cur - CREDITS_PER_IMAGE)
+      await supabase.from('users').update({ credits_remaining: next }).eq('id', userId)
+      try {
+        const p = localStorage.getItem('gomytho_user_plan')
+        if (p === 'weekly' || p === 'monthly' || p === 'free') {
+          cachePlanLocally(p, next)
+        }
+      } catch { /* ignore */ }
+    } catch (credErr) {
+      console.warn('[autoGen] décrément crédits (non bloquant):', credErr)
+    }
+
     return true
   } catch (err) {
     console.error('[autoGen] échec définitif après retries :', err)
@@ -238,7 +255,7 @@ export default function AppLayout() {
           id: authUser.id,
           email: authUser.email!,
           credits_remaining: verified.credits,
-          subscription_status: 'active' as const,
+          subscription_status: verified.subscription_status ?? 'active',
           plan: verified.plan,
         }
         if (verified.customerId) {
@@ -266,6 +283,32 @@ export default function AppLayout() {
         try {
           localStorage.removeItem('gomytho_pending_plan')
         } catch { /* ignore */ }
+      }
+
+      // ─── 2b. Fin d’essai mensuel Stripe : passage en actif + quota complet ───
+      if (
+        dbUser &&
+        dbUser.plan === 'monthly' &&
+        dbUser.subscription_status === 'trialing' &&
+        session?.access_token
+      ) {
+        try {
+          const r = await fetch('/api/stripe-sync-trial', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          })
+          const payload = await r.json().catch(() => null)
+          if (r.ok && payload?.updated && typeof payload.credits === 'number') {
+            dbUser = {
+              ...dbUser,
+              subscription_status: 'active',
+              credits_remaining: payload.credits,
+            }
+            cachePlanLocally('monthly', payload.credits)
+          }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ─── 3. Construction de l'objet user (DB > cache local > défaut) ────────

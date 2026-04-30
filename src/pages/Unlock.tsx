@@ -29,7 +29,8 @@ export default function Unlock() {
       priceId: PRICE_IDS.monthly,
       badge: 'LE PLUS CHOISI',
       features: [
-        '70 images par mois',
+        '1 mytho offert pendant l’essai, puis 9,90€/mois',
+        '70 images par mois une fois l’abonnement actif',
         'Qualité 2K',
         'Génération plus rapide',
         'Aucun watermark',

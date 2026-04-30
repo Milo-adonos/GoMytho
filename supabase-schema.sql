@@ -13,11 +13,16 @@ CREATE TABLE IF NOT EXISTS public.users (
     -- si paiement Apple Pay / Google Pay / alias). Sert à retrouver le
     -- customer côté API stripe-portal sans demander de saisie au user.
     stripe_payment_email TEXT,
-    subscription_status TEXT DEFAULT 'inactive' CHECK (subscription_status IN ('active', 'inactive', 'cancelled')),
+    subscription_status TEXT DEFAULT 'inactive' CHECK (subscription_status IN ('active', 'inactive', 'cancelled', 'trialing')),
     plan TEXT DEFAULT 'free' CHECK (plan IN ('weekly', 'monthly', 'free')),
     credits_remaining INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Autoriser le statut Stripe « trialing » (essai mensuel). À exécuter sur les bases déjà créées.
+ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_subscription_status_check;
+ALTER TABLE public.users ADD CONSTRAINT users_subscription_status_check
+  CHECK (subscription_status IN ('active', 'inactive', 'cancelled', 'trialing'));
 
 -- Migration safe (pour bases existantes) : ajoute la colonne si absente
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_payment_email TEXT;

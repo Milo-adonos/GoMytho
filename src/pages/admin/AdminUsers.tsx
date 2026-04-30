@@ -8,7 +8,7 @@ interface User {
 }
 
 const statusColors: Record<string, string> = {
-  active: '#4ade80', cancelled: '#ef4444', trial: '#fb923c',
+  trialing: '#a3e635',
 }
 const planColors: Record<string, string> = {
   monthly: '#C6FF3C', weekly: '#8A8FA0',

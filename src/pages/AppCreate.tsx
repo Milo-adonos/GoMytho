@@ -8,9 +8,7 @@ import { convertToJpeg } from '@/lib/image-utils'
 import AspectRatioSelector from '@/components/AspectRatioSelector'
 import PhotoCard from '@/components/PhotoCard'
 import GenErrorBanner, { setGenError, clearGenError } from '@/components/GenErrorBanner'
-import { cachePlanLocally } from '@/lib/plan'
-
-const CREDITS_PER_IMAGE = 8
+import { cachePlanLocally, CREDITS_PER_IMAGE } from '@/lib/plan'
 
 async function downloadDataUrl(dataUrl: string, filename = `mytho-${Date.now()}.jpg`) {
   try {

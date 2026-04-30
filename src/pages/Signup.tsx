@@ -8,7 +8,13 @@ import { generateMytho, uploadToSupabase, KieBlockedError } from '@/lib/kie-api'
 import { saveMythoToCloud } from '@/lib/mythos-sync'
 import type { AspectRatio } from '@/lib/kie-api'
 import { setGenError } from '@/components/GenErrorBanner'
-import { resolveNewUserPlan, cachePlanLocally, PLAN_LABELS, type VerifiedPlan } from '@/lib/plan'
+import {
+  resolveNewUserPlan,
+  cachePlanLocally,
+  PLAN_LABELS,
+  CREDITS_PER_IMAGE,
+  type VerifiedPlan,
+} from '@/lib/plan'
 
 export default function Signup() {
   const [searchParams] = useSearchParams()
@@ -39,7 +45,7 @@ export default function Signup() {
         id: userId,
         email: userEmail,
         credits_remaining: plan.credits,
-        subscription_status: 'active',
+        subscription_status: plan.subscription_status ?? 'active',
         plan: plan.plan,
       }
       if (plan.customerId) row.stripe_customer_id = plan.customerId
@@ -171,6 +177,22 @@ export default function Signup() {
       localStorage.removeItem('gomytho_pending_image2')
       localStorage.removeItem('gomytho_pending_prompt')
       localStorage.removeItem('gomytho_pending_ratio')
+
+      try {
+        const { data: row } = await supabase.from('users').select('credits_remaining').eq('id', userId).single()
+        const cur = Number(row?.credits_remaining ?? 0)
+        const next = Math.max(0, cur - CREDITS_PER_IMAGE)
+        await supabase.from('users').update({ credits_remaining: next }).eq('id', userId)
+        try {
+          const p = localStorage.getItem('gomytho_user_plan')
+          if (p === 'weekly' || p === 'monthly' || p === 'free') {
+            cachePlanLocally(p, next)
+          }
+        } catch { /* ignore */ }
+      } catch (credErr) {
+        console.warn('[signup] décrément crédits après auto-gen (non bloquant):', credErr)
+      }
+
       window.location.href = '/resultats'
     } catch (genErr) {
       console.error('[signup] auto-génération échouée définitivement après retries :', genErr)

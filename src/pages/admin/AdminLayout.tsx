@@ -29,7 +29,11 @@ export default function AdminLayout() {
             const KEY = 'gomytho_admin_synced'
             if (!sessionStorage.getItem(KEY)) {
               sessionStorage.setItem(KEY, '1')
-              fetch('/api/admin/migrate', { credentials: 'include' }).catch(() => {})
+              fetch('/api/admin/migrate', { credentials: 'include' })
+                .then(() =>
+                  fetch('/api/admin/purge-stats-epoch', { method: 'POST', credentials: 'include' }),
+                )
+                .catch(() => {})
             }
           } catch { /* ignore */ }
         }

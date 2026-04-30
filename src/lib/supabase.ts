@@ -49,7 +49,7 @@ export interface User {
   id: string
   email: string
   stripe_customer_id?: string
-  subscription_status?: 'active' | 'inactive' | 'cancelled'
+  subscription_status?: 'active' | 'inactive' | 'cancelled' | 'trialing'
   plan?: 'weekly' | 'monthly' | 'free'
   credits_remaining: number
   created_at: string

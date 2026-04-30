@@ -6,6 +6,17 @@
 
 export type Plan = 'weekly' | 'monthly' | 'free'
 
+/** Crédits consommés par une génération (1 mytho). */
+export const CREDITS_PER_IMAGE = 8
+
+/**
+ * Essai gratuit de l’offre mensuelle : 1 seule génération, puis abonnement payant.
+ * Aligné sur CREDITS_PER_IMAGE (une fois l’essai converti, le quota mensuel complet s’applique).
+ */
+export const MONTHLY_TRIAL_CREDITS = CREDITS_PER_IMAGE
+
+export type SubscriptionStatusUi = 'active' | 'inactive' | 'cancelled' | 'trialing'
+
 export const PLAN_CREDITS: Record<Plan, number> = {
   weekly: 160,
   monthly: 560,
@@ -27,6 +38,7 @@ export interface VerifiedPlan {
   source: 'stripe' | 'url' | 'storage' | 'default'
   email?: string | null
   customerId?: string | null
+  subscription_status?: SubscriptionStatusUi
 }
 
 // ─── Vérifie un session_id Stripe côté serveur (source la plus fiable) ───────
@@ -36,12 +48,18 @@ async function verifyStripeSession(sessionId: string): Promise<VerifiedPlan | nu
     if (!res.ok) return null
     const data = await res.json().catch(() => null)
     if (!data || !isPlan(data.plan)) return null
+    const sub = data.subscription_status
+    const subscription_status: SubscriptionStatusUi | undefined =
+      sub === 'trialing' || sub === 'active' || sub === 'inactive' || sub === 'cancelled'
+        ? sub
+        : undefined
     return {
       plan: data.plan,
       credits: typeof data.credits === 'number' ? data.credits : PLAN_CREDITS[data.plan as Plan],
       source: 'stripe',
       email: data.email || null,
       customerId: data.customerId || null,
+      subscription_status,
     }
   } catch {
     return null

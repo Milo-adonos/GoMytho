@@ -7,6 +7,9 @@ const WEEKLY_PRICE = 2.99
 const MONTHLY_PRICE = 9.90
 const COST_PER_IMAGE = 0.037
 const MONTH_LABELS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+/* Aligné sur api/admin : stats à partir du 30 avril 2026 minuit (Paris). */
+const ADMIN_STATS_EPOCH_MS = new Date('2026-04-30T00:00:00+02:00').getTime()
+const ADMIN_STATS_EPOCH_ISO = new Date(ADMIN_STATS_EPOCH_MS).toISOString()
 
 async function getSupabaseClient() {
   try {
@@ -45,16 +48,19 @@ async function getDashboardData() {
     const now = new Date()
     const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30)
     const sixtyDaysAgo = new Date(now); sixtyDaysAgo.setDate(now.getDate() - 60)
+    const mythos30dSince = new Date(Math.max(thirtyDaysAgo.getTime(), ADMIN_STATS_EPOCH_MS)).toISOString()
     const [{ data: allUsers }, { data: newUsers30d }, { data: newUsersPrev30d }, { data: mythos30d }, { data: allMythos }, { count: cancelledCount }] = await Promise.all([
       supabase.from('users').select('id, plan, subscription_status, created_at'),
-      supabase.from('users').select('id, plan, created_at').gte('created_at', thirtyDaysAgo.toISOString()).eq('subscription_status', 'active'),
-      supabase.from('users').select('id').gte('created_at', sixtyDaysAgo.toISOString()).lt('created_at', thirtyDaysAgo.toISOString()).eq('subscription_status', 'active'),
-      supabase.from('mythos').select('id, created_at').gte('created_at', thirtyDaysAgo.toISOString()),
-      supabase.from('mythos').select('id, created_at'),
+      supabase.from('users').select('id, plan, created_at').gte('created_at', thirtyDaysAgo.toISOString()).gte('created_at', ADMIN_STATS_EPOCH_ISO).eq('subscription_status', 'active'),
+      supabase.from('users').select('id').gte('created_at', sixtyDaysAgo.toISOString()).lt('created_at', thirtyDaysAgo.toISOString()).gte('created_at', ADMIN_STATS_EPOCH_ISO).eq('subscription_status', 'active'),
+      supabase.from('mythos').select('id, created_at').gte('created_at', mythos30dSince),
+      supabase.from('mythos').select('id, created_at').gte('created_at', ADMIN_STATS_EPOCH_ISO),
       supabase.from('users').select('*', { count: 'exact', head: true }).eq('subscription_status', 'cancelled'),
     ])
     const users = allUsers || []
-    const activeUsers = users.filter((u: any) => u.subscription_status === 'active')
+    const activeUsers = users.filter(
+      (u: any) => u.subscription_status === 'active' || u.subscription_status === 'trialing',
+    )
     const weeklyUsers = activeUsers.filter((u: any) => u.plan === 'weekly')
     const monthlyUsers = activeUsers.filter((u: any) => u.plan === 'monthly')
     const weeklyRevenue = weeklyUsers.length * WEEKLY_PRICE * 4.33
@@ -89,15 +95,21 @@ async function getFinanceData() {
     const currentMonth = now.getMonth()
     const [{ data: allUsers }, { data: allMythos }] = await Promise.all([
       supabase.from('users').select('id, email, plan, subscription_status, created_at'),
-      supabase.from('mythos').select('id, user_id, created_at'),
+      supabase.from('mythos').select('id, user_id, created_at').gte('created_at', ADMIN_STATS_EPOCH_ISO),
     ])
     const users = allUsers || []
     const mythos = allMythos || []
-    const activeUsers = users.filter((u: any) => u.subscription_status === 'active')
+    const activeUsers = users.filter(
+      (u: any) => u.subscription_status === 'active' || u.subscription_status === 'trialing',
+    )
     const weeklyCount = activeUsers.filter((u: any) => u.plan === 'weekly').length
     const monthlyCount = activeUsers.filter((u: any) => u.plan === 'monthly').length
     const startOfMonth = new Date(currentYear, currentMonth, 1)
-    const newThisMonth = users.filter((u: any) => u.subscription_status === 'active' && new Date(u.created_at) >= startOfMonth)
+    const newThisMonth = users.filter(
+      (u: any) =>
+        (u.subscription_status === 'active' || u.subscription_status === 'trialing') &&
+        new Date(u.created_at) >= startOfMonth,
+    )
     const mythosThisMonth = mythos.filter((m: any) => new Date(m.created_at) >= startOfMonth)
     const cancelledThisMonth = users.filter((u: any) => u.subscription_status === 'cancelled' && new Date(u.created_at) >= startOfMonth)
     const revenueThisMonth = newThisMonth.reduce((acc: number, u: any) => acc + (u.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE), 0)
@@ -111,7 +123,12 @@ async function getFinanceData() {
       const m = new Date(currentYear, currentMonth - i, 1)
       const mEnd = new Date(currentYear, currentMonth - i + 1, 1)
       const label = MONTH_LABELS[m.getMonth()]
-      const newInMonth = users.filter((u: any) => u.subscription_status === 'active' && new Date(u.created_at) >= m && new Date(u.created_at) < mEnd)
+      const newInMonth = users.filter(
+        (u: any) =>
+          (u.subscription_status === 'active' || u.subscription_status === 'trialing') &&
+          new Date(u.created_at) >= m &&
+          new Date(u.created_at) < mEnd,
+      )
       const mythosInMonth = mythos.filter((mt: any) => new Date(mt.created_at) >= m && new Date(mt.created_at) < mEnd)
       const rev = newInMonth.reduce((acc: number, u: any) => acc + (u.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE), 0)
       const cost = mythosInMonth.length * COST_PER_IMAGE
@@ -245,7 +262,7 @@ function adminDevApiPlugin() {
             const supabase = await getSupabaseClient()
             if (!supabase) { res.end(JSON.stringify({ mythos: [], total: 0 })); return }
             try {
-              const { data, count } = await supabase.from('mythos').select('id, user_id, prompt, image_url, created_at', { count: 'exact' }).order('created_at', { ascending: false }).limit(100)
+              const { data, count } = await supabase.from('mythos').select('id, user_id, prompt, image_url, created_at', { count: 'exact' }).gte('created_at', ADMIN_STATS_EPOCH_ISO).order('created_at', { ascending: false }).limit(100)
               res.end(JSON.stringify({ mythos: (data || []).map((m: any) => ({ ...m, cost: COST_PER_IMAGE })), total: count || 0 }))
             } catch { res.end(JSON.stringify({ mythos: [], total: 0 })) }
             return
