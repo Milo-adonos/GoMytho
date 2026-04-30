@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
@@ -7,11 +7,52 @@ import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
 import { PRICE_IDS } from '@/lib/stripe'
 import { supabase } from '@/lib/supabase'
 import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+import { getDailyMythoCount } from '@/lib/daily-counter'
+
+const COUNTDOWN_DURATION_MS = 10 * 60 * 1000 // 10 minutes
+const COUNTDOWN_STORAGE_KEY = 'gomytho_offer_countdown_started_at'
+
+function formatRemaining(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+function readCountdownStart(): number {
+  try {
+    const raw = sessionStorage.getItem(COUNTDOWN_STORAGE_KEY)
+    if (raw) {
+      const v = Number(raw)
+      if (Number.isFinite(v) && v > 0) return v
+    }
+  } catch { /* sessionStorage indispo */ }
+  const now = Date.now()
+  try { sessionStorage.setItem(COUNTDOWN_STORAGE_KEY, String(now)) } catch { /* ignore */ }
+  return now
+}
 
 export default function Unlock() {
   const navigate = useNavigate()
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('weekly')
   const [isLoading] = useState(false)
+
+  // Compteur affiché « X mythos crées aujourd'hui » — même seed que la landing.
+  const dailyCount = useMemo(() => getDailyMythoCount(), [])
+
+  // Countdown 10 min depuis l'arrivée sur la page (persistant au sein de la
+  // session, pour éviter que le timer ne reparte à 10:00 à chaque navigation
+  // interne — ce qui détruirait l'effet d'urgence).
+  const startedAt = useMemo(() => readCountdownStart(), [])
+  const [remaining, setRemaining] = useState(() => Math.max(0, COUNTDOWN_DURATION_MS - (Date.now() - startedAt)))
+  useEffect(() => {
+    const id = setInterval(() => {
+      const next = Math.max(0, COUNTDOWN_DURATION_MS - (Date.now() - startedAt))
+      setRemaining(next)
+    }, 1000)
+    return () => clearInterval(id)
+  }, [startedAt])
+  const offerExpired = remaining <= 0
 
   const plans = {
     weekly: {
@@ -102,7 +143,7 @@ export default function Unlock() {
             animate={{ opacity: 1, y: 0 }}
             className="text-center mb-8"
           >
-            <h1 className="text-3xl font-black mb-1">Choisis ton offre</h1>
+            <h1 className="text-3xl font-black mb-1">Ton mytho est prêt 🎁</h1>
             <p className="text-sm text-text-secondary">Annulable à tout moment, sans engagement</p>
           </motion.div>
 
@@ -124,7 +165,6 @@ export default function Unlock() {
               }}
             >
               Hebdo
-              <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
             </button>
 
             <button
@@ -136,7 +176,6 @@ export default function Unlock() {
               }}
             >
               Mensuel
-              <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
             </button>
           </motion.div>
 
@@ -160,6 +199,26 @@ export default function Unlock() {
               )}
               <span className="text-4xl font-black">{currentPlan.price}</span>
               <span className="text-text-secondary text-sm">{currentPlan.period}</span>
+            </div>
+
+            {/* Bandeau countdown -50% sous le prix barré */}
+            <div
+              className="mt-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-md text-[11px] font-bold"
+              style={{
+                background: offerExpired ? 'rgba(248,113,113,0.1)' : 'rgba(249,115,22,0.12)',
+                color: offerExpired ? '#fca5a5' : '#fb923c',
+                border: `1px solid ${offerExpired ? 'rgba(248,113,113,0.3)' : 'rgba(249,115,22,0.3)'}`,
+              }}
+            >
+              <span>Offre -50%</span>
+              <span className="opacity-60">·</span>
+              {offerExpired ? (
+                <span>Expirée</span>
+              ) : (
+                <span>
+                  Expire dans <span className="tabular-nums">{formatRemaining(remaining)}</span>
+                </span>
+              )}
             </div>
 
             {/* Séparateur */}
@@ -191,6 +250,11 @@ export default function Unlock() {
             </div>
           </div>
 
+          {/* Compteur social juste au-dessus du CTA */}
+          <p className="text-center text-xs text-text-secondary mb-3">
+            <span className="text-lime font-black">{dailyCount.toLocaleString('fr-FR')}</span> mythos crées aujourd'hui
+          </p>
+
           {/* CTA */}
           <Button
             onClick={handleCheckout}
@@ -199,11 +263,11 @@ export default function Unlock() {
             fullWidth
             className="mb-3"
           >
-            {isLoading ? 'Chargement...' : 'DEVENIR MYTHO PRO →'}
+            {isLoading ? 'Chargement...' : 'DÉBLOQUER MON MYTHO →'}
           </Button>
 
           <p className="text-center text-xs text-text-secondary">
-            🔒 Paiement sécurisé · Annulable à tout moment
+            🔒 Paiement sécurisé Stripe · Annulable en un clic, remboursé si pas satisfait
           </p>
         </div>
       </div>

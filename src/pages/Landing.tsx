@@ -1,26 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
-
-// Génère un nombre pseudo-aléatoire entre 938 et 2371
-// Change chaque jour à 15h heure française (UTC+2 en été)
-function getDailyMythoCount(): number {
-  const now = new Date()
-  // Heure française = UTC+2 (avril–octobre)
-  const frenchHour = (now.getUTCHours() + 2) % 24
-  // Avant 15h → on utilise encore la "journée d'hier" comme seed
-  const seedDate = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    frenchHour < 15 ? now.getUTCDate() - 1 : now.getUTCDate()
-  ))
-  const seed = seedDate.getUTCFullYear() * 10000
-    + (seedDate.getUTCMonth() + 1) * 100
-    + seedDate.getUTCDate()
-  // LCG pseudo-random déterministe basé sur la date
-  const rand = ((seed * 1664525 + 1013904223) & 0x7fffffff) / 0x7fffffff
-  return Math.floor(938 + rand * (2371 - 938 + 1))
-}
+import { getDailyMythoCount } from '@/lib/daily-counter'
 
 const examples = [
   {
