@@ -130,5 +130,40 @@ export async function resolveAccessProfile(
     return byStripeEmail
   }
 
+  // 4) FILET ULTIME : on demande directement à Stripe « est-ce que cet email
+  // a un abonnement actif ? ». Couvre le cas du client qui a payé mais dont
+  // le profil Supabase est resté à plan='free' (webhook pas encore tourné /
+  // pas configuré au moment de l'inscription). L'API re-synchronise aussi
+  // le profil avec le bon plan + crédits.
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (token) {
+      const res = await fetch('/api/stripe-check-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email }),
+      })
+      const data = await res.json().catch(() => null)
+      if (res.ok && data?.found) {
+        // Le profil vient d'être ré-écrit côté serveur — on retourne ces
+        // données pour que la page courante voie immédiatement le bon état.
+        return {
+          plan: data.plan,
+          credits_remaining: data.credits,
+          subscription_status: data.subscription_status,
+          stripe_customer_id: data.customerId,
+          stripe_payment_email: data.email,
+          email,
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[auth-access] vérif Stripe par email échouée (non bloquant):', err)
+  }
+
   return byId ?? null
 }
