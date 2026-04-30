@@ -135,21 +135,21 @@ export default function Unlock() {
               <span
                 className="inline-flex items-center gap-1.5 px-2.5 py-[3px] rounded-full text-[10px] font-black uppercase tracking-[0.18em]"
                 style={{
-                  background:
-                    'linear-gradient(135deg, #fde68a 0%, #fbbf24 35%, #f59e0b 70%, #fde68a 100%)',
-                  color: '#3a1a05',
-                  border: '1px solid rgba(251,191,36,0.85)',
+                  background: '#0A0E1A',
+                  color: '#C6FF3C',
+                  border: '1px solid rgba(198,255,60,0.55)',
                   boxShadow:
-                    '0 2px 8px rgba(0,0,0,0.35), 0 0 14px rgba(251,191,36,0.55), 0 0 28px rgba(251,191,36,0.25), inset 0 1px 0 rgba(255,255,255,0.5)',
-                  textShadow: '0 1px 0 rgba(255,255,255,0.25)',
+                    '0 2px 8px rgba(0,0,0,0.45), 0 0 12px rgba(198,255,60,0.35), 0 0 24px rgba(198,255,60,0.18), inset 0 0 6px rgba(198,255,60,0.10)',
+                  textShadow: '0 0 6px rgba(198,255,60,0.55)',
                 }}
               >
                 <span
                   className="px-[5px] py-px rounded-full text-[9px] tracking-[0.18em]"
                   style={{
-                    background: '#dc2626',
-                    color: '#fff',
-                    boxShadow: '0 0 6px rgba(220,38,38,0.55), inset 0 0 4px rgba(0,0,0,0.25)',
+                    background: 'rgba(198,255,60,0.14)',
+                    color: '#C6FF3C',
+                    border: '1px solid rgba(198,255,60,0.4)',
+                    boxShadow: 'inset 0 0 4px rgba(198,255,60,0.18)',
                   }}
                 >
                   LE
@@ -214,12 +214,12 @@ export default function Unlock() {
                 className="px-3 py-1 rounded-md text-2xl font-black tabular-nums"
                 style={{
                   background:
-                    'linear-gradient(135deg, #C6FF3C 0%, #facc15 45%, #f97316 100%)',
+                    'linear-gradient(135deg, #d8ff5e 0%, #C6FF3C 50%, #84cc16 100%)',
                   color: '#0A0E1A',
                   letterSpacing: '0.02em',
                   border: '1.5px solid rgba(255,255,255,0.4)',
                   boxShadow:
-                    '0 6px 18px rgba(0,0,0,0.45), 0 0 18px rgba(198,255,60,0.55), 0 0 34px rgba(249,115,22,0.30), inset 0 1px 0 rgba(255,255,255,0.55)',
+                    '0 6px 18px rgba(0,0,0,0.45), 0 0 18px rgba(198,255,60,0.6), 0 0 34px rgba(132,204,22,0.30), inset 0 1px 0 rgba(255,255,255,0.55)',
                   textShadow: '0 1px 1px rgba(255,255,255,0.25)',
                 }}
               >
