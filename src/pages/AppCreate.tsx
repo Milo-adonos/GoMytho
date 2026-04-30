@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, User } from '@/lib/supabase'
@@ -54,6 +54,15 @@ export default function AppCreate() {
   const [isConverting, setIsConverting] = useState(false)
   const [isConverting2, setIsConverting2] = useState(false)
   const [step, setStep] = useState('')
+  // Référence sync sur l'étape en cours : setStep est asynchrone (re-render
+  // React), donc lire `step` dans un catch capture l'ancienne valeur via la
+  // closure → on lisait toujours '' et l'erreur disait "initialisation" alors
+  // que la vraie étape pouvait être "Upload" / "Génération IA" / "Sauvegarde".
+  const currentStepRef = useRef('')
+  const updateStep = (label: string) => {
+    currentStepRef.current = label
+    setStep(label)
+  }
   const [resultDataUrl, setResultDataUrl] = useState<string | null>(null)
   const [bannerKey, setBannerKey] = useState(0)
 
@@ -217,7 +226,7 @@ export default function AppCreate() {
       }
 
       // 1) Upload de la photo source (et de la 2e photo si présente) vers Supabase
-      setStep(image2 ? 'Upload des photos...' : 'Upload de ta photo...')
+      updateStep(image2 ? 'Upload des photos...' : 'Upload de ta photo...')
       const sourceUrl = await withRetry('upload photo 1', () => uploadToSupabase(image, activeUser!.id))
       let sourceUrl2: string | null = null
       if (image2) {
@@ -230,13 +239,13 @@ export default function AppCreate() {
       const imageUrls = sourceUrl2 ? [sourceUrl, sourceUrl2] : [sourceUrl]
 
       // 2) Génération IA — retourne TOUJOURS un dataUrl base64 prêt à afficher
-      setStep('Génération IA...')
+      updateStep('Génération IA...')
       const { dataUrl, remoteUrl } = await withRetry(
         'generateMytho',
         () =>
           generateMytho(
             { userPrompt: prompt, imageUrls, aspectRatio },
-            (s) => setStep(s)
+            (s) => updateStep(s)
           ),
         2
       )
@@ -245,7 +254,7 @@ export default function AppCreate() {
       setResultDataUrl(dataUrl)
 
       // 4) Sauvegarde cloud (manifeste Supabase Storage) + cache local
-      setStep('Sauvegarde...')
+      updateStep('Sauvegarde...')
       try {
         await withRetry(
           'saveMythoToCloud',
@@ -301,23 +310,28 @@ export default function AppCreate() {
         localStorage.removeItem('gomytho_pending_ratio')
       } catch { /* ignore */ }
     } catch (err: unknown) {
-      console.error(err)
+      console.error('[AppCreate] generation error:', err, '— step:', currentStepRef.current)
       if (err instanceof KieBlockedError) {
         setGenError({ code: err.code, message: err.message, blocked: true })
       } else {
         const msg = err instanceof Error ? err.message : 'Erreur inconnue'
-        setGenError({
-          code: 'GEN_FAILED',
-          message: msg.includes('Crédits Kie')
-            ? msg
-            : `La génération a échoué pendant l'étape "${step || 'initialisation'}". Vérifie ta connexion et réessaie.`,
-          blocked: false,
-        })
+        const stepLabel = currentStepRef.current || 'préparation'
+        // On affiche le détail technique court à l'utilisateur SEULEMENT si
+        // ça aide ; sinon message générique mais actionnable.
+        const friendly = msg.includes('Crédits Kie')
+          ? msg
+          : msg.toLowerCase().includes('quota')
+          ? "Espace local saturé. Recharge la page (Cmd+Shift+R) puis relance la génération."
+          : msg.toLowerCase().includes('network') || msg.toLowerCase().includes('fetch')
+          ? `Problème de connexion pendant l'étape "${stepLabel}". Vérifie ta connexion et clique sur Générer à nouveau.`
+          : `Échec à l'étape "${stepLabel}". Réessaie en cliquant sur Générer ; si ça persiste, change ta photo ou ton prompt.`
+        setGenError({ code: 'GEN_FAILED', message: friendly, blocked: false })
       }
       // Force le re-render du banner (sans recharger la page)
       setBannerKey((k) => k + 1)
     } finally {
       setIsGenerating(false)
+      currentStepRef.current = ''
       setStep('')
     }
   }
@@ -325,7 +339,9 @@ export default function AppCreate() {
   return (
     <div className="px-4 py-5 max-w-lg mx-auto">
       {/* Banner d'erreur de génération (modération IA, fail réseau, etc.) */}
-      <GenErrorBanner key={bannerKey} showRetryCta={false} />
+      {/* Auto-dismiss 15s : l'utilisateur a vu l'erreur, on libère l'espace
+          plutôt que de laisser un bandeau permanent au-dessus du formulaire. */}
+      <GenErrorBanner key={bannerKey} showRetryCta={false} autoDismissMs={15000} />
 
       {pendingBanner && (
         <div

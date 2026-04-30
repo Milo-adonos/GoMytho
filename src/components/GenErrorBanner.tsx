@@ -34,15 +34,29 @@ export function setGenError(err: GenError): void {
 
 interface Props {
   showRetryCta?: boolean
+  /** Auto-dismiss en ms (0 = jamais). Utile pour les erreurs non bloquantes. */
+  autoDismissMs?: number
 }
 
-export default function GenErrorBanner({ showRetryCta = true }: Props) {
+export default function GenErrorBanner({ showRetryCta = true, autoDismissMs = 0 }: Props) {
   const [err, setErr] = useState<GenError | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     setErr(readGenError())
   }, [])
+
+  // Auto-dismiss optionnel : on retire l'erreur après le délai indiqué
+  // pour ne pas laisser un bandeau « Génération échouée » sticky pendant
+  // que l'utilisateur prépare une nouvelle tentative.
+  useEffect(() => {
+    if (!err || !autoDismissMs || err.blocked) return
+    const t = setTimeout(() => {
+      clearGenError()
+      setErr(null)
+    }, autoDismissMs)
+    return () => clearTimeout(t)
+  }, [err, autoDismissMs])
 
   if (!err) return null
 
