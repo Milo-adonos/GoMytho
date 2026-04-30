@@ -431,13 +431,51 @@ export async function generateMytho(
   throw new Error('Timeout : la génération a dépassé 3 minutes')
 }
 
-// ─── UPLOAD VERS SUPABASE STORAGE (via API serveur) ───────────────────────────
+// ─── UPLOAD VERS SUPABASE STORAGE ─────────────────────────────────────────────
+//
+// Stratégie : upload DIRECT vers Supabase Storage depuis le browser. Le SDK
+// supporte les fichiers binaires natifs (multipart) → pas de limite de taille
+// JSON-payload comme via /api/upload-mytho (Vercel cap ~4.5 MB).
+//
+// Fallback : si l'upload direct échoue (RLS / bucket privé sans policy /
+// quoi que ce soit), on bascule sur l'API serveur qui utilise le service_role
+// pour bypasser les ACL.
 export async function uploadToSupabase(file: File, userId: string): Promise<string> {
   const { supabase } = await import('./supabase')
   const bucketName = String(import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
 
-  const fileExt = (file.name.split('.').pop() || 'jpg').toLowerCase()
-  const fileName = `${userId}/${Date.now()}.${fileExt}`
+  const fileExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${fileExt}`
+  const contentType = file.type || 'image/jpeg'
+
+  // 1) Upload direct (chemin nominal — pas de limite de body Vercel)
+  try {
+    const { error: directErr } = await supabase.storage
+      .from(bucketName)
+      .upload(path, file, { contentType, upsert: false })
+    if (!directErr) {
+      // URL publique (bucket public) — fallback sur signed URL si privé
+      const { data: pub } = supabase.storage.from(bucketName).getPublicUrl(path)
+      if (pub?.publicUrl) {
+        // On vérifie rapidement que l'URL répond bien (HEAD) — sinon bascule signed
+        try {
+          const head = await fetch(pub.publicUrl, { method: 'HEAD' })
+          if (head.ok) return pub.publicUrl
+        } catch { /* on tente signed */ }
+      }
+      const signed = await supabase.storage
+        .from(bucketName)
+        .createSignedUrl(path, 60 * 60 * 24 * 30)
+      if (signed.data?.signedUrl) return signed.data.signedUrl
+      // pas d'URL → on tombera dans le fallback API
+    } else {
+      console.warn('[upload] direct supabase échoué, fallback API serveur:', directErr.message)
+    }
+  } catch (err) {
+    console.warn('[upload] direct supabase exception, fallback API:', err)
+  }
+
+  // 2) Fallback : API serveur (utilise service_role, bypasse policies)
   const { data: sessionData } = await supabase.auth.getSession()
   const token = sessionData?.session?.access_token
   if (!token) throw new Error('Session utilisateur introuvable pour upload serveur.')
@@ -446,7 +484,12 @@ export async function uploadToSupabase(file: File, userId: string): Promise<stri
   const response = await fetch('/api/upload-mytho', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ bucketName, fileName, contentType: file.type || 'image/jpeg', dataUrl }),
+    body: JSON.stringify({
+      bucketName,
+      fileName: path,
+      contentType,
+      dataUrl,
+    }),
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok || (!payload?.signedUrl && !payload?.publicUrl)) {

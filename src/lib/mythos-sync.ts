@@ -129,7 +129,10 @@ export function writeLocalCreations(userId: string, list: LocalMythoEntry[]): vo
 }
 
 // ─── Upload d'une dataURL en tant qu'image stockée ──────────────────────────
-// Renvoie { url, path } : url = signedUrl (long-lived), path = chemin manifest.
+// Renvoie { url, path } : url = publicUrl (ou signedUrl), path = chemin manifest.
+//
+// Upload DIRECT vers Supabase Storage en priorité (pas de limite de body
+// JSON Vercel). Fallback sur /api/upload-mytho si l'upload direct échoue.
 async function uploadDataUrlAsImage(
   dataUrl: string,
   userId: string,
@@ -137,14 +140,51 @@ async function uploadDataUrlAsImage(
 ): Promise<{ url: string; path: string }> {
   const bucketName =
     String(import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
-  const fileName = `${userId}/${Date.now()}-${filename}`
+  const path = `${userId}/${Date.now()}-${filename}`
+
+  // 1) Direct upload (browser → Supabase)
+  try {
+    const match = dataUrl.match(/^data:(.*?);base64,(.*)$/)
+    if (match) {
+      const contentType = match[1] || 'image/jpeg'
+      // Conversion base64 → Blob (binaire natif, pas de double encodage)
+      const binStr = atob(match[2])
+      const bytes = new Uint8Array(binStr.length)
+      for (let i = 0; i < binStr.length; i += 1) bytes[i] = binStr.charCodeAt(i)
+      const blob = new Blob([bytes], { type: contentType })
+
+      const { error: directErr } = await supabase.storage
+        .from(bucketName)
+        .upload(path, blob, { contentType, upsert: false })
+
+      if (!directErr) {
+        const { data: pub } = supabase.storage.from(bucketName).getPublicUrl(path)
+        if (pub?.publicUrl) {
+          try {
+            const head = await fetch(pub.publicUrl, { method: 'HEAD' })
+            if (head.ok) return { url: pub.publicUrl, path }
+          } catch { /* essaye signed */ }
+        }
+        const signed = await supabase.storage
+          .from(bucketName)
+          .createSignedUrl(path, 60 * 60 * 24 * 30)
+        if (signed.data?.signedUrl) return { url: signed.data.signedUrl, path }
+      } else {
+        console.warn('[mythos-sync] direct upload échoué, fallback API:', directErr.message)
+      }
+    }
+  } catch (err) {
+    console.warn('[mythos-sync] direct upload exception, fallback API:', err)
+  }
+
+  // 2) Fallback API serveur (service_role bypasses RLS)
   const headers = await getAuthHeaders()
   const response = await fetchWithTimeout('/api/upload-mytho', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       bucketName,
-      fileName,
+      fileName: path,
       contentType: 'image/jpeg',
       dataUrl,
     }),
@@ -155,7 +195,7 @@ async function uploadDataUrlAsImage(
   }
   return {
     url: (payload.signedUrl || payload.publicUrl) as string,
-    path: (payload.path as string) || '',
+    path: (payload.path as string) || path,
   }
 }
 
