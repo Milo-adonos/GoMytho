@@ -14,6 +14,9 @@ const RAW_HOST = import.meta.env.VITE_POSTHOG_HOST as string | undefined
 const HOST =
   (RAW_HOST?.trim() ?? '').replace(/\/$/, '') || 'https://eu.i.posthog.com'
 
+/** Clic « vers Stripe » (Payment Link) — à chercher tel quel dans PostHog. */
+export const EVENT_STRIPE_CHECKOUT_STARTED = 'stripe_checkout_started' as const
+
 let initialized = false
 
 // ─── Mapping pathname → nom lisible pour PostHog ──────────────────────────
@@ -113,10 +116,14 @@ export function capturePageview(): void {
   } catch { /* ignore */ }
 }
 
-export function captureEvent(name: string, props?: Record<string, unknown>): void {
+export function captureEvent(
+  name: string,
+  props?: Record<string, unknown>,
+  options?: { send_instantly?: boolean },
+): void {
   if (!initialized || !KEY) return
   try {
-    posthog.capture(name, props)
+    posthog.capture(name, props, options)
   } catch { /* ignore */ }
 }
 

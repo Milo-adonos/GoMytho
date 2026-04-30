@@ -308,7 +308,7 @@ export default function Landing() {
               className="w-full max-w-xs py-4 text-lg font-black rounded-full bg-lime text-primary-bg active:scale-95 transition-all duration-200 animate-pulse-glow"
               style={{ boxShadow: '0 0 50px rgba(198,255,60,0.4), 0 0 100px rgba(198,255,60,0.15)' }}
             >
-              Lancer mon mytho →
+              Lancer mon mytho gratuitement →
             </button>
           </div>
 

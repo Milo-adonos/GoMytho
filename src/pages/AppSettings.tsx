@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
+import { captureEvent, EVENT_STRIPE_CHECKOUT_STARTED } from '@/lib/analytics'
 import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_CHECKOUT_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
@@ -95,14 +96,30 @@ export default function AppSettings() {
       icon: '📈',
       label: 'Passer au Mensuel',
       sub: '70 images / mois · 9,90€',
-      action: () => { localStorage.setItem('gomytho_pending_plan', 'monthly'); window.location.href = STRIPE_CHECKOUT_MENSUEL },
+      action: () => {
+        captureEvent(
+          EVENT_STRIPE_CHECKOUT_STARTED,
+          { plan: 'monthly', source: 'settings' },
+          { send_instantly: true },
+        )
+        localStorage.setItem('gomytho_pending_plan', 'monthly')
+        window.location.href = STRIPE_CHECKOUT_MENSUEL
+      },
       show: inferredPlan !== 'monthly',
     },
     {
       icon: '📉',
       label: 'Passer à l\'Hebdo',
       sub: '20 images / semaine · 2,99€',
-      action: () => { localStorage.setItem('gomytho_pending_plan', 'weekly'); window.location.href = STRIPE_CHECKOUT_HEBDO },
+      action: () => {
+        captureEvent(
+          EVENT_STRIPE_CHECKOUT_STARTED,
+          { plan: 'weekly', source: 'settings' },
+          { send_instantly: true },
+        )
+        localStorage.setItem('gomytho_pending_plan', 'weekly')
+        window.location.href = STRIPE_CHECKOUT_HEBDO
+      },
       show: inferredPlan !== 'weekly',
     },
     {

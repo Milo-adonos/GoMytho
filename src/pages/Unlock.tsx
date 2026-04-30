@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
+import { captureEvent, EVENT_STRIPE_CHECKOUT_STARTED } from '@/lib/analytics'
 import { PRICE_IDS } from '@/lib/stripe'
 
 export default function Unlock() {
@@ -44,6 +45,11 @@ export default function Unlock() {
   }
 
   const handleCheckout = () => {
+    captureEvent(
+      EVENT_STRIPE_CHECKOUT_STARTED,
+      { plan: selectedPlan, source: 'choixoffre' },
+      { send_instantly: true },
+    )
     // Sauvegarder le plan et le prompt en localStorage avant le redirect Stripe
     // (sessionStorage est effacé par les redirects externes)
     localStorage.setItem('gomytho_pending_plan', selectedPlan)
