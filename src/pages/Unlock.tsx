@@ -178,8 +178,7 @@ export default function Unlock() {
                   textShadow: '0 1px 2px rgba(0,0,0,0.35)',
                 }}
               >
-                <span style={{ filter: 'drop-shadow(0 0 4px rgba(251,191,36,0.85))' }}>🎁</span>
-                Plus choisi
+                Le plus choisi
               </span>
             </div>
 
