@@ -263,8 +263,69 @@ function adminDevApiPlugin() {
             if (!supabase) { res.end(JSON.stringify({ mythos: [], total: 0 })); return }
             try {
               const { data, count } = await supabase.from('mythos').select('id, user_id, prompt, image_url, created_at', { count: 'exact' }).gte('created_at', ADMIN_STATS_EPOCH_ISO).order('created_at', { ascending: false }).limit(100)
-              res.end(JSON.stringify({ mythos: (data || []).map((m: any) => ({ ...m, cost: COST_PER_IMAGE })), total: count || 0 }))
+              const rows = data || []
+              const uids = [...new Set(rows.map((m: any) => m.user_id))]
+              const emailById: Record<string, string> = {}
+              if (uids.length > 0) {
+                const { data: urows } = await supabase.from('users').select('id, email').in('id', uids)
+                for (const u of urows || []) emailById[(u as any).id] = (u as any).email || '—'
+              }
+              const mythos = rows.map((m: any) => ({ ...m, user_email: emailById[m.user_id] || '—', aspect_ratio: '9:16', cost: COST_PER_IMAGE }))
+              res.end(JSON.stringify({ mythos, total: count || 0 }))
             } catch { res.end(JSON.stringify({ mythos: [], total: 0 })) }
+            return
+          }
+
+          if (req.url?.startsWith('/api/admin/exclusions')) {
+            if (req.method === 'POST') {
+              let body = ''
+              req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+              req.on('end', async () => {
+                res.setHeader('Content-Type', 'application/json')
+                const supabase = await getSupabaseClient()
+                if (!supabase) {
+                  res.statusCode = 500
+                  res.end(JSON.stringify({ error: 'Supabase non configuré' }))
+                  return
+                }
+                try {
+                  const parsed = JSON.parse(body || '{}')
+                  const email = String(parsed.email || '').trim().toLowerCase()
+                  if (!email.includes('@')) { res.statusCode = 400; res.end(JSON.stringify({ error: 'Email invalide' })); return }
+                  const uid = parsed.user_id && /^[0-9a-f-]{36}$/i.test(String(parsed.user_id)) ? String(parsed.user_id) : null
+                  const row: Record<string, unknown> = { email_norm: email, excluded_at: new Date().toISOString() }
+                  if (uid) row.user_id = uid
+                  const { error } = await supabase.from('admin_panel_exclusions').upsert(row as any, { onConflict: 'email_norm' })
+                  if (error) { res.statusCode = 500; res.end(JSON.stringify({ error: error.message })); return }
+                  res.end(JSON.stringify({ ok: true }))
+                } catch {
+                  res.statusCode = 400
+                  res.end(JSON.stringify({ error: 'JSON invalide' }))
+                }
+              })
+              return
+            }
+
+            const supabase = await getSupabaseClient()
+            res.setHeader('Content-Type', 'application/json')
+            if (req.method === 'GET') {
+              if (!supabase) { res.end(JSON.stringify({ exclusions: [] })); return }
+              const { data, error } = await supabase.from('admin_panel_exclusions').select('email_norm, user_id, excluded_at').order('excluded_at', { ascending: false })
+              if (error) { res.end(JSON.stringify({ exclusions: [] })); return }
+              res.end(JSON.stringify({ exclusions: data || [] }))
+              return
+            }
+            if (req.method === 'DELETE') {
+              if (!supabase) { res.statusCode = 500; res.end(JSON.stringify({ error: 'Supabase non configuré' })); return }
+              const q = req.url!.includes('?') ? new URLSearchParams(req.url!.split('?')[1]) : null
+              const email = (q?.get('email') || '').trim().toLowerCase()
+              if (!email) { res.statusCode = 400; res.end(JSON.stringify({ error: 'email requis' })); return }
+              await supabase.from('admin_panel_exclusions').delete().eq('email_norm', email)
+              res.end(JSON.stringify({ ok: true }))
+              return
+            }
+            res.statusCode = 405
+            res.end(JSON.stringify({ error: 'Méthode non autorisée' }))
             return
           }
 

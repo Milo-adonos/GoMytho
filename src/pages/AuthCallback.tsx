@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+import type { Session } from '@supabase/supabase-js'
 
 // ─── Page de redirect post-OAuth ──────────────────────────────────────────
 //
@@ -17,11 +19,10 @@ import { supabase } from '@/lib/supabase'
 //
 // Cette page reste affichée tant qu'on n'a pas une session VALIDE :
 //   1. abonnement à onAuthStateChange (réagit à 'SIGNED_IN' / 'INITIAL_SESSION')
-//   2. polling getSession() en parallèle (filet de sécurité)
-//   3. navigation seulement quand session.user.id est dispo
-//
-// On préserve plan + session_id en URL pour qu'AppLayout puisse faire
-// l'upsert post-paiement et déclencher l'auto-génération du mytho.
+//   ...
+// Si l’utilisateur vient seulement de « Se connecter » (sans session_id
+// Stripe), on vérifie public.users : sans abonnement/crédits → déconnexion.
+// Avec session_id dans l’URL, on laisse passer vers l’app pour finaliser le paiement.
 
 export default function AuthCallback() {
   const navigate = useNavigate()
@@ -44,11 +45,36 @@ export default function AuthCallback() {
       navigate(`/resultats${query ? `?${query}` : ''}`, { replace: true })
     }
 
+    const proceedAfterSession = async (session: Session) => {
+      if (cancelled || resolved) return
+      const sessionId = searchParams.get('session_id')
+      if (sessionId) {
+        goToApp()
+        return
+      }
+      const { data: profile } = await supabase
+        .from('users')
+        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
+        .eq('id', session.user.id)
+        .maybeSingle()
+      if (!hasPaidGoMythoAccess(profile)) {
+        resolved = true
+        try {
+          const { resetAnalytics } = await import('@/lib/analytics')
+          resetAnalytics()
+        } catch { /* ignore */ }
+        await supabase.auth.signOut()
+        navigate('/login?reason=no_access', { replace: true })
+        return
+      }
+      goToApp()
+    }
+
     // 1. Listener — réagit dès que le SDK a parsé le hash et créé la session.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (cancelled) return
       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
-        goToApp()
+        void proceedAfterSession(session)
       }
     })
 
@@ -61,7 +87,7 @@ export default function AuthCallback() {
       const { data } = await supabase.auth.getSession()
       if (data?.session?.user) {
         clearInterval(interval)
-        goToApp()
+        void proceedAfterSession(data.session)
         return
       }
       if (attempts >= maxAttempts) {

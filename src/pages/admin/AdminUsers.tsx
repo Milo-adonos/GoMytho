@@ -7,8 +7,17 @@ interface User {
   total_revenue_eur: number; net_eur: number
 }
 
+interface PanelExclusion {
+  email_norm: string
+  user_id: string | null
+  excluded_at: string
+}
+
 const statusColors: Record<string, string> = {
   trialing: '#a3e635',
+  active: '#4ade80',
+  cancelled: '#f97316',
+  inactive: '#8A8FA0',
 }
 const planColors: Record<string, string> = {
   monthly: '#C6FF3C', weekly: '#8A8FA0',
@@ -36,6 +45,15 @@ export default function AdminUsers() {
   const [sortKey, setSortKey] = useState<keyof User>('created_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const inFlightRef = useRef(false)
+  const [exclusions, setExclusions] = useState<PanelExclusion[]>([])
+
+  const loadExclusions = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/exclusions', { credentials: 'include' })
+      const d = await r.json()
+      setExclusions(d.exclusions || [])
+    } catch { /* ignore */ }
+  }, [])
 
   const fetchUsers = useCallback(async () => {
     if (inFlightRef.current) return
@@ -58,6 +76,8 @@ export default function AdminUsers() {
     }
   }, [page, search, planFilter, statusFilter, users.length])
 
+  useEffect(() => { void loadExclusions() }, [loadExclusions])
+
   useEffect(() => { void fetchUsers() }, [page, planFilter, statusFilter])
 
   useEffect(() => {
@@ -66,6 +86,31 @@ export default function AdminUsers() {
     }, 10000)
     return () => clearInterval(id)
   }, [fetchUsers])
+
+  const hideFromPanel = async (u: User) => {
+    const r = await fetch('/api/admin/exclusions', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: u.email,
+        user_id: u.id.startsWith('stripe_') ? null : u.id,
+      }),
+    })
+    if (!r.ok) return
+    await loadExclusions()
+    void fetchUsers()
+  }
+
+  const restoreToPanel = async (emailNorm: string) => {
+    const r = await fetch(`/api/admin/exclusions?email=${encodeURIComponent(emailNorm)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!r.ok) return
+    await loadExclusions()
+    void fetchUsers()
+  }
 
   const handleSort = (key: keyof User) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -124,17 +169,20 @@ export default function AdminUsers() {
                     {label} {sortKey === key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
                 ))}
+                <th className="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-text-secondary">Panel</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-text-secondary text-sm">Chargement...</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-text-secondary text-sm">Chargement...</td></tr>
+              ) : sorted.length === 0 ? (
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-text-secondary text-sm">Aucun utilisateur ne correspond aux filtres.</td></tr>
               ) : sorted.map((u, i) => (
                 <tr key={u.id} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}
                   className="hover:bg-white/5 transition-colors">
                   <td className={`${tdCls} text-lime font-medium`}>{u.email}</td>
                   <td className={tdCls}>
-                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: `${planColors[u.plan]}20`, color: planColors[u.plan] }}>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: `${planColors[u.plan] || '#8A8FA0'}20`, color: planColors[u.plan] || '#8A8FA0' }}>
                       {u.plan === 'weekly' ? 'Hebdo' : 'Mensuel'}
                     </span>
                   </td>
@@ -149,6 +197,17 @@ export default function AdminUsers() {
                   <td className={`${tdCls} text-white`}>{u.total_revenue_eur.toFixed(2)}€</td>
                   <td className={tdCls} style={{ color: u.net_eur >= 0 ? '#4ade80' : '#ef4444' }}>
                     {u.net_eur >= 0 ? '+' : ''}{u.net_eur.toFixed(2)}€
+                  </td>
+                  <td className={tdCls}>
+                    <button
+                      type="button"
+                      title="Retire ce compte des listes et des statistiques du panel (ne supprime pas le compte)"
+                      onClick={() => void hideFromPanel(u)}
+                      className="text-[11px] font-bold px-2 py-1.5 rounded-lg transition-opacity hover:opacity-90 border"
+                      style={{ borderColor: 'rgba(248,113,113,0.35)', color: '#fca5a5', background: 'rgba(248,113,113,0.08)' }}
+                    >
+                      Masquer
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -167,6 +226,30 @@ export default function AdminUsers() {
           </div>
         )}
       </div>
+
+      {exclusions.length > 0 && (
+        <div className="rounded-2xl overflow-hidden p-4 space-y-3" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <h2 className="text-sm font-black text-white">Comptes masqués du panel <span className="text-text-secondary font-normal">({exclusions.length})</span></h2>
+          <p className="text-xs text-text-secondary max-w-2xl">
+            Ces adresses ne figurent plus dans la liste ni dans les agrégats (vue d’ensemble, analyses, finances, Stripe par email). Les comptes réels et les données ne sont pas supprimés.
+          </p>
+          <ul className="space-y-2">
+            {exclusions.map((ex) => (
+              <li key={ex.email_norm} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span className="text-lime">{ex.email_norm}</span>
+                <button
+                  type="button"
+                  onClick={() => void restoreToPanel(ex.email_norm)}
+                  className="text-[11px] font-bold px-2 py-1.5 rounded-lg border"
+                  style={{ borderColor: 'rgba(198,255,60,0.3)', color: '#C6FF3C', background: 'rgba(198,255,60,0.06)' }}
+                >
+                  Réafficher
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

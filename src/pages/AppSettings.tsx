@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
-import { captureEvent, EVENT_STRIPE_CHECKOUT_STARTED } from '@/lib/analytics'
+import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
 import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_CHECKOUT_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
@@ -106,8 +106,8 @@ export default function AppSettings() {
       sub: '70 images / mois · 9,90€',
       action: () => {
         captureEvent(
-          EVENT_STRIPE_CHECKOUT_STARTED,
-          { plan: 'monthly', source: 'settings' },
+          EVENT_CHECKOUT_STARTED,
+          { plan: 'monthly', source: 'settings', provider: 'stripe' },
           { send_instantly: true },
         )
         localStorage.setItem('gomytho_pending_plan', 'monthly')
@@ -121,8 +121,8 @@ export default function AppSettings() {
       sub: '20 images / semaine · 2,99€',
       action: () => {
         captureEvent(
-          EVENT_STRIPE_CHECKOUT_STARTED,
-          { plan: 'weekly', source: 'settings' },
+          EVENT_CHECKOUT_STARTED,
+          { plan: 'weekly', source: 'settings', provider: 'stripe' },
           { send_instantly: true },
         )
         localStorage.setItem('gomytho_pending_plan', 'weekly')

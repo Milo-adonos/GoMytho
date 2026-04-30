@@ -12,6 +12,7 @@ import {
   CREDITS_PER_IMAGE,
   type Plan,
 } from '@/lib/plan'
+import { hasPaidGoMythoAccess } from '@/lib/auth-access'
 
 export interface AppUser extends User {}
 
@@ -309,6 +310,18 @@ export default function AppLayout() {
         } catch {
           /* ignore */
         }
+      }
+
+      // ─── 2c. Accès app réservé aux comptes payants (ou parcours achat en cours) ─
+      // OAuth / trigger Supabase crée auth + users free sans paiement — on coupe ici.
+      if (!hasFreshPayment && (!dbUser || !hasPaidGoMythoAccess(dbUser))) {
+        try {
+          const { resetAnalytics } = await import('@/lib/analytics')
+          resetAnalytics()
+        } catch { /* ignore */ }
+        await supabase.auth.signOut()
+        window.location.href = '/login?reason=no_access'
+        return
       }
 
       // ─── 3. Construction de l'objet user (DB > cache local > défaut) ────────

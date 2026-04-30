@@ -56,6 +56,59 @@ function getStripe(): Stripe | null {
   return new Stripe(secret)
 }
 
+function normEmail(e: string | null | undefined): string {
+  return String(e || '').trim().toLowerCase()
+}
+
+function isPanelExcludedEmail(email: string | null | undefined, excluded: Set<string>): boolean {
+  const n = normEmail(email)
+  return n.length > 0 && excluded.has(n)
+}
+
+async function fetchPanelExclusions(
+  supabase: NonNullable<ReturnType<typeof getSupabase>>,
+): Promise<{ emails: Set<string>; ids: Set<string> }> {
+  const emails = new Set<string>()
+  const ids = new Set<string>()
+  try {
+    const { data, error } = await supabase.from('admin_panel_exclusions').select('email_norm, user_id')
+    if (error) {
+      if ((error as any).code === 'PGRST116' || /does not exist|404/.test(error.message || '')) return { emails, ids }
+      console.warn('[admin] exclusions read:', error.message)
+      return { emails, ids }
+    }
+    for (const row of data as any[]) {
+      if (row.email_norm) emails.add(normEmail(row.email_norm))
+      if (row.user_id) ids.add(String(row.user_id))
+    }
+  } catch {
+    /* table absente en local */
+  }
+  return { emails, ids }
+}
+
+/** IDs utilisateurs à exclure des mythos / comptages (ids explicites + résolution par email). */
+async function getAdminPanelExclusionContext(
+  supabase: NonNullable<ReturnType<typeof getSupabase>>,
+): Promise<{ userIds: Set<string>; emails: Set<string> }> {
+  const { emails, ids } = await fetchPanelExclusions(supabase)
+  const userIds = new Set(ids)
+  if (emails.size === 0) return { userIds, emails }
+  const { data: rows } = await supabase.from('users').select('id, email')
+  for (const u of rows || []) {
+    const id = String((u as any).id)
+    const em = normEmail((u as any).email)
+    if (em && emails.has(em)) userIds.add(id)
+  }
+  return { userIds, emails }
+}
+
+function subscriptionCustomerEmail(sub: Stripe.Subscription): string | null {
+  const c = sub.customer
+  if (typeof c === 'string') return null
+  return (c as Stripe.Customer)?.email || null
+}
+
 // ─── Source de vérité Stripe : abonnements + paiements ───────────────────────
 //
 // On interroge directement Stripe pour le CA, le nombre d'abonnés et le
@@ -91,7 +144,10 @@ function planFromPriceId(priceId: string | undefined | null): 'weekly' | 'monthl
   return 'unknown'
 }
 
-async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
+async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string>): Promise<StripeStats> {
+  const exc = panelExcludedEmails && panelExcludedEmails.size > 0 ? panelExcludedEmails : null
+  const skipEmail = (e: string | null | undefined) => (exc ? isPanelExcludedEmail(e, exc) : false)
+
   const now = Math.floor(Date.now() / 1000)
   const thirtyDaysAgo = now - 30 * 86400
   const sixtyDaysAgo = now - 60 * 86400
@@ -99,7 +155,7 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
   // Subscriptions actives + canceled (pour le churn) — on remonte 200 max
   const [activeSubs, canceledSubs] = await Promise.all([
     stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] }),
-    stripe.subscriptions.list({ status: 'canceled', limit: 100 }),
+    stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] }),
   ])
 
   // Liste des paiements (invoices) des 60 derniers jours pour calculer CA
@@ -124,6 +180,7 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
   let revenuePrev30d = 0
   for (const inv of invoices) {
     if (!stripeCreatedOnOrAfterEpoch(inv.created)) continue
+    if (skipEmail(inv.customer_email || null)) continue
     const ts = inv.created
     const amount = (inv.amount_paid || 0) / 100
     if (ts >= thirtyDaysAgo) revenue30d += amount
@@ -135,6 +192,7 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
   // CA cumulé (fenêtre Stripe récupérée, exclut l’historique avant la baseline admin)
   const totalRevenueAllTime = invoices.reduce((acc, inv) => {
     if (!stripeCreatedOnOrAfterEpoch(inv.created)) return acc
+    if (skipEmail(inv.customer_email || null)) return acc
     return acc + (inv.amount_paid || 0) / 100
   }, 0)
 
@@ -145,6 +203,7 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
   const subscriptions: StripeStats['subscriptions'] = []
 
   for (const sub of activeSubs.data) {
+    if (skipEmail(subscriptionCustomerEmail(sub))) continue
     const priceId = sub.items?.data?.[0]?.price?.id
     const plan = planFromPriceId(priceId)
     if (plan === 'weekly') weeklySubscribers++
@@ -172,13 +231,14 @@ async function fetchStripeStats(stripe: Stripe): Promise<StripeStats> {
 
   let cancelledLast30d = 0
   for (const sub of canceledSubs.data) {
+    if (skipEmail(subscriptionCustomerEmail(sub))) continue
     const cat = sub.canceled_at || 0
     if (cat >= thirtyDaysAgo && stripeCreatedOnOrAfterEpoch(cat)) cancelledLast30d++
   }
 
   const activeSubscribers = weeklySubscribers + monthlySubscribers
   const cancelledAllTime = canceledSubs.data.filter((s) =>
-    stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
+    !skipEmail(subscriptionCustomerEmail(s)) && stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
   ).length
   const totalSubscribersAllTime = activeSubscribers + cancelledAllTime
 
@@ -267,6 +327,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
         return await handlePurgeStatsEpoch(res)
       }
+      case 'exclusions':
+        return await handlePanelExclusions(req, res)
       default:
         return res.status(404).json({ error: 'Action inconnue' })
     }
@@ -284,6 +346,7 @@ function emptyForAction(action: string) {
     case 'users': return { users: [], total: 0 }
     case 'settings': return { costPerImage: COST_PER_IMAGE, maintenanceMode: false, notificationEmail: '' }
     case 'purge-stats-epoch': return { ok: false }
+    case 'exclusions': return { exclusions: [] }
     default: return {}
   }
 }
@@ -303,13 +366,27 @@ async function handleDashboard(res: VercelResponse) {
   const now = new Date()
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30)
 
+  const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
+
+  const mythosSqlPromise = (async () => {
+    if (!supabase) return { data: [] as any[] }
+    let q = supabase
+      .from('mythos')
+      .select('id, created_at, user_id')
+      .gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString())
+    if (panelCtx.userIds.size > 0) {
+      q = q.not('user_id', 'in', `(${Array.from(panelCtx.userIds).join(',')})`)
+    }
+    return q
+  })()
+
   const [stripeStats, mythosData, storageMythos] = await Promise.all([
-    stripe ? fetchStripeStats(stripe).catch((e) => {
+    stripe ? fetchStripeStats(stripe, panelCtx.emails).catch((e) => {
       console.error('[admin/dashboard] stripe error:', e?.message || e)
       return null
     }) : Promise.resolve(null),
-    supabase ? supabase.from('mythos').select('id, created_at').gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString()) : Promise.resolve({ data: [] as any[] }),
-    supabase ? collectMythosFromStorage(supabase).catch((e) => {
+    mythosSqlPromise,
+    supabase ? collectMythosFromStorage(supabase, panelCtx.userIds).catch((e) => {
       console.error('[admin/dashboard] storage scan error:', e?.message || e)
       return [] as Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>
     }) : Promise.resolve([]),
@@ -327,6 +404,7 @@ async function handleDashboard(res: VercelResponse) {
   }))
   let storageOnlyCount = 0
   for (const e of storageMythos) {
+    if (panelCtx.userIds.has(e.user_id)) continue
     if (!mythoOnOrAfterEpoch(e.created_at)) continue
     const sqlId = localIdToUuid(e.id)
     if (sqlIds.has(sqlId)) continue
@@ -342,7 +420,8 @@ async function handleDashboard(res: VercelResponse) {
   // l'écart en arrière-plan pour les prochains appels (idempotent grâce à
   // l'UUID déterministe). On ne bloque pas la réponse.
   if (supabase && storageOnlyCount > 0) {
-    void backfillMythosToSql(supabase, storageMythos).catch(() => { /* silent */ })
+    const toBackfill = storageMythos.filter((e) => !panelCtx.userIds.has(e.user_id))
+    void backfillMythosToSql(supabase, toBackfill).catch(() => { /* silent */ })
   }
 
   // Si Stripe est dispo on s'en sert, sinon on tombe à 0 (mais structure complète)
@@ -424,6 +503,7 @@ async function handleDashboard(res: VercelResponse) {
 // quelques centaines d'utilisateurs (au-delà, mettre en cache via KV/Redis).
 async function collectMythosFromStorage(
   supabase: ReturnType<typeof createClient>,
+  excludedUserIds: Set<string>,
 ): Promise<Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>> {
   const bucket = String(process.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
   const { data: folders, error } = await supabase.storage.from(bucket).list('', { limit: 1000 })
@@ -434,6 +514,7 @@ async function collectMythosFromStorage(
     folders.map(async (folder) => {
       if (!folder.name || folder.name.includes('.')) return
       const uid = folder.name
+      if (excludedUserIds.has(uid)) return
       try {
         const { data: blob } = await supabase.storage.from(bucket).download(`${uid}/index.json`)
         if (!blob) return
@@ -537,6 +618,7 @@ function buildEmptyDashboard() {
 async function handleFinance(res: VercelResponse) {
   const supabase = getSupabase()
   const stripe = getStripe()
+  const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
 
   const now = new Date()
   const currentYear = now.getFullYear()
@@ -572,13 +654,26 @@ async function handleFinance(res: VercelResponse) {
     }
   }
 
-  const stripeInvoicesFiltered = stripeInvoices.filter((inv) => stripeCreatedOnOrAfterEpoch(inv.created))
+  const stripeInvoicesFiltered = stripeInvoices
+    .filter((inv) => stripeCreatedOnOrAfterEpoch(inv.created))
+    .filter((inv) => !isPanelExcludedEmail(inv.customer_email || null, panelCtx.emails))
+
+  const stripeSubsActiveFiltered = stripeSubsActive.filter(
+    (s) => !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
+  )
+  const stripeSubsCanceledFiltered = stripeSubsCanceled.filter(
+    (s) => !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
+  )
 
   // ─── 2. Supabase : analyses (mythos) des 6 derniers mois ──────────────────
   let mythos: Array<{ id: string; user_id: string; created_at: string }> = []
   if (supabase) {
     const mythosSince = new Date(Math.max(sixMonthsAgo.getTime(), ADMIN_STATS_EPOCH_MS)).toISOString()
-    const { data } = await supabase.from('mythos').select('id, user_id, created_at').gte('created_at', mythosSince)
+    let mq = supabase.from('mythos').select('id, user_id, created_at').gte('created_at', mythosSince)
+    if (panelCtx.userIds.size > 0) {
+      mq = mq.not('user_id', 'in', `(${Array.from(panelCtx.userIds).join(',')})`)
+    }
+    const { data } = await mq
     mythos = (data || []) as any
   }
 
@@ -586,10 +681,10 @@ async function handleFinance(res: VercelResponse) {
   const startOfMonthTs = Math.floor(startOfMonth.getTime() / 1000)
   const invoicesThisMonth = stripeInvoicesFiltered.filter((inv) => inv.created >= startOfMonthTs)
   const revenueThisMonth = invoicesThisMonth.reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
-  const newSubsThisMonth = stripeSubsActive.filter(
+  const newSubsThisMonth = stripeSubsActiveFiltered.filter(
     (s) => s.created >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.created),
   ).length
-  const cancelledThisMonth = stripeSubsCanceled.filter(
+  const cancelledThisMonth = stripeSubsCanceledFiltered.filter(
     (s) => (s.canceled_at || 0) >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
   ).length
 
@@ -597,7 +692,7 @@ async function handleFinance(res: VercelResponse) {
   const costThisMonth = mythosThisMonth.length * COST_PER_IMAGE
   const marginThisMonth = revenueThisMonth - costThisMonth
   const marginPct = revenueThisMonth > 0 ? (marginThisMonth / revenueThisMonth) * 100 : 0
-  const totalActive = stripeSubsActive.length + cancelledThisMonth
+  const totalActive = stripeSubsActiveFiltered.length + cancelledThisMonth
   const churnRate = totalActive > 0 ? (cancelledThisMonth / totalActive) * 100 : 0
 
   // ─── 4. Évolution sur 6 mois ──────────────────────────────────────────────
@@ -628,7 +723,7 @@ async function handleFinance(res: VercelResponse) {
   // ─── 5. Répartition des plans (depuis Stripe) ─────────────────────────────
   let weeklyCount = 0
   let monthlyCount = 0
-  for (const sub of stripeSubsActive) {
+  for (const sub of stripeSubsActiveFiltered) {
     const priceId = sub.items?.data?.[0]?.price?.id
     const plan = planFromPriceId(priceId)
     if (plan === 'weekly') weeklyCount++
@@ -708,16 +803,40 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   const page = parseInt(req.query.page as string) || 1
   const limit = parseInt(req.query.limit as string) || 100
 
-  const { data, count } = await supabase
+  const panelCtx = await getAdminPanelExclusionContext(supabase)
+
+  let q = supabase
     .from('mythos')
     .select('id, user_id, prompt, image_url, created_at', { count: 'exact' })
     .gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString())
-    .range((page - 1) * limit, page * limit - 1)
     .order('created_at', { ascending: false })
+  if (panelCtx.userIds.size > 0) {
+    q = q.not('user_id', 'in', `(${Array.from(panelCtx.userIds).join(',')})`)
+  }
+  const from = (page - 1) * limit
+  const to = page * limit - 1
+  const { data, count, error } = await q.range(from, to)
+  if (error) {
+    console.error('[admin/mythos]', error.message)
+    return res.status(200).json({ mythos: [], total: 0 })
+  }
+
+  const rows = data || []
+  const userIds = [...new Set(rows.map((m: any) => String(m.user_id)))]
+  const emailById: Record<string, string> = {}
+  if (userIds.length > 0) {
+    const { data: urows } = await supabase.from('users').select('id, email').in('id', userIds)
+    for (const u of urows || []) emailById[String((u as any).id)] = String((u as any).email || '—')
+  }
 
   return res.status(200).json({
-    mythos: (data || []).map((m: any) => ({ ...m, cost: COST_PER_IMAGE })),
-    total: count || 0,
+    mythos: rows.map((m: any) => ({
+      ...m,
+      user_email: emailById[String(m.user_id)] || '—',
+      aspect_ratio: '9:16',
+      cost: COST_PER_IMAGE,
+    })),
+    total: count ?? 0,
   })
 }
 
@@ -730,6 +849,8 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
   const search = (req.query.search as string) || ''
   const planFilter = (req.query.plan as string) || 'all'
   const statusFilter = (req.query.status as string) || 'all'
+
+  const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
 
   // ─── 1. Liste tous les abonnés Stripe (active + canceled) ─────────────────
   type StripeUser = {
@@ -794,10 +915,11 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
       supabase.from('mythos').select('user_id').gte('created_at', epochIso),
     ])
     dbUsers = (userRows || []) as any
-    for (const row of mythoRows || []) {
-      const uid = String((row as { user_id: string }).user_id)
-      mythoCountByUser[uid] = (mythoCountByUser[uid] || 0) + 1
-    }
+      for (const row of mythoRows || []) {
+        const uid = String((row as { user_id: string }).user_id)
+        if (panelCtx.userIds.has(uid)) continue
+        mythoCountByUser[uid] = (mythoCountByUser[uid] || 0) + 1
+      }
   }
 
   // ─── 3. Fusion par email — Stripe = vérité paiement, Supabase = analyses ──
@@ -838,7 +960,9 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
   }
 
   // ─── 4. Filtres + pagination ──────────────────────────────────────────────
-  let users = Array.from(merged.values())
+  let users = Array.from(merged.values()).filter(
+    (u) => !panelCtx.emails.has(normEmail(u.email)),
+  )
   if (search) {
     const s = search.toLowerCase()
     users = users.filter(u => u.email.toLowerCase().includes(s))
@@ -851,6 +975,53 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
   const paged = users.slice((page - 1) * limit, page * limit)
 
   return res.status(200).json({ users: paged, total })
+}
+
+async function handlePanelExclusions(req: VercelRequest, res: VercelResponse) {
+  const supabase = getSupabase()
+  if (!supabase) return res.status(500).json({ error: 'Supabase non configuré' })
+
+  if (req.method === 'GET') {
+    const { data, error } = await supabase
+      .from('admin_panel_exclusions')
+      .select('email_norm, user_id, excluded_at')
+      .order('excluded_at', { ascending: false })
+    if (error) {
+      console.warn('[admin/exclusions]', error.message)
+      return res.status(200).json({ exclusions: [] })
+    }
+    return res.status(200).json({ exclusions: data || [] })
+  }
+
+  if (req.method === 'POST') {
+    let body: { email?: string; user_id?: string | null } = {}
+    try {
+      body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}) || {}
+    } catch {
+      body = {}
+    }
+    const emailRaw = normEmail(body.email)
+    if (!emailRaw || !emailRaw.includes('@')) return res.status(400).json({ error: 'Email invalide' })
+    const uid = body.user_id && UUID_REGEX.test(String(body.user_id)) ? String(body.user_id) : null
+    const row: { email_norm: string; excluded_at: string; user_id?: string } = {
+      email_norm: emailRaw,
+      excluded_at: new Date().toISOString(),
+    }
+    if (uid) row.user_id = uid
+    const { error } = await supabase.from('admin_panel_exclusions').upsert(row, { onConflict: 'email_norm' })
+    if (error) return res.status(500).json({ error: error.message })
+    return res.status(200).json({ ok: true })
+  }
+
+  if (req.method === 'DELETE') {
+    const email = normEmail(req.query.email as string)
+    if (!email) return res.status(400).json({ error: 'Paramètre email requis' })
+    const { error } = await supabase.from('admin_panel_exclusions').delete().eq('email_norm', email)
+    if (error) return res.status(500).json({ error: error.message })
+    return res.status(200).json({ ok: true })
+  }
+
+  return res.status(405).json({ error: 'Méthode non autorisée' })
 }
 
 async function handleSettings(req: VercelRequest, res: VercelResponse) {

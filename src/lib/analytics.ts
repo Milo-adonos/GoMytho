@@ -14,8 +14,14 @@ const RAW_HOST = import.meta.env.VITE_POSTHOG_HOST as string | undefined
 const HOST =
   (RAW_HOST?.trim() ?? '').replace(/\/$/, '') || 'https://eu.i.posthog.com'
 
-/** Clic « vers Stripe » (Payment Link) — à chercher tel quel dans PostHog. */
-export const EVENT_STRIPE_CHECKOUT_STARTED = 'stripe_checkout_started' as const
+/**
+ * Nom EXACT à utiliser dans les funnels PostHog (« checkout_started »).
+ * (L’ancien nom `stripe_checkout_started` ne matchait pas → 0 % après Choix Offre.)
+ */
+export const EVENT_CHECKOUT_STARTED = 'checkout_started' as const
+
+/** @deprecated alias — préfère EVENT_CHECKOUT_STARTED */
+export const EVENT_STRIPE_CHECKOUT_STARTED = EVENT_CHECKOUT_STARTED
 
 let initialized = false
 

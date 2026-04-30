@@ -61,6 +61,9 @@ export default function AdminMythos() {
         <h1 className="text-xl font-black text-white">Analyses <span className="text-text-secondary font-normal text-base">({total})</span></h1>
         <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={fetchMythos} />
       </div>
+      <p className="text-xs text-text-secondary max-w-3xl">
+        Seules les analyses créées à partir du 30 avril 2026 (minuit, Europe/Paris) sont listées, comme pour le reste du panel.
+      </p>
 
       <div className="rounded-2xl overflow-hidden" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>
         <div className="overflow-x-auto">
@@ -78,6 +81,13 @@ export default function AdminMythos() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={6} className="px-4 py-8 text-center text-text-secondary text-sm">Chargement...</td></tr>
+              ) : mythos.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-text-secondary space-y-2">
+                    <p className="font-medium text-text-primary">Aucune analyse à afficher pour cette période.</p>
+                    <p>Si tu t’attendais à voir d’anciennes créations, elles sont hors périmètre du panel (cut-off du 30 avril 2026). Les comptes masqués dans Utilisateurs n’apparaissent pas non plus ici.</p>
+                  </td>
+                </tr>
               ) : mythos.map((m, i) => (
                 <tr key={m.id}
                   style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}

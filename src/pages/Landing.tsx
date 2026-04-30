@@ -228,7 +228,7 @@ export default function Landing() {
             className="text-lime text-sm font-bold px-4 py-2 rounded-full border transition-all active:scale-95"
             style={{ borderColor: 'rgba(198,255,60,0.4)', background: 'rgba(198,255,60,0.08)' }}
           >
-            Se connecter →
+            Déjà un compte ?
           </a>
         </div>
       </header>

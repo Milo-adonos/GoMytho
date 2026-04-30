@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { hasPaidGoMythoAccess } from '@/lib/auth-access'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 
@@ -15,10 +16,19 @@ async function waitForSession(maxAttempts = 12, delayMs = 250) {
 }
 
 export default function Login() {
+  const [searchParams] = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (searchParams.get('reason') === 'no_access') {
+      setError(
+        "❌ Ce compte n'a pas d'abonnement GoMytho actif. Tu dois d'abord souscrire depuis la page d'offre — la connexion Google ou email seule ne crée pas d'accès payant.",
+      )
+    }
+  }, [searchParams])
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
@@ -47,6 +57,25 @@ export default function Login() {
         setError('Connexion réussie, mais session non détectée. Réessaie une fois.')
         return
       }
+
+      const { data: profile } = await supabase
+        .from('users')
+        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
+        .eq('id', session.user.id)
+        .maybeSingle()
+
+      if (!hasPaidGoMythoAccess(profile)) {
+        try {
+          const { resetAnalytics } = await import('@/lib/analytics')
+          resetAnalytics()
+        } catch { /* ignore */ }
+        await supabase.auth.signOut()
+        setError(
+          "❌ Aucun abonnement associé à ce compte. Commence par choisir une offre et finalise le paiement sur Stripe pour créer ton accès.",
+        )
+        return
+      }
+
       window.location.href = '/resultats'
     } catch {
       setError('Une erreur est survenue. Réessaie.')
