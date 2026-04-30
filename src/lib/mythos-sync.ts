@@ -61,8 +61,71 @@ export function readLocalCreations(userId: string): LocalMythoEntry[] {
   }
 }
 
+// Limite stricte pour éviter le QuotaExceededError : un dataURL base64 fait
+// 1 à 3 MB ; le quota localStorage est ~5-10 MB. On stocke donc le preview
+// base64 UNIQUEMENT pour les entrées qui n'ont pas encore d'URL cloud
+// (upload échoué) — pour le reste, on garde juste les métadonnées.
+const MAX_LOCAL_ENTRIES = 60
+const MAX_PREVIEW_BYTES = 3_000_000 // ~3 MB de base64 max retenu localement
+
+function isRemoteUrl(url: string | null | undefined): boolean {
+  if (!url) return false
+  return url.startsWith('http://') || url.startsWith('https://')
+}
+
+function compactEntry(entry: LocalMythoEntry): LocalMythoEntry {
+  // Si on a déjà une URL cloud, on n'a PAS besoin du base64 — la cloud sera
+  // re-fetchée à l'affichage. Économie majeure de localStorage.
+  if (isRemoteUrl(entry.image_url) && entry.preview_data_url) {
+    const { preview_data_url, ...rest } = entry
+    void preview_data_url
+    return rest
+  }
+  // image_url EST une dataURL base64 (upload cloud KO) → on la conserve mais
+  // on supprime le preview_data_url qui serait redondant.
+  if (entry.image_url?.startsWith('data:') && entry.preview_data_url) {
+    const { preview_data_url, ...rest } = entry
+    void preview_data_url
+    return rest
+  }
+  // Cas extrêmes : on plafonne les champs base64 si trop gros.
+  if (entry.preview_data_url && entry.preview_data_url.length > MAX_PREVIEW_BYTES) {
+    return { ...entry, preview_data_url: undefined }
+  }
+  return entry
+}
+
 export function writeLocalCreations(userId: string, list: LocalMythoEntry[]): void {
-  localStorage.setItem(localKey(userId), JSON.stringify(list.slice(0, 200)))
+  const compacted = list.slice(0, MAX_LOCAL_ENTRIES).map(compactEntry)
+  const key = localKey(userId)
+  const tryWrite = (entries: LocalMythoEntry[]) => {
+    localStorage.setItem(key, JSON.stringify(entries))
+  }
+  try {
+    tryWrite(compacted)
+  } catch (err) {
+    // QuotaExceededError → on retire les preview_data_url un par un puis on
+    // tronque la liste jusqu'à ce que ça passe. Jamais bloquer l'app.
+    console.warn('[mythos-sync] localStorage quota dépassé, compaction agressive', err)
+    let trimmed = compacted.map((e) => {
+      if (e.preview_data_url) {
+        const { preview_data_url, ...rest } = e
+        void preview_data_url
+        return rest
+      }
+      return e
+    })
+    while (trimmed.length > 0) {
+      try {
+        tryWrite(trimmed)
+        return
+      } catch {
+        trimmed = trimmed.slice(0, Math.max(0, trimmed.length - 5))
+      }
+    }
+    // Dernier recours : on supprime carrément la clé pour libérer le quota.
+    try { localStorage.removeItem(key) } catch { /* ignore */ }
+  }
 }
 
 // ─── Upload d'une dataURL en tant qu'image stockée ──────────────────────────
