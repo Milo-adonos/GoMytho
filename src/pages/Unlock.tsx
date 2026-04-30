@@ -162,14 +162,16 @@ export default function Unlock() {
             transition={{ delay: 0.05 }}
             className="relative mb-5"
           >
-            {/* Ruban flottant — palette « cadeau 🎁 » : rouge boîte + or
-                ruban. Lit naturellement avec le titre « Ton mytho est prêt
-                🎁 », et reste hyper-lisible sur le bouton Hebdo lime. */}
-            <div
+            {/* Ruban flottant — palette « cadeau 🎁 » + clignotement doux
+                pour attirer l'œil. Le « LE » devant transforme la mention
+                en phrase complète : « LE plus choisi ». */}
+            <motion.div
+              animate={{ opacity: [1, 0.6, 1] }}
+              transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
               className={`absolute -top-2.5 z-10 ${POPULAR_PLAN === 'weekly' ? 'left-6' : 'right-6'}`}
             >
               <span
-                className="inline-flex items-center gap-1 px-2.5 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
+                className="inline-flex items-center gap-1.5 px-2.5 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
                 style={{
                   background: 'linear-gradient(135deg, #ef4444 0%, #f97316 55%, #fbbf24 100%)',
                   color: '#fff',
@@ -178,9 +180,19 @@ export default function Unlock() {
                   textShadow: '0 1px 2px rgba(0,0,0,0.35)',
                 }}
               >
-                Le plus choisi
+                <span
+                  className="px-1 rounded-full text-[8px] tracking-[0.20em]"
+                  style={{
+                    background: 'rgba(0,0,0,0.30)',
+                    color: '#fff',
+                    boxShadow: 'inset 0 0 4px rgba(255,255,255,0.25)',
+                  }}
+                >
+                  LE
+                </span>
+                Plus choisi
               </span>
-            </div>
+            </motion.div>
 
             <div
               className="flex items-center p-1 rounded-full"
@@ -222,44 +234,56 @@ export default function Unlock() {
               boxShadow: '0 0 30px rgba(198,255,60,0.08)',
             }}
           >
-            {/* ─── Micro-badge -50% + chrono dans le coin sup. GAUCHE ─────── */}
+            {/* ─── Badge -50% + chrono — coin sup. gauche, design néon ─── */}
             <motion.div
               initial={{ opacity: 0, y: -4 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3, delay: 0.08 }}
-              className="absolute -top-2.5 left-4 z-10"
+              className="absolute -top-3 left-4 z-10"
             >
               <div
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-black tracking-wider"
+                className="relative inline-flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full text-[12px] font-black tracking-wide"
                 style={{
                   background: offerExpired
-                    ? 'linear-gradient(135deg, rgba(248,113,113,0.18), rgba(20,24,38,1) 60%)'
-                    : 'linear-gradient(135deg, rgba(198,255,60,0.20), rgba(20,24,38,1) 60%)',
-                  border: `1px solid ${offerExpired ? 'rgba(248,113,113,0.5)' : 'rgba(198,255,60,0.55)'}`,
+                    ? 'linear-gradient(135deg, rgba(248,113,113,0.28) 0%, rgba(20,24,38,0.96) 70%)'
+                    : 'linear-gradient(135deg, rgba(198,255,60,0.32) 0%, rgba(249,115,22,0.18) 50%, rgba(20,24,38,0.96) 100%)',
+                  border: `1.5px solid ${offerExpired ? 'rgba(248,113,113,0.65)' : 'rgba(198,255,60,0.7)'}`,
                   color: offerExpired ? '#fca5a5' : '#C6FF3C',
                   boxShadow: offerExpired
-                    ? '0 0 10px rgba(248,113,113,0.25)'
-                    : '0 0 10px rgba(198,255,60,0.35), 0 0 22px rgba(198,255,60,0.15)',
+                    ? '0 0 14px rgba(248,113,113,0.4), 0 0 28px rgba(248,113,113,0.18)'
+                    : '0 0 16px rgba(198,255,60,0.5), 0 0 32px rgba(249,115,22,0.22), inset 0 0 10px rgba(198,255,60,0.10)',
                 }}
               >
-                <span style={{ letterSpacing: '0.04em' }}>−50%</span>
                 <span
                   aria-hidden
-                  className="w-px h-3"
+                  className="text-sm"
+                  style={{
+                    filter: offerExpired
+                      ? 'none'
+                      : 'drop-shadow(0 0 4px rgba(198,255,60,0.85)) drop-shadow(0 0 8px rgba(249,115,22,0.55))',
+                  }}
+                >
+                  ⚡
+                </span>
+                <span style={{ letterSpacing: '0.06em' }}>−50%</span>
+                <span
+                  aria-hidden
+                  className="w-[1.5px] h-4 rounded-full"
                   style={{
                     background: offerExpired
-                      ? 'rgba(248,113,113,0.4)'
-                      : 'rgba(198,255,60,0.45)',
+                      ? 'rgba(248,113,113,0.5)'
+                      : 'rgba(198,255,60,0.6)',
                   }}
                 />
                 {offerExpired ? (
                   <span className="uppercase">Expirée</span>
                 ) : (
                   <span
-                    className="tabular-nums"
+                    className="tabular-nums text-[13px]"
                     style={{
                       color: '#fff',
-                      textShadow: '0 0 6px rgba(198,255,60,0.7)',
+                      textShadow:
+                        '0 0 8px rgba(198,255,60,0.9), 0 0 18px rgba(249,115,22,0.55)',
                     }}
                   >
                     {formatRemaining(remaining)}
@@ -307,16 +331,42 @@ export default function Unlock() {
             <span>Satisfait ou remboursé</span>
           </div>
 
-          {/* CTA */}
-          <Button
-            onClick={handleCheckout}
-            disabled={isLoading}
-            size="lg"
-            fullWidth
-            className="mb-2"
-          >
-            {isLoading ? 'Chargement...' : 'DÉBLOQUER MON MYTHO →'}
-          </Button>
+          {/* CTA — wrappé pour superposer un shimmer va-et-vient */}
+          <div className="relative mb-2">
+            <Button
+              onClick={handleCheckout}
+              disabled={isLoading}
+              size="lg"
+              fullWidth
+            >
+              {isLoading ? 'Chargement...' : 'DÉBLOQUER MON MYTHO →'}
+            </Button>
+
+            {/* Reflet qui balaie le bouton de gauche à droite et inversement.
+                pointer-events-none pour ne pas gêner le clic, mix-blend-mode
+                pour rester délicat sur fond lime. */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 rounded-full overflow-hidden"
+              style={{ mixBlendMode: 'overlay' }}
+            >
+              <motion.div
+                className="absolute top-0 bottom-0 w-1/3"
+                animate={{ x: ['-110%', '210%'] }}
+                transition={{
+                  duration: 2.6,
+                  repeat: Infinity,
+                  repeatType: 'reverse',
+                  ease: 'easeInOut',
+                }}
+                style={{
+                  background:
+                    'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.55) 50%, transparent 100%)',
+                  filter: 'blur(2px)',
+                }}
+              />
+            </div>
+          </div>
 
           <p className="text-center text-[11px] text-text-secondary leading-snug">
             🔒 Paiement sécurisé Stripe · Annulable en un clic, remboursé si pas satisfait
