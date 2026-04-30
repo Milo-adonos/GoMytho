@@ -39,24 +39,29 @@ function planFromPriceId(priceId: string | undefined | null): 'weekly' | 'monthl
 }
 
 /**
- * Identifie le plan depuis le montant total réellement encaissé.
- * `amount_total` peut être null pour des sessions « subscription » sans
- * paiement immédiat (essai gratuit), `unit_amount` du price est alors lu.
+ * Détermine le plan en se basant prioritairement sur `unit_amount` (le prix
+ * configuré en DUR sur le produit Stripe), puis `amount_total` (montant
+ * réellement débité après réductions/coupons). Renvoie toujours un plan tant
+ * qu'on a une trace numérique du paiement.
  */
 function planFromAmount(
   amountTotal: number | null | undefined,
   unitAmount: number | null | undefined,
-): { plan: 'weekly' | 'monthly'; trial: boolean } | null {
-  // Essai gratuit (montant 0 mais unit_amount du prix correspond à mensuel)
-  if ((amountTotal === 0 || amountTotal == null) && unitAmount === MENSU_AMOUNT_CENTS) {
-    return { plan: 'monthly', trial: true }
-  }
-  if (amountTotal === HEBDO_AMOUNT_CENTS) return { plan: 'weekly', trial: false }
-  if (amountTotal === MENSU_AMOUNT_CENTS) return { plan: 'monthly', trial: false }
-  // Tolérance ±1 centime (arrondis devises)
-  if (amountTotal && Math.abs(amountTotal - HEBDO_AMOUNT_CENTS) <= 1) return { plan: 'weekly', trial: false }
-  if (amountTotal && Math.abs(amountTotal - MENSU_AMOUNT_CENTS) <= 1) return { plan: 'monthly', trial: false }
-  return null
+): { plan: 'weekly' | 'monthly'; trial: boolean } {
+  const trial = amountTotal === 0 || amountTotal == null
+  // Le unit_amount est plus fiable (pas affecté par coupons / promos)
+  const reference = unitAmount ?? amountTotal ?? 0
+
+  // Match exact / proche du tarif hebdo (2,99 €)
+  if (Math.abs(reference - HEBDO_AMOUNT_CENTS) <= 5) return { plan: 'weekly', trial }
+  // Match exact / proche du tarif mensuel (9,90 €)
+  if (Math.abs(reference - MENSU_AMOUNT_CENTS) <= 5) return { plan: 'monthly', trial }
+
+  // Plages tolérantes : tout paiement < 5 € → weekly, >= 5 € → monthly.
+  // Évite de bloquer un client qui a payé un prix légèrement différent
+  // (promo, ajustement futur, devise locale convertie, etc.).
+  if (reference > 0 && reference < 500) return { plan: 'weekly', trial }
+  return { plan: 'monthly', trial }
 }
 
 async function resolveSubscription(
@@ -90,32 +95,26 @@ export async function buildVerifiedPayloadFromSession(
   const priceId = (lineItem?.price?.id as string | undefined) || null
   const unitAmount = (lineItem?.price?.unit_amount as number | undefined) ?? null
 
-  // 1) Match strict par price_id si HEBDO/MENSU configurés correctement.
-  // 2) Sinon fallback fiable par MONTANT (paiement vérifié par Stripe).
+  // 1) Match strict par price_id si HEBDO/MENSU sont en env vars Vercel.
+  // 2) Sinon, on déduit du MONTANT (toujours présent côté Stripe).
+  // La fonction planFromAmount renvoie toujours un plan → pas de blocage
+  // possible pour un client dont Stripe a confirmé le paiement.
   let plan = planFromPriceId(priceId)
+  const fallback = planFromAmount(session.amount_total, unitAmount)
   let trialFromAmount = false
   if (!plan) {
-    const fallback = planFromAmount(session.amount_total, unitAmount)
-    if (fallback) {
-      plan = fallback.plan
-      trialFromAmount = fallback.trial
-      console.warn('[stripe-verify] price_id inconnu, plan déduit du montant', {
-        id: session.id,
-        priceId,
-        amount_total: session.amount_total,
-        unit_amount: unitAmount,
-        plan,
-      })
-    }
-  }
-  if (!plan) {
-    console.warn('[stripe-verify] plan introuvable (price_id + montant)', {
+    plan = fallback.plan
+    trialFromAmount = fallback.trial
+    console.info('[stripe-verify] plan déduit du montant', {
       id: session.id,
       priceId,
       amount_total: session.amount_total,
       unit_amount: unitAmount,
+      plan,
+      trial: fallback.trial,
     })
-    return null
+  } else {
+    console.info('[stripe-verify] plan reconnu via price_id', { id: session.id, plan })
   }
 
   const subscription = await resolveSubscription(session, stripe)

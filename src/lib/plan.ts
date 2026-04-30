@@ -50,12 +50,15 @@ export interface VerifiedPlan {
 }
 
 // ─── Vérifie un session_id Stripe côté serveur (source la plus fiable) ───────
-async function verifyStripeSession(sessionId: string): Promise<{
+async function attemptVerify(sessionId: string): Promise<{
   ok: VerifiedPlan | null
   failure?: VerifiedPlan['failure']
 }> {
   try {
-    const res = await fetch(`/api/stripe-verify?session_id=${encodeURIComponent(sessionId)}`)
+    const res = await fetch(
+      `/api/stripe-verify?session_id=${encodeURIComponent(sessionId)}`,
+      { cache: 'no-store' },
+    )
     const data = (await res.json().catch(() => null)) as Record<string, unknown> | null
 
     if (!res.ok) {
@@ -95,6 +98,20 @@ async function verifyStripeSession(sessionId: string): Promise<{
       },
     }
   }
+}
+
+async function verifyStripeSession(sessionId: string): Promise<{
+  ok: VerifiedPlan | null
+  failure?: VerifiedPlan['failure']
+}> {
+  // Premier essai
+  const r1 = await attemptVerify(sessionId)
+  if (r1.ok) return r1
+
+  // Stripe peut renvoyer status=open quelques centaines de ms après la
+  // confirmation, ou Vercel cold start → un seul retry après 1,2 s.
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+  return attemptVerify(sessionId)
 }
 
 // ─── Résout le plan effectif pour un nouvel utilisateur ──────────────────────
