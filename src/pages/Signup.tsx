@@ -364,13 +364,38 @@ export default function Signup() {
               </div>
             )}
             {verified?.source === 'unpaid' && (
-              <p className="text-sm text-orange-300/95 max-w-sm mx-auto">
-                Aucun paiement Stripe détecté sur cette page.{' '}
-                <Link to="/choixoffre" className="text-lime underline font-semibold">
-                  Choisis d’abord une offre
-                </Link>
-                , puis reviens ici après le paiement.
-              </p>
+              <div className="text-sm text-orange-300/95 max-w-sm mx-auto space-y-2">
+                {verified.failure?.reason === 'no_session_id' ? (
+                  <p>
+                    Aucun paiement Stripe détecté sur cette page.{' '}
+                    <Link to="/choixoffre" className="text-lime underline font-semibold">
+                      Choisis d’abord une offre
+                    </Link>
+                    , puis reviens ici après le paiement.
+                  </p>
+                ) : (
+                  <>
+                    <p className="font-semibold">
+                      Vérification Stripe impossible côté serveur.
+                    </p>
+                    {verified.failure?.serverError && (
+                      <p className="text-xs text-orange-200/80">
+                        Détail : {verified.failure.serverError}
+                        {verified.failure.httpStatus
+                          ? ` (HTTP ${verified.failure.httpStatus})`
+                          : ''}
+                      </p>
+                    )}
+                    <p className="text-xs text-text-secondary">
+                      Si tu as bien été débité, vérifie sur Vercel les variables
+                      <code className="mx-1">STRIPE_SECRET_KEY</code>,
+                      <code className="mx-1">HEBDO_PRICE_ID</code>,
+                      <code className="mx-1">MENSU_PRICE_ID</code>.
+                      Garde la preuve de paiement.
+                    </p>
+                  </>
+                )}
+              </div>
             )}
           </motion.div>
 

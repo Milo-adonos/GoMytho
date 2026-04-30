@@ -38,30 +38,62 @@ export interface VerifiedPlan {
   email?: string | null
   customerId?: string | null
   subscription_status?: SubscriptionStatusUi
+  /**
+   * Si la vérification a échoué (session_id absent OU /api/stripe-verify KO),
+   * on remonte une raison lisible pour aider à diagnostiquer côté UI.
+   */
+  failure?: {
+    reason: 'no_session_id' | 'verify_error' | 'verify_invalid_response'
+    httpStatus?: number
+    serverError?: string
+  }
 }
 
 // ─── Vérifie un session_id Stripe côté serveur (source la plus fiable) ───────
-async function verifyStripeSession(sessionId: string): Promise<VerifiedPlan | null> {
+async function verifyStripeSession(sessionId: string): Promise<{
+  ok: VerifiedPlan | null
+  failure?: VerifiedPlan['failure']
+}> {
   try {
     const res = await fetch(`/api/stripe-verify?session_id=${encodeURIComponent(sessionId)}`)
-    if (!res.ok) return null
-    const data = await res.json().catch(() => null)
-    if (!data || !isPlan(data.plan)) return null
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null
+
+    if (!res.ok) {
+      const serverError =
+        data && typeof data.error === 'string' ? data.error : `HTTP ${res.status}`
+      return {
+        ok: null,
+        failure: { reason: 'verify_error', httpStatus: res.status, serverError },
+      }
+    }
+
+    if (!data || !isPlan(data.plan)) {
+      return { ok: null, failure: { reason: 'verify_invalid_response' } }
+    }
+
     const sub = data.subscription_status
     const subscription_status: SubscriptionStatusUi | undefined =
       sub === 'trialing' || sub === 'active' || sub === 'inactive' || sub === 'cancelled'
         ? sub
         : undefined
     return {
-      plan: data.plan,
-      credits: typeof data.credits === 'number' ? data.credits : PLAN_CREDITS[data.plan as Plan],
-      source: 'stripe' as const,
-      email: data.email || null,
-      customerId: data.customerId || null,
-      subscription_status,
+      ok: {
+        plan: data.plan as Plan,
+        credits: typeof data.credits === 'number' ? data.credits : PLAN_CREDITS[data.plan as Plan],
+        source: 'stripe' as const,
+        email: typeof data.email === 'string' ? data.email : null,
+        customerId: typeof data.customerId === 'string' ? data.customerId : null,
+        subscription_status,
+      },
     }
-  } catch {
-    return null
+  } catch (e) {
+    return {
+      ok: null,
+      failure: {
+        reason: 'verify_error',
+        serverError: e instanceof Error ? e.message : 'Erreur réseau',
+      },
+    }
   }
 }
 
@@ -75,8 +107,15 @@ async function verifyStripeSession(sessionId: string): Promise<VerifiedPlan | nu
 export async function resolveNewUserPlan(searchParams: URLSearchParams): Promise<VerifiedPlan> {
   const sessionId = searchParams.get('session_id')
   if (sessionId) {
-    const verified = await verifyStripeSession(sessionId)
-    if (verified) return verified
+    const result = await verifyStripeSession(sessionId)
+    if (result.ok) return result.ok
+    return {
+      plan: 'free',
+      credits: 0,
+      source: 'unpaid',
+      subscription_status: 'inactive',
+      failure: result.failure,
+    }
   }
 
   return {
@@ -84,6 +123,7 @@ export async function resolveNewUserPlan(searchParams: URLSearchParams): Promise
     credits: 0,
     source: 'unpaid',
     subscription_status: 'inactive',
+    failure: { reason: 'no_session_id' },
   }
 }
 
