@@ -23,7 +23,14 @@ function readCountdownStart(): number {
     const raw = sessionStorage.getItem(COUNTDOWN_STORAGE_KEY)
     if (raw) {
       const v = Number(raw)
-      if (Number.isFinite(v) && v > 0) return v
+      // On garde la valeur uniquement si le compte à rebours n'est pas déjà
+      // épuisé. Sinon (visite plus longue qu'une session, retour après une
+      // pause, etc.), on relance proprement les 10 min : un client qui
+      // tomberait sur « Expirée » dès l'arrivée perdrait totalement le
+      // signal d'urgence — pire UX que de remettre 10:00.
+      if (Number.isFinite(v) && v > 0 && Date.now() - v < COUNTDOWN_DURATION_MS) {
+        return v
+      }
     }
   } catch { /* sessionStorage indispo */ }
   const now = Date.now()
@@ -155,17 +162,20 @@ export default function Unlock() {
             transition={{ delay: 0.05 }}
             className="relative mb-5"
           >
-            {/* Ruban flottant */}
+            {/* Ruban flottant — magenta néon pour qu'il reste visible même
+                quand le bouton Hebdo est sélectionné (lime sur lime ne se
+                voit pas). Contraste fort avec le lime + l'arrière-plan. */}
             <div
               className={`absolute -top-2.5 z-10 ${POPULAR_PLAN === 'weekly' ? 'left-6' : 'right-6'}`}
             >
               <span
-                className="inline-flex items-center gap-1 px-2 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
+                className="inline-flex items-center gap-1 px-2.5 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
                 style={{
-                  background: '#C6FF3C',
-                  color: '#0A0E1A',
+                  background: 'linear-gradient(135deg, #f0abfc 0%, #d946ef 100%)',
+                  color: '#1a0625',
                   boxShadow:
-                    '0 0 14px rgba(198,255,60,0.55), 0 0 28px rgba(198,255,60,0.25)',
+                    '0 0 12px rgba(217,70,239,0.65), 0 0 26px rgba(240,171,252,0.35), inset 0 0 8px rgba(255,255,255,0.25)',
+                  textShadow: '0 0 6px rgba(255,255,255,0.5)',
                 }}
               >
                 ★ Plus choisi
@@ -212,12 +222,12 @@ export default function Unlock() {
               boxShadow: '0 0 30px rgba(198,255,60,0.08)',
             }}
           >
-            {/* ─── Micro-badge -50% + chrono dans le coin sup. droit ──────── */}
+            {/* ─── Micro-badge -50% + chrono dans le coin sup. GAUCHE ─────── */}
             <motion.div
               initial={{ opacity: 0, y: -4 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3, delay: 0.08 }}
-              className="absolute -top-2.5 right-4 z-10"
+              className="absolute -top-2.5 left-4 z-10"
             >
               <div
                 className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-black tracking-wider"
