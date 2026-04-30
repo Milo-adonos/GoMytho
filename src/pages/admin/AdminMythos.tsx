@@ -62,7 +62,7 @@ export default function AdminMythos() {
         <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={fetchMythos} />
       </div>
       <p className="text-xs text-text-secondary max-w-3xl">
-        Seules les analyses créées à partir du 30 avril 2026 (minuit, Europe/Paris) sont listées, comme pour le reste du panel.
+        Seules les analyses créées à partir du 30 avril 2026 (minuit, Europe/Paris) sont listées. Les comptes inscrits avant cette date n’apparaissent pas (y compris leurs analyses).
       </p>
 
       <div className="rounded-2xl overflow-hidden" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>

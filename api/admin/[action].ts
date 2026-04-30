@@ -87,19 +87,40 @@ async function fetchPanelExclusions(
   return { emails, ids }
 }
 
-/** IDs utilisateurs à exclure des mythos / comptages (ids explicites + résolution par email). */
+/** Exclusions panel manuelles + inscriptions public.users strictement avant le baseline stats (30 avr. 2026 Paris). */
 async function getAdminPanelExclusionContext(
   supabase: NonNullable<ReturnType<typeof getSupabase>>,
 ): Promise<{ userIds: Set<string>; emails: Set<string> }> {
-  const { emails, ids } = await fetchPanelExclusions(supabase)
-  const userIds = new Set(ids)
-  if (emails.size === 0) return { userIds, emails }
-  const { data: rows } = await supabase.from('users').select('id, email')
-  for (const u of rows || []) {
-    const id = String((u as any).id)
-    const em = normEmail((u as any).email)
-    if (em && emails.has(em)) userIds.add(id)
+  const { emails: panelEmails, ids: panelIds } = await fetchPanelExclusions(supabase)
+  const userIds = new Set<string>(panelIds)
+  const emails = new Set<string>(panelEmails)
+
+  const epochIso = new Date(ADMIN_STATS_EPOCH_MS).toISOString()
+  const { data: preEpochRows, error: preErr } = await supabase
+    .from('users')
+    .select('id, email')
+    .lt('created_at', epochIso)
+  if (preErr) {
+    if (!/does not exist|schema cache/i.test(preErr.message || '')) {
+      console.warn('[admin] pre-epoch users:', preErr.message)
+    }
+  } else {
+    for (const u of preEpochRows || []) {
+      userIds.add(String((u as any).id))
+      const em = normEmail((u as any).email)
+      if (em) emails.add(em)
+    }
   }
+
+  if (panelEmails.size > 0) {
+    const { data: rows } = await supabase.from('users').select('id, email')
+    for (const u of rows || []) {
+      const id = String((u as any).id)
+      const em = normEmail((u as any).email)
+      if (em && panelEmails.has(em)) userIds.add(id)
+    }
+  }
+
   return { userIds, emails }
 }
 
@@ -107,6 +128,31 @@ function subscriptionCustomerEmail(sub: Stripe.Subscription): string | null {
   const c = sub.customer
   if (typeof c === 'string') return null
   return (c as Stripe.Customer)?.email || null
+}
+
+function subscriptionCustomerId(sub: Stripe.Subscription): string | null {
+  const c = sub.customer
+  if (typeof c === 'string') return c
+  return (c as Stripe.Customer)?.id || null
+}
+
+function invoiceStripeCustomerId(inv: Stripe.Invoice): string | null {
+  const c = inv.customer
+  if (typeof c === 'string') return c || null
+  if (c && typeof c === 'object' && 'deleted' in c && (c as { deleted?: boolean }).deleted) return null
+  if (c && typeof c === 'object' && 'id' in c) return String((c as { id?: string }).id || '') || null
+  return null
+}
+
+/** Abonnements Stripe dont la première souscription connue (ligne courante) est antérieure au baseline panel. */
+function preEpochStripeCustomerIdsFromSubs(subs: Stripe.Subscription[]): Set<string> {
+  const out = new Set<string>()
+  for (const sub of subs) {
+    if (stripeCreatedOnOrAfterEpoch(sub.created)) continue
+    const id = subscriptionCustomerId(sub)
+    if (id) out.add(id)
+  }
+  return out
 }
 
 // ─── Source de vérité Stripe : abonnements + paiements ───────────────────────
@@ -158,6 +204,11 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
     stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] }),
   ])
 
+  const preEpochStripeCustomerIds = preEpochStripeCustomerIdsFromSubs([
+    ...activeSubs.data,
+    ...canceledSubs.data,
+  ])
+
   // Liste des paiements (invoices) des 60 derniers jours pour calculer CA
   const invoices: Stripe.Invoice[] = []
   let starting_after: string | undefined = undefined
@@ -180,6 +231,8 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   let revenuePrev30d = 0
   for (const inv of invoices) {
     if (!stripeCreatedOnOrAfterEpoch(inv.created)) continue
+    const invCust = invoiceStripeCustomerId(inv)
+    if (invCust && preEpochStripeCustomerIds.has(invCust)) continue
     if (skipEmail(inv.customer_email || null)) continue
     const ts = inv.created
     const amount = (inv.amount_paid || 0) / 100
@@ -192,6 +245,8 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   // CA cumulé (fenêtre Stripe récupérée, exclut l’historique avant la baseline admin)
   const totalRevenueAllTime = invoices.reduce((acc, inv) => {
     if (!stripeCreatedOnOrAfterEpoch(inv.created)) return acc
+    const invCust = invoiceStripeCustomerId(inv)
+    if (invCust && preEpochStripeCustomerIds.has(invCust)) return acc
     if (skipEmail(inv.customer_email || null)) return acc
     return acc + (inv.amount_paid || 0) / 100
   }, 0)
@@ -203,16 +258,15 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   const subscriptions: StripeStats['subscriptions'] = []
 
   for (const sub of activeSubs.data) {
+    if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
     if (skipEmail(subscriptionCustomerEmail(sub))) continue
     const priceId = sub.items?.data?.[0]?.price?.id
     const plan = planFromPriceId(priceId)
     if (plan === 'weekly') weeklySubscribers++
     else if (plan === 'monthly') monthlySubscribers++
 
-    if (stripeCreatedOnOrAfterEpoch(sub.created)) {
-      if (sub.created >= thirtyDaysAgo) newSubscribers30d++
-      else if (sub.created >= sixtyDaysAgo) newSubscribersPrev30d++
-    }
+    if (sub.created >= thirtyDaysAgo) newSubscribers30d++
+    else if (sub.created >= sixtyDaysAgo) newSubscribersPrev30d++
 
     const customer = sub.customer
     const email = typeof customer === 'string'
@@ -231,6 +285,7 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
 
   let cancelledLast30d = 0
   for (const sub of canceledSubs.data) {
+    if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
     if (skipEmail(subscriptionCustomerEmail(sub))) continue
     const cat = sub.canceled_at || 0
     if (cat >= thirtyDaysAgo && stripeCreatedOnOrAfterEpoch(cat)) cancelledLast30d++
@@ -238,6 +293,7 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
 
   const activeSubscribers = weeklySubscribers + monthlySubscribers
   const cancelledAllTime = canceledSubs.data.filter((s) =>
+    stripeCreatedOnOrAfterEpoch(s.created) &&
     !skipEmail(subscriptionCustomerEmail(s)) && stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
   ).length
   const totalSubscribersAllTime = activeSubscribers + cancelledAllTime
@@ -669,15 +725,28 @@ async function handleFinance(res: VercelResponse) {
     }
   }
 
+  const preEpochStripeCustFinance = preEpochStripeCustomerIdsFromSubs([
+    ...stripeSubsActive,
+    ...stripeSubsCanceled,
+  ])
+
   const stripeInvoicesFiltered = stripeInvoices
     .filter((inv) => stripeCreatedOnOrAfterEpoch(inv.created))
     .filter((inv) => !isPanelExcludedEmail(inv.customer_email || null, panelCtx.emails))
+    .filter((inv) => {
+      const cid = invoiceStripeCustomerId(inv)
+      return !cid || !preEpochStripeCustFinance.has(cid)
+    })
 
   const stripeSubsActiveFiltered = stripeSubsActive.filter(
-    (s) => !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
+    (s) =>
+      stripeCreatedOnOrAfterEpoch(s.created) &&
+      !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
   )
   const stripeSubsCanceledFiltered = stripeSubsCanceled.filter(
-    (s) => !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
+    (s) =>
+      stripeCreatedOnOrAfterEpoch(s.created) &&
+      !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
   )
 
   // ─── 2. Supabase : analyses (mythos) des 6 derniers mois ──────────────────
@@ -887,6 +956,7 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
 
       const all = [...subsActive.data, ...subsCanceled.data]
       for (const sub of all) {
+        if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
         const customer = sub.customer as Stripe.Customer | string
         const email = (typeof customer === 'string' ? '' : customer.email) || ''
         if (!email) continue
@@ -978,6 +1048,7 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
   let users = Array.from(merged.values()).filter(
     (u) => !panelCtx.emails.has(normEmail(u.email)),
   )
+  users = users.filter((u) => new Date(u.created_at).getTime() >= ADMIN_STATS_EPOCH_MS)
   if (search) {
     const s = search.toLowerCase()
     users = users.filter(u => u.email.toLowerCase().includes(s))
