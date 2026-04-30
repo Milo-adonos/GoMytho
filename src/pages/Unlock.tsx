@@ -16,7 +16,34 @@ export default function Unlock() {
 
   // Compteur de la journée — partagé avec la landing pour que la valeur
   // soit cohérente d'une page à l'autre (cf. src/lib/daily-counter.ts).
-  const dailyCount = useMemo(() => getDailyMythoCount(), [])
+  const baseDailyCount = useMemo(() => getDailyMythoCount(), [])
+  const [liveBumps, setLiveBumps] = useState(0)
+  const [justBumped, setJustBumped] = useState(false)
+
+  // « Preuve sociale en direct » : on bump le compteur de +1 à des
+  // timings précis (7, 15, 23, 29, 35s) après l'arrivée sur la page.
+  // L'idée : pendant que l'utilisateur hésite, il voit le compteur
+  // grimper → impression que des gens payent en ce moment même.
+  // Pas de timing aléatoire pour rester déterministe et reproductible.
+  useEffect(() => {
+    const bumpsAt = [7000, 15000, 23000, 29000, 35000]
+    const timers = bumpsAt.map((ms, idx) =>
+      window.setTimeout(() => {
+        setLiveBumps((prev) => prev + 1)
+        // Petit flash visuel (pulse) sur la bulle au moment du bump.
+        setJustBumped(true)
+        window.setTimeout(() => setJustBumped(false), 900)
+        // idx est utilisé pour debug uniquement (chaque cleanup
+        // suffit, on n'a pas besoin de l'index runtime).
+        void idx
+      }, ms),
+    )
+    return () => {
+      timers.forEach((id) => window.clearTimeout(id))
+    }
+  }, [])
+
+  const dailyCount = baseDailyCount + liveBumps
 
   const plans = {
     weekly: {
@@ -267,18 +294,52 @@ export default function Unlock() {
             <span>Satisfait ou remboursé</span>
           </div>
 
-          <p className="text-center text-[11px] text-text-secondary mb-3">
-            <span
-              className="font-black tabular-nums mr-1"
+          {/* Bulle compteur live — même style que la garantie pour la
+              cohérence visuelle, avec un mini point pulsant + un flash
+              à chaque incrément (preuve sociale en temps réel). */}
+          <motion.div
+            animate={
+              justBumped
+                ? {
+                    scale: [1, 1.05, 1],
+                    boxShadow: [
+                      '0 0 0px rgba(198,255,60,0)',
+                      '0 0 22px rgba(198,255,60,0.55)',
+                      '0 0 0px rgba(198,255,60,0)',
+                    ],
+                  }
+                : { scale: 1 }
+            }
+            transition={{ duration: 0.9, ease: 'easeOut' }}
+            className="flex items-center justify-center gap-2 px-4 py-2 rounded-full text-[13px] font-bold mb-3"
+            style={{
+              background: 'rgba(198,255,60,0.07)',
+              border: '1px solid rgba(198,255,60,0.22)',
+              color: '#C6FF3C',
+            }}
+          >
+            <motion.span
+              aria-hidden
+              animate={{ opacity: [1, 0.35, 1], scale: [1, 1.25, 1] }}
+              transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+              className="inline-block w-2 h-2 rounded-full"
               style={{
-                color: '#C6FF3C',
-                textShadow: '0 0 6px rgba(198,255,60,0.5)',
+                background: '#C6FF3C',
+                boxShadow: '0 0 8px rgba(198,255,60,0.85)',
               }}
+            />
+            <motion.span
+              key={dailyCount}
+              initial={justBumped ? { scale: 0.85, opacity: 0.4 } : false}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.4, ease: 'easeOut' }}
+              className="font-black tabular-nums"
+              style={{ textShadow: '0 0 6px rgba(198,255,60,0.5)' }}
             >
               {dailyCount.toLocaleString('fr-FR')}
-            </span>
-            mythos créés aujourd'hui
-          </p>
+            </motion.span>
+            <span style={{ color: '#C6FF3C' }}>mythos créés aujourd'hui</span>
+          </motion.div>
 
           {/* CTA — pulse léger pour attirer l'œil sans saturer.
               On anime l'opacité du glow + un mini scale pour que ça respire. */}
