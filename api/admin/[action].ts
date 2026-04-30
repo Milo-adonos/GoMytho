@@ -244,14 +244,41 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
     starting_after = page.data[page.data.length - 1]?.id
   }
 
+  // ─── Set des clients « valides » pour le CA ──────────────────────────────
+  // On ne compte que les invoices dont le client est :
+  //   • soit actuellement actif,
+  //   • soit annulé APRÈS la baseline churn (= vrai désabonnement business).
+  // Exclut donc les clients que tu as supprimés/désabonnés manuellement
+  // avant la baseline → leur CA passé n'est plus compté.
+  const validRevenueCustomerIds = new Set<string>()
+  for (const sub of activeSubs.data) {
+    if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
+    if (skipEmail(subscriptionCustomerEmail(sub))) continue
+    const cid = subscriptionCustomerId(sub)
+    if (cid) validRevenueCustomerIds.add(cid)
+  }
+  for (const sub of canceledSubs.data) {
+    if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
+    if (skipEmail(subscriptionCustomerEmail(sub))) continue
+    if (!cancellationOnOrAfterChurnEpoch(sub.canceled_at || 0)) continue
+    const cid = subscriptionCustomerId(sub)
+    if (cid) validRevenueCustomerIds.add(cid)
+  }
+
+  const isInvoiceCounted = (inv: Stripe.Invoice): boolean => {
+    if (!stripeCreatedOnOrAfterEpoch(inv.created)) return false
+    const invCust = invoiceStripeCustomerId(inv)
+    if (invCust && preEpochStripeCustomerIds.has(invCust)) return false
+    if (skipEmail(inv.customer_email || null)) return false
+    if (!invCust || !validRevenueCustomerIds.has(invCust)) return false
+    return true
+  }
+
   const dailyRevenue: Record<string, number> = {}
   let revenue30d = 0
   let revenuePrev30d = 0
   for (const inv of invoices) {
-    if (!stripeCreatedOnOrAfterEpoch(inv.created)) continue
-    const invCust = invoiceStripeCustomerId(inv)
-    if (invCust && preEpochStripeCustomerIds.has(invCust)) continue
-    if (skipEmail(inv.customer_email || null)) continue
+    if (!isInvoiceCounted(inv)) continue
     const ts = inv.created
     const amount = (inv.amount_paid || 0) / 100
     if (ts >= thirtyDaysAgo) revenue30d += amount
@@ -260,14 +287,11 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
     dailyRevenue[day] = (dailyRevenue[day] || 0) + amount
   }
 
-  // CA cumulé (fenêtre Stripe récupérée, exclut l’historique avant la baseline admin)
-  const totalRevenueAllTime = invoices.reduce((acc, inv) => {
-    if (!stripeCreatedOnOrAfterEpoch(inv.created)) return acc
-    const invCust = invoiceStripeCustomerId(inv)
-    if (invCust && preEpochStripeCustomerIds.has(invCust)) return acc
-    if (skipEmail(inv.customer_email || null)) return acc
-    return acc + (inv.amount_paid || 0) / 100
-  }, 0)
+  // CA cumulé (uniquement clients valides → restart propre)
+  const totalRevenueAllTime = invoices.reduce(
+    (acc, inv) => (isInvoiceCounted(inv) ? acc + (inv.amount_paid || 0) / 100 : acc),
+    0,
+  )
 
   let weeklySubscribers = 0
   let monthlySubscribers = 0
@@ -1019,16 +1043,32 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
   let mythoCountByUser: Record<string, number> = {}
   if (supabase) {
     const epochIso = new Date(ADMIN_STATS_EPOCH_MS).toISOString()
-    const [{ data: userRows }, { data: mythoRows }] = await Promise.all([
+    // On compte les mythos depuis DEUX sources et on dédoublonne par UUID
+    // dérivé. Parce que l'app écrit d'abord dans Storage (manifest JSON),
+    // puis mirror en SQL — et le mirror peut être en retard ou avoir foiré.
+    // Si on ne lit que SQL, certains users apparaissent à 0 alors qu'ils ont
+    // bien généré des mythos.
+    const [{ data: userRows }, { data: mythoRows }, storageMythos] = await Promise.all([
       supabase.from('users').select('id, email, plan, subscription_status, created_at'),
-      supabase.from('mythos').select('user_id').gte('created_at', epochIso),
+      supabase.from('mythos').select('id, user_id').gte('created_at', epochIso),
+      collectMythosFromStorage(supabase, panelCtx.userIds).catch(() => [] as any[]),
     ])
     dbUsers = (userRows || []) as any
-      for (const row of mythoRows || []) {
-        const uid = String((row as { user_id: string }).user_id)
-        if (panelCtx.userIds.has(uid)) continue
-        mythoCountByUser[uid] = (mythoCountByUser[uid] || 0) + 1
-      }
+    const sqlIdSet = new Set<string>()
+    for (const row of mythoRows || []) {
+      const id = String((row as { id: string; user_id: string }).id)
+      const uid = String((row as { user_id: string }).user_id)
+      if (panelCtx.userIds.has(uid)) continue
+      sqlIdSet.add(id)
+      mythoCountByUser[uid] = (mythoCountByUser[uid] || 0) + 1
+    }
+    for (const e of storageMythos as Array<{ id: string; user_id: string; created_at: string }>) {
+      if (panelCtx.userIds.has(e.user_id)) continue
+      if (!mythoOnOrAfterEpoch(e.created_at)) continue
+      const sqlId = localIdToUuid(e.id)
+      if (sqlIdSet.has(sqlId)) continue
+      mythoCountByUser[e.user_id] = (mythoCountByUser[e.user_id] || 0) + 1
+    }
   }
 
   // ─── 3. Fusion par email — Stripe = vérité paiement, Supabase = analyses ──
