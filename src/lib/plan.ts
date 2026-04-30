@@ -153,18 +153,21 @@ async function verifyStripeSession(sessionId: string): Promise<{
 
 // ─── Résout le plan effectif pour un nouvel utilisateur ──────────────────────
 //
-// Règle anti-fraude : aucun plan payant ni crédits d’abonnement sans
-// vérification serveur du Checkout Stripe (session_id). Sinon n’importe qui
-// pouvait obtenir 560 crédits via ?plan=, leftover localStorage, ou le défaut.
-// Les payeurs légitimes arrivent avec session_id (Payment Link → URL de succès)
-// ou profil déjà MIS à JOUR par webhook avant connexion (hasPaidGoMythoAccess).
+// Stratégie : on cherche à donner au client le PLAN QU'IL A RÉELLEMENT CHOISI
+// avec un maximum de tolérance, plutôt que de le bloquer en « Gratuit » à
+// cause d'une session_id perdue. Le webhook Stripe (côté serveur) ré-écrit
+// ensuite le plan EXACT depuis la source autoritative.
+//
+// Ordre :
+//   1. session_id en URL → vérif API (le plus fiable) → fallback amount/localStorage
+//   2. Pas de session_id mais `gomytho_pending_plan` en localStorage (posé sur
+//      /choixoffre juste avant le redirect Stripe) → on assume le plan choisi
+//   3. Rien du tout → plan free / 0 crédits
 export async function resolveNewUserPlan(searchParams: URLSearchParams): Promise<VerifiedPlan> {
   const sessionId = searchParams.get('session_id')
   if (sessionId) {
     const result = await verifyStripeSession(sessionId)
     if (result.ok) return result.ok
-    // Détail technique en console pour debug (visible Vercel logs / DevTools),
-    // jamais affiché à l'utilisateur final.
     console.warn('[plan] vérification Stripe KO', {
       sessionId,
       ...result.failure,
@@ -177,6 +180,25 @@ export async function resolveNewUserPlan(searchParams: URLSearchParams): Promise
       failure: result.failure,
     }
   }
+
+  // Pas de session_id : on regarde si l'utilisateur vient juste de cliquer
+  // sur Stripe depuis /choixoffre (localStorage encore en place).
+  try {
+    const stored = localStorage.getItem('gomytho_pending_plan')
+    if (stored === 'weekly' || stored === 'monthly') {
+      console.info('[plan] pas de session_id mais pending_plan localStorage présent', {
+        plan: stored,
+      })
+      return {
+        plan: stored,
+        credits: PLAN_CREDITS[stored],
+        source: 'stripe',
+        email: null,
+        customerId: null,
+        subscription_status: 'active',
+      }
+    }
+  } catch { /* localStorage indisponible */ }
 
   return {
     plan: 'free',

@@ -62,9 +62,15 @@ export default function Signup() {
       console.warn('[signup] upsert users échoué (non bloquant):', err)
     }
     cachePlanLocally(plan.plan, plan.credits)
-    try {
-      localStorage.removeItem('gomytho_pending_plan')
-    } catch { /* ignore */ }
+    // On NE retire le pending_plan que si l'inscription s'est faite avec un
+    // VRAI plan payant. Sinon (plan='free' faute de session_id), on le garde
+    // pour permettre à AppLayout de rattraper le coup et corriger le compte
+    // à la première visite.
+    if (plan.plan === 'weekly' || plan.plan === 'monthly') {
+      try {
+        localStorage.removeItem('gomytho_pending_plan')
+      } catch { /* ignore */ }
+    }
   }
 
   async function runAutoGeneration(userId: string) {

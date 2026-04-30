@@ -256,7 +256,18 @@ export default function AppLayout() {
       // resté à 0 crédits, on l'enrichit en vérifiant Stripe quand possible.
       const dbIsUninitialized = !dbUser || (dbUser.plan === 'free' && (dbUser.credits_remaining ?? 0) === 0)
 
-      if (dbIsUninitialized && hasFreshPayment) {
+      // Auto-réparation : si le profil est resté en « free / 0 crédits » alors
+      // qu'un plan a été choisi sur /choixoffre (gomytho_pending_plan présent),
+      // c'est qu'un paiement a abouti mais l'attribution du plan n'a pas suivi
+      // (session_id perdue, API stripe-verify HS, etc.). On re-tente l'upsert
+      // avec ce plan pour ne pas laisser le client bloqué à 0 crédits.
+      let pendingPlan: 'weekly' | 'monthly' | null = null
+      try {
+        const stored = localStorage.getItem('gomytho_pending_plan')
+        if (stored === 'weekly' || stored === 'monthly') pendingPlan = stored
+      } catch { /* ignore */ }
+
+      if (dbIsUninitialized && (hasFreshPayment || pendingPlan)) {
         const verified = await resolveNewUserPlan(searchParams)
         const upsertRow: Record<string, unknown> = {
           id: authUser.id,
@@ -287,9 +298,11 @@ export default function AppLayout() {
           }
         }
         cachePlanLocally(verified.plan, verified.credits)
-        try {
-          localStorage.removeItem('gomytho_pending_plan')
-        } catch { /* ignore */ }
+        // On retire pending_plan UNIQUEMENT si l'upsert s'est fait avec un plan
+        // payant. Sinon on le garde pour une nouvelle tentative ultérieure.
+        if (verified.plan === 'weekly' || verified.plan === 'monthly') {
+          try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
+        }
       }
 
       // ─── 2b. Fin d’essai mensuel Stripe : passage en actif + quota complet ───
