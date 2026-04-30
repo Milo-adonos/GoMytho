@@ -936,25 +936,101 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   const limit = parseInt(req.query.limit as string) || 100
 
   const panelCtx = await getAdminPanelExclusionContext(supabase)
+  const epochIso = new Date(ADMIN_STATS_EPOCH_MS).toISOString()
 
-  let q = supabase
+  // ─── On fusionne 2 sources comme le dashboard : ────────────────────────────
+  //   1) public.mythos (SQL) — mirror, peut être en retard / incomplet
+  //   2) Storage manifests {uid}/index.json — vérité côté front
+  // Sans ça, la page Analyses était vide alors que des mythos existaient
+  // bien dans Storage (ce qui aussi expliquait Coût IA > 0 mais Analyses=0).
+  let sqlQ = supabase
     .from('mythos')
-    .select('id, user_id, prompt, image_url, created_at', { count: 'exact' })
-    .gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString())
+    .select('id, user_id, prompt, image_url, created_at')
+    .gte('created_at', epochIso)
     .order('created_at', { ascending: false })
   if (panelCtx.userIds.size > 0) {
-    q = q.not('user_id', 'in', `(${Array.from(panelCtx.userIds).join(',')})`)
+    sqlQ = sqlQ.not('user_id', 'in', `(${Array.from(panelCtx.userIds).join(',')})`)
   }
-  const from = (page - 1) * limit
-  const to = page * limit - 1
-  const { data, count, error } = await q.range(from, to)
-  if (error) {
-    console.error('[admin/mythos]', error.message)
-    return res.status(200).json({ mythos: [], total: 0 })
+  const [{ data: sqlRows, error: sqlErr }, storageMythos] = await Promise.all([
+    sqlQ,
+    collectMythosFromStorage(supabase, panelCtx.userIds).catch((e) => {
+      console.warn('[admin/mythos] storage scan KO:', e?.message || e)
+      return [] as Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>
+    }),
+  ])
+  if (sqlErr) {
+    console.warn('[admin/mythos] sql:', sqlErr.message)
   }
 
-  const rows = data || []
-  const userIds = [...new Set(rows.map((m: any) => String(m.user_id)))]
+  type Item = {
+    id: string
+    user_id: string
+    prompt: string
+    image_url: string | null
+    created_at: string
+  }
+  const items: Item[] = []
+  const seenIds = new Set<string>()
+
+  for (const row of (sqlRows as any[]) || []) {
+    const id = String(row.id)
+    seenIds.add(id)
+    items.push({
+      id,
+      user_id: String(row.user_id),
+      prompt: String(row.prompt || ''),
+      image_url: row.image_url ? String(row.image_url) : null,
+      created_at: String(row.created_at),
+    })
+  }
+
+  // Storage : on n'ajoute que les entrées qui ne sont pas déjà en SQL (clé
+  // déterministe via localIdToUuid). Ce sont les mythos générés mais pas
+  // encore mirrorés. Pour eux, on génère une URL signée à la volée.
+  const bucket = String(process.env.VITE_SUPABASE_STORAGE_BUCKET || 'mythos').trim() || 'mythos'
+  const SIGNED_URL_TTL = 60 * 60 * 24 * 7 // 7 jours
+  const storageOnly = (storageMythos || []).filter((e) => {
+    if (panelCtx.userIds.has(e.user_id)) return false
+    if (!mythoOnOrAfterEpoch(e.created_at)) return false
+    const sqlId = localIdToUuid(e.id)
+    return !seenIds.has(sqlId)
+  })
+  const storageItems: Item[] = await Promise.all(
+    storageOnly.map(async (e) => {
+      let imageUrl: string | null = null
+      if (/^https?:\/\//.test(e.image_path)) {
+        imageUrl = e.image_path
+      } else {
+        try {
+          const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(e.image_path, SIGNED_URL_TTL)
+          imageUrl = signed?.signedUrl || null
+          if (!imageUrl) {
+            const { data: pub } = supabase.storage.from(bucket).getPublicUrl(e.image_path)
+            imageUrl = pub?.publicUrl || null
+          }
+        } catch {
+          imageUrl = null
+        }
+      }
+      return {
+        id: localIdToUuid(e.id),
+        user_id: e.user_id,
+        prompt: e.prompt,
+        image_url: imageUrl,
+        created_at: e.created_at,
+      }
+    }),
+  )
+  items.push(...storageItems)
+
+  // Tri global par date desc, puis pagination
+  items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  const total = items.length
+  const start = (page - 1) * limit
+  const paged = items.slice(start, start + limit)
+
+  // Map user_id → email pour la colonne Utilisateur
+  const userIds = [...new Set(paged.map((m) => m.user_id))]
   const emailById: Record<string, string> = {}
   if (userIds.length > 0) {
     const { data: urows } = await supabase.from('users').select('id, email').in('id', userIds)
@@ -962,13 +1038,13 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   }
 
   return res.status(200).json({
-    mythos: rows.map((m: any) => ({
+    mythos: paged.map((m) => ({
       ...m,
-      user_email: emailById[String(m.user_id)] || '—',
+      user_email: emailById[m.user_id] || '—',
       aspect_ratio: '9:16',
       cost: COST_PER_IMAGE,
     })),
-    total: count ?? 0,
+    total,
   })
 }
 
