@@ -7,7 +7,6 @@ import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
 import { PRICE_IDS } from '@/lib/stripe'
 import { supabase } from '@/lib/supabase'
 import { hasPaidGoMythoAccess } from '@/lib/auth-access'
-import { getDailyMythoCount } from '@/lib/daily-counter'
 
 const COUNTDOWN_DURATION_MS = 10 * 60 * 1000 // 10 minutes
 const COUNTDOWN_STORAGE_KEY = 'gomytho_offer_countdown_started_at'
@@ -36,9 +35,6 @@ export default function Unlock() {
   const navigate = useNavigate()
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('weekly')
   const [isLoading] = useState(false)
-
-  // Compteur affiché « X mythos crées aujourd'hui » — même seed que la landing.
-  const dailyCount = useMemo(() => getDailyMythoCount(), [])
 
   // Countdown 10 min depuis l'arrivée sur la page (persistant au sein de la
   // session, pour éviter que le timer ne reparte à 10:00 à chaque navigation
@@ -130,70 +126,140 @@ export default function Unlock() {
 
   const currentPlan = plans[selectedPlan]
 
+  // Le toggle a un mini ruban « PLUS CHOISI » au-dessus du plan le plus
+  // populaire (Hebdo) pour orienter le choix sans intrusion. C'est le plan
+  // d'entrée le plus pris donc on le met en avant.
+  const POPULAR_PLAN: 'weekly' | 'monthly' = 'weekly'
+
   return (
     <div className="min-h-screen bg-primary-bg">
       <Header showLogin={false} />
 
-      <div className="pt-24 pb-16 px-4">
+      <div className="pt-20 pb-8 px-4">
         <div className="max-w-md mx-auto">
 
-          {/* Header */}
+          {/* Header — compact pour tenir sur une page */}
           <motion.div
-            initial={{ opacity: 0, y: 16 }}
+            initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-center mb-8"
+            className="text-center mb-5"
           >
-            <h1 className="text-3xl font-black mb-1">Ton mytho est prêt 🎁</h1>
-            <p className="text-sm text-text-secondary">Annulable à tout moment, sans engagement</p>
+            <h1 className="text-2xl sm:text-3xl font-black mb-0.5">Ton mytho est prêt 🎁</h1>
+            <p className="text-xs text-text-secondary">Annulable à tout moment, sans engagement</p>
           </motion.div>
 
-          {/* Toggle */}
+          {/* Toggle avec ruban « PLUS CHOISI » au-dessus du plan populaire */}
           <motion.div
-            initial={{ opacity: 0, y: 16 }}
+            initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}
-            className="flex items-center p-1 rounded-full mb-6"
-            style={{ background: '#141826', border: '1px solid rgba(198,255,60,0.1)' }}
+            className="relative mb-5"
           >
-            {/* Hebdo */}
-            <button
-              onClick={() => setSelectedPlan('weekly')}
-              className="flex-1 py-2.5 rounded-full text-sm font-bold transition-all duration-200"
-              style={{
-                background: selectedPlan === 'weekly' ? '#C6FF3C' : 'transparent',
-                color: selectedPlan === 'weekly' ? '#0A0E1A' : '#8A8FA0',
-              }}
+            {/* Ruban flottant */}
+            <div
+              className={`absolute -top-2.5 z-10 ${POPULAR_PLAN === 'weekly' ? 'left-6' : 'right-6'}`}
             >
-              Hebdo
-            </button>
+              <span
+                className="inline-flex items-center gap-1 px-2 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
+                style={{
+                  background: '#C6FF3C',
+                  color: '#0A0E1A',
+                  boxShadow:
+                    '0 0 14px rgba(198,255,60,0.55), 0 0 28px rgba(198,255,60,0.25)',
+                }}
+              >
+                ★ Plus choisi
+              </span>
+            </div>
 
-            <button
-              onClick={() => setSelectedPlan('monthly')}
-              className="flex-1 py-2.5 rounded-full text-sm font-bold transition-all duration-200"
-              style={{
-                background: selectedPlan === 'monthly' ? '#C6FF3C' : 'transparent',
-                color: selectedPlan === 'monthly' ? '#0A0E1A' : '#8A8FA0',
-              }}
+            <div
+              className="flex items-center p-1 rounded-full"
+              style={{ background: '#141826', border: '1px solid rgba(198,255,60,0.1)' }}
             >
-              Mensuel
-            </button>
+              <button
+                onClick={() => setSelectedPlan('weekly')}
+                className="flex-1 py-2 rounded-full text-sm font-bold transition-all duration-200"
+                style={{
+                  background: selectedPlan === 'weekly' ? '#C6FF3C' : 'transparent',
+                  color: selectedPlan === 'weekly' ? '#0A0E1A' : '#8A8FA0',
+                }}
+              >
+                Hebdo
+              </button>
+              <button
+                onClick={() => setSelectedPlan('monthly')}
+                className="flex-1 py-2 rounded-full text-sm font-bold transition-all duration-200"
+                style={{
+                  background: selectedPlan === 'monthly' ? '#C6FF3C' : 'transparent',
+                  color: selectedPlan === 'monthly' ? '#0A0E1A' : '#8A8FA0',
+                }}
+              >
+                Mensuel
+              </button>
+            </div>
           </motion.div>
 
-          {/* Card unique selon le plan sélectionné */}
+          {/* Card */}
           <motion.div
             key={selectedPlan}
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
-            className="rounded-2xl p-6 mb-5"
+            className="relative rounded-2xl p-5 mb-3"
             style={{
               background: '#141826',
               border: '1.5px solid rgba(198,255,60,0.4)',
               boxShadow: '0 0 30px rgba(198,255,60,0.08)',
             }}
           >
+            {/* ─── Micro-badge -50% + chrono dans le coin sup. droit ──────── */}
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.08 }}
+              className="absolute -top-2.5 right-4 z-10"
+            >
+              <div
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-black tracking-wider"
+                style={{
+                  background: offerExpired
+                    ? 'linear-gradient(135deg, rgba(248,113,113,0.18), rgba(20,24,38,1) 60%)'
+                    : 'linear-gradient(135deg, rgba(198,255,60,0.20), rgba(20,24,38,1) 60%)',
+                  border: `1px solid ${offerExpired ? 'rgba(248,113,113,0.5)' : 'rgba(198,255,60,0.55)'}`,
+                  color: offerExpired ? '#fca5a5' : '#C6FF3C',
+                  boxShadow: offerExpired
+                    ? '0 0 10px rgba(248,113,113,0.25)'
+                    : '0 0 10px rgba(198,255,60,0.35), 0 0 22px rgba(198,255,60,0.15)',
+                }}
+              >
+                <span style={{ letterSpacing: '0.04em' }}>−50%</span>
+                <span
+                  aria-hidden
+                  className="w-px h-3"
+                  style={{
+                    background: offerExpired
+                      ? 'rgba(248,113,113,0.4)'
+                      : 'rgba(198,255,60,0.45)',
+                  }}
+                />
+                {offerExpired ? (
+                  <span className="uppercase">Expirée</span>
+                ) : (
+                  <span
+                    className="tabular-nums"
+                    style={{
+                      color: '#fff',
+                      textShadow: '0 0 6px rgba(198,255,60,0.7)',
+                    }}
+                  >
+                    {formatRemaining(remaining)}
+                  </span>
+                )}
+              </div>
+            </motion.div>
+
             {/* Prix */}
-            <div className="flex items-baseline gap-2 mb-1">
+            <div className="flex items-baseline gap-2 mb-1 mt-1">
               {currentPlan.originalPrice && (
                 <span className="text-base text-text-secondary line-through">{currentPlan.originalPrice}</span>
               )}
@@ -201,97 +267,15 @@ export default function Unlock() {
               <span className="text-text-secondary text-sm">{currentPlan.period}</span>
             </div>
 
-            {/* ─── Bandeau countdown -50% — design néon ─────────────────── */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.35, delay: 0.1 }}
-              className="mt-3 relative overflow-hidden rounded-xl"
-              style={{
-                background: offerExpired
-                  ? 'linear-gradient(135deg, rgba(248,113,113,0.10), rgba(248,113,113,0.04))'
-                  : 'linear-gradient(135deg, rgba(198,255,60,0.10), rgba(249,115,22,0.10))',
-                border: `1px solid ${offerExpired ? 'rgba(248,113,113,0.45)' : 'rgba(198,255,60,0.45)'}`,
-                boxShadow: offerExpired
-                  ? '0 0 22px rgba(248,113,113,0.18)'
-                  : '0 0 24px rgba(198,255,60,0.18), inset 0 0 18px rgba(249,115,22,0.06)',
-              }}
-            >
-              {/* Halo pulsé (effet néon vivant) */}
-              {!offerExpired && (
-                <motion.div
-                  aria-hidden
-                  className="pointer-events-none absolute inset-0"
-                  initial={{ opacity: 0.35 }}
-                  animate={{ opacity: [0.25, 0.55, 0.25] }}
-                  transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
-                  style={{
-                    background:
-                      'radial-gradient(80% 100% at 50% 50%, rgba(198,255,60,0.18), transparent 70%)',
-                  }}
-                />
-              )}
-
-              <div className="relative flex items-center justify-between gap-3 px-4 py-3">
-                <div className="flex items-center gap-2.5">
-                  <motion.span
-                    aria-hidden
-                    animate={offerExpired ? {} : { scale: [1, 1.18, 1] }}
-                    transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-                    className="text-base"
-                    style={{
-                      filter: offerExpired
-                        ? 'none'
-                        : 'drop-shadow(0 0 6px rgba(198,255,60,0.8)) drop-shadow(0 0 12px rgba(249,115,22,0.5))',
-                    }}
-                  >
-                    ⚡
-                  </motion.span>
-                  <div className="leading-tight">
-                    <p
-                      className="text-[10px] font-black uppercase tracking-[0.18em]"
-                      style={{ color: offerExpired ? '#fca5a5' : '#C6FF3C' }}
-                    >
-                      Offre -50%
-                    </p>
-                    <p className="text-[10px] text-text-secondary">
-                      {offerExpired ? 'Cette promo est terminée' : 'Expire dans'}
-                    </p>
-                  </div>
-                </div>
-
-                {!offerExpired ? (
-                  <div
-                    className="text-2xl font-black tabular-nums"
-                    style={{
-                      color: '#fff',
-                      textShadow:
-                        '0 0 8px rgba(198,255,60,0.85), 0 0 18px rgba(249,115,22,0.55), 0 0 30px rgba(198,255,60,0.35)',
-                      letterSpacing: '0.02em',
-                    }}
-                  >
-                    {formatRemaining(remaining)}
-                  </div>
-                ) : (
-                  <div
-                    className="text-base font-black uppercase tracking-widest"
-                    style={{ color: '#fca5a5' }}
-                  >
-                    Expirée
-                  </div>
-                )}
-              </div>
-            </motion.div>
-
             {/* Séparateur */}
-            <div className="my-4" style={{ height: '1px', background: 'rgba(198,255,60,0.1)' }} />
+            <div className="my-3" style={{ height: '1px', background: 'rgba(198,255,60,0.1)' }} />
 
-            {/* Features */}
-            <ul className="space-y-3">
+            {/* Features — espacement plus serré */}
+            <ul className="space-y-2">
               {currentPlan.features.map((f, i) => (
-                <li key={i} className="flex items-center gap-3 text-sm">
+                <li key={i} className="flex items-center gap-2.5 text-sm">
                   <span
-                    className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[11px] font-black"
+                    className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-black"
                     style={{ background: 'rgba(198,255,60,0.15)', color: '#C6FF3C' }}
                   >✓</span>
                   <span className="text-text-primary">{f}</span>
@@ -300,86 +284,18 @@ export default function Unlock() {
             </ul>
           </motion.div>
 
-          {/* Garantie satisfait ou remboursé — pleine largeur, plus visible */}
+          {/* Garantie : pleine largeur mais petite/discrète */}
           <div
-            className="flex items-center justify-center gap-2.5 px-4 py-3 rounded-xl text-sm font-black mb-5"
+            className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-bold mb-3"
             style={{
-              background: 'rgba(198,255,60,0.08)',
-              border: '1px solid rgba(198,255,60,0.25)',
+              background: 'rgba(198,255,60,0.06)',
+              border: '1px solid rgba(198,255,60,0.2)',
               color: '#C6FF3C',
-              boxShadow: '0 0 18px rgba(198,255,60,0.10)',
             }}
           >
-            <span className="text-lg">🛡️</span>
+            <span className="text-xs">🛡️</span>
             <span>Satisfait ou remboursé</span>
           </div>
-
-          {/* ─── Compteur social « live » au-dessus du CTA ──────────────── */}
-          <motion.div
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.15 }}
-            className="relative overflow-hidden rounded-2xl mb-4"
-            style={{
-              background:
-                'linear-gradient(135deg, rgba(198,255,60,0.06) 0%, rgba(198,255,60,0.02) 50%, rgba(198,255,60,0.10) 100%)',
-              border: '1px solid rgba(198,255,60,0.22)',
-              boxShadow: '0 0 22px rgba(198,255,60,0.10), inset 0 0 24px rgba(198,255,60,0.04)',
-            }}
-          >
-            {/* Halo qui respire en fond */}
-            <motion.div
-              aria-hidden
-              className="pointer-events-none absolute inset-0"
-              animate={{ opacity: [0.3, 0.6, 0.3] }}
-              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-              style={{
-                background:
-                  'radial-gradient(60% 80% at 30% 50%, rgba(198,255,60,0.18), transparent 70%)',
-              }}
-            />
-            <div className="relative flex items-center gap-3 px-4 py-3.5">
-              {/* Pastille « live » */}
-              <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0">
-                <motion.span
-                  aria-hidden
-                  className="absolute inset-0 rounded-full"
-                  animate={{ scale: [1, 1.9, 1], opacity: [0.7, 0, 0.7] }}
-                  transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut' }}
-                  style={{ background: '#C6FF3C' }}
-                />
-                <span
-                  className="relative w-2 h-2 rounded-full"
-                  style={{
-                    background: '#C6FF3C',
-                    boxShadow: '0 0 8px rgba(198,255,60,0.95), 0 0 14px rgba(198,255,60,0.5)',
-                  }}
-                />
-              </div>
-
-              <div className="flex-1 leading-tight">
-                <p
-                  className="text-[9px] font-black uppercase tracking-[0.22em] mb-0.5"
-                  style={{ color: '#C6FF3C', opacity: 0.85 }}
-                >
-                  En direct
-                </p>
-                <p className="text-sm">
-                  <span
-                    className="text-xl font-black tabular-nums mr-1.5"
-                    style={{
-                      color: '#fff',
-                      textShadow:
-                        '0 0 8px rgba(198,255,60,0.8), 0 0 18px rgba(198,255,60,0.45)',
-                    }}
-                  >
-                    {dailyCount.toLocaleString('fr-FR')}
-                  </span>
-                  <span className="text-text-primary">mythos créés aujourd'hui</span>
-                </p>
-              </div>
-            </div>
-          </motion.div>
 
           {/* CTA */}
           <Button
@@ -387,12 +303,12 @@ export default function Unlock() {
             disabled={isLoading}
             size="lg"
             fullWidth
-            className="mb-3"
+            className="mb-2"
           >
             {isLoading ? 'Chargement...' : 'DÉBLOQUER MON MYTHO →'}
           </Button>
 
-          <p className="text-center text-xs text-text-secondary">
+          <p className="text-center text-[11px] text-text-secondary leading-snug">
             🔒 Paiement sécurisé Stripe · Annulable en un clic, remboursé si pas satisfait
           </p>
         </div>
