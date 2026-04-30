@@ -377,8 +377,8 @@ export default function Signup() {
                   <p>
                     On n’arrive pas à confirmer ton paiement pour le moment. Si
                     tu as bien été débité, écris-nous à{' '}
-                    <a href="mailto:support@gomytho.com" className="text-lime underline font-semibold">
-                      support@gomytho.com
+                    <a href="mailto:tibautmytho@gmail.com" className="text-lime underline font-semibold">
+                      tibautmytho@gmail.com
                     </a>{' '}
                     avec ta preuve — on active ton accès rapidement.
                   </p>
