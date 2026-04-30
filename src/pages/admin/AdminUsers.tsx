@@ -46,6 +46,7 @@ export default function AdminUsers() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const inFlightRef = useRef(false)
   const [exclusions, setExclusions] = useState<PanelExclusion[]>([])
+  const [panelMsg, setPanelMsg] = useState<{ type: 'err' | 'ok'; text: string } | null>(null)
 
   const loadExclusions = useCallback(async () => {
     try {
@@ -55,8 +56,8 @@ export default function AdminUsers() {
     } catch { /* ignore */ }
   }, [])
 
-  const fetchUsers = useCallback(async () => {
-    if (inFlightRef.current) return
+  const fetchUsers = useCallback(async (force = false) => {
+    if (inFlightRef.current && !force) return
     inFlightRef.current = true
     if (users.length === 0) setLoading(true)
     else setRefreshing(true)
@@ -88,6 +89,7 @@ export default function AdminUsers() {
   }, [fetchUsers])
 
   const hideFromPanel = async (u: User) => {
+    setPanelMsg(null)
     const r = await fetch('/api/admin/exclusions', {
       method: 'POST',
       credentials: 'include',
@@ -97,19 +99,36 @@ export default function AdminUsers() {
         user_id: u.id.startsWith('stripe_') ? null : u.id,
       }),
     })
-    if (!r.ok) return
+    let payload: { error?: string; ok?: boolean } = {}
+    try {
+      payload = await r.json()
+    } catch { /* ignore */ }
+    if (!r.ok) {
+      setPanelMsg({ type: 'err', text: payload.error || `Échec (${r.status}). Vérifie que la table admin_panel_exclusions existe sur Supabase.` })
+      return
+    }
+    setPanelMsg({ type: 'ok', text: 'Compte retiré du panel et des statistiques.' })
     await loadExclusions()
-    void fetchUsers()
+    void fetchUsers(true)
   }
 
   const restoreToPanel = async (emailNorm: string) => {
+    setPanelMsg(null)
     const r = await fetch(`/api/admin/exclusions?email=${encodeURIComponent(emailNorm)}`, {
       method: 'DELETE',
       credentials: 'include',
     })
-    if (!r.ok) return
+    let payload: { error?: string } = {}
+    try {
+      payload = await r.json()
+    } catch { /* ignore */ }
+    if (!r.ok) {
+      setPanelMsg({ type: 'err', text: payload.error || `Échec (${r.status})` })
+      return
+    }
+    setPanelMsg({ type: 'ok', text: 'Compte réintégré au panel.' })
     await loadExclusions()
-    void fetchUsers()
+    void fetchUsers(true)
   }
 
   const handleSort = (key: keyof User) => {
@@ -130,14 +149,27 @@ export default function AdminUsers() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-xl font-black text-white">Utilisateurs <span className="text-text-secondary font-normal text-base">({total})</span></h1>
-        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={fetchUsers} />
+        <LiveBadge lastUpdatedAt={lastUpdatedAt} refreshing={refreshing} onRefresh={() => void fetchUsers(true)} />
       </div>
+
+      {panelMsg && (
+        <p
+          className="text-sm px-3 py-2 rounded-xl border"
+          style={{
+            borderColor: panelMsg.type === 'err' ? 'rgba(248,113,113,0.4)' : 'rgba(74,222,128,0.35)',
+            color: panelMsg.type === 'err' ? '#fca5a5' : '#86efac',
+            background: panelMsg.type === 'err' ? 'rgba(248,113,113,0.08)' : 'rgba(74,222,128,0.08)',
+          }}
+        >
+          {panelMsg.text}
+        </p>
+      )}
 
       {/* Filtres */}
       <div className="flex flex-wrap gap-2">
         <input
           value={search} onChange={e => setSearch(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && fetchUsers()}
+          onKeyDown={e => e.key === 'Enter' && void fetchUsers(true)}
           placeholder="Rechercher un email..."
           className="px-3 py-2 rounded-xl text-sm bg-secondary-bg text-text-primary border focus:outline-none"
           style={{ borderColor: 'rgba(198,255,60,0.15)', minWidth: '200px' }}

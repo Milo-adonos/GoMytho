@@ -307,10 +307,25 @@ function requireAdmin(req: VercelRequest, res: VercelResponse): boolean {
   return true
 }
 
+/** Segment dynamique /api/admin/:action (Vercel met souvent req.query.action, repli sur l’URL si besoin). */
+function getAdminAction(req: VercelRequest): string {
+  const raw = req.query.action
+  const fromQuery = Array.isArray(raw) ? raw[0] : raw
+  if (typeof fromQuery === 'string' && fromQuery.trim()) return fromQuery.trim().toLowerCase()
+  const url = String(req.url || '')
+  const path = url.split('?')[0]
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length >= 3 && segments[0] === 'api' && segments[1] === 'admin') {
+    const seg = segments[2]
+    if (seg && seg !== 'admin') return decodeURIComponent(seg).toLowerCase()
+  }
+  return ''
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requireAdmin(req, res)) return
 
-  const action = String(req.query.action || '').toLowerCase()
+  const action = getAdminAction(req)
 
   try {
     switch (action) {
@@ -996,7 +1011,9 @@ async function handlePanelExclusions(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
     let body: { email?: string; user_id?: string | null } = {}
     try {
-      body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}) || {}
+      if (req.body == null || req.body === '') body = {}
+      else if (typeof req.body === 'string') body = JSON.parse(req.body || '{}')
+      else if (typeof req.body === 'object') body = req.body as typeof body
     } catch {
       body = {}
     }
