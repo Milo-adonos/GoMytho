@@ -42,7 +42,10 @@ export default function AuthCallback() {
       if (plan) params.set('plan', plan)
       if (sessionId) params.set('session_id', sessionId)
       const query = params.toString()
-      navigate(`/resultats${query ? `?${query}` : ''}`, { replace: true })
+      // Atterrissage souhaité : page Créer (l'utilisateur peut consulter ses
+      // mythos via la bottom nav). AppLayout y exécute aussi l'éventuel
+      // upsert post-paiement et l'auto-génération si pending photos.
+      navigate(`/makemytho${query ? `?${query}` : ''}`, { replace: true })
     }
 
     const proceedAfterSession = async (session: Session) => {

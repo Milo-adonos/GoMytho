@@ -43,7 +43,7 @@ export default function Login() {
         } else if (error.message?.includes('Email not confirmed')) {
           // Email non confirmé → on tente quand même de récupérer la session
           const { data: { session } } = await supabase.auth.getSession()
-          if (session) { window.location.href = '/resultats'; return }
+          if (session) { window.location.href = '/makemytho'; return }
           setError('❌ Confirme ton email avant de te connecter.')
         } else {
           setError(error.message || 'Une erreur est survenue')
@@ -76,7 +76,7 @@ export default function Login() {
         return
       }
 
-      window.location.href = '/resultats'
+      window.location.href = '/makemytho'
     } catch {
       setError('Une erreur est survenue. Réessaie.')
     } finally {

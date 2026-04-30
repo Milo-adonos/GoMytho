@@ -36,6 +36,8 @@ const PAGE_NAMES: Array<{ pattern: RegExp; name: string; funnel_step?: number }>
   { pattern: /^\/uploadphoto/, name: 'Upload Photo', funnel_step: 2 },
   { pattern: /^\/chargementmytho/, name: 'Chargement Mytho', funnel_step: 3 },
   { pattern: /^\/choixoffre/, name: 'Choix Offre', funnel_step: 4 },
+  { pattern: /^\/choixoffremytho/, name: 'Choix Offre', funnel_step: 4 },
+  { pattern: /^\/paiementreussi/, name: 'Paiement reussi' },
   { pattern: /^\/signup/, name: 'Signup', funnel_step: 5 },
   { pattern: /^\/login/, name: 'Login' },
   { pattern: /^\/auth\/callback/, name: 'Auth Callback' },

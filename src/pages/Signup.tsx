@@ -74,7 +74,9 @@ export default function Signup() {
     const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
 
     if (!pendingImage || !pendingPrompt) {
-      window.location.href = '/resultats'
+      // Pas de mytho en attente : on emmène l'utilisateur direct sur l'écran
+      // « Créer » pour qu'il fasse son premier mytho immédiatement.
+      window.location.href = '/makemytho'
       return
     }
 
@@ -193,7 +195,9 @@ export default function Signup() {
         console.warn('[signup] décrément crédits après auto-gen (non bloquant):', credErr)
       }
 
-      window.location.href = '/resultats'
+      // Le mytho auto-généré est sauvegardé (cloud + cache) ; on envoie l'utilisateur
+      // sur /makemytho pour enchaîner sur la création comme demandé.
+      window.location.href = '/makemytho'
     } catch (genErr) {
       console.error('[signup] auto-génération échouée définitivement après retries :', genErr)
       // On stocke l'erreur pour affichage dans le banner stylé côté Créations.
@@ -212,7 +216,7 @@ export default function Signup() {
         })
       }
       // On GARDE les pending data → relance manuelle possible depuis /makemytho.
-      window.location.href = '/resultats'
+      window.location.href = '/makemytho'
     }
   }
 

@@ -359,15 +359,10 @@ export default function AppLayout() {
         setAutoGen(true)
         await tryAutoGenerate(authUser.id)
         setAutoGen(false)
-        // Dans TOUS les cas (succès comme échec), on atterrit sur /résultats.
-        // - Succès → le mytho est dans le cache local (saveMythoToCloud) →
-        //   AppCreations le lit et l'affiche immédiatement.
-        // - Échec  → /résultats vide, mais les pending data sont conservées
-        //   pour permettre au user de relancer manuellement depuis /makemytho.
-        navigate('/resultats', { replace: true })
-        // En cas d'échec, l'erreur a été stockée dans sessionStorage par
-        // tryAutoGenerate → AppCreations / AppCreate l'affichera comme un
-        // banner stylé (au lieu d'un alert moche).
+        // Atterrissage produit : page Créer (consultable + nouveau mytho
+        // possible). Le mytho auto-généré reste accessible via /resultats
+        // (bottom nav) ; l'erreur éventuelle est affichée via un banner stylé.
+        navigate('/makemytho', { replace: true })
       } else if (hasPending) {
         clearPendingMytho()
       }

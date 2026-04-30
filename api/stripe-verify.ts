@@ -1,44 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import Stripe from 'stripe'
+import { retrieveAndBuildCheckoutPayload } from './_lib/stripe-checkout-payload'
 
 // ─── Vérification serveur d'un paiement Stripe ────────────────────────────────
 //
-// Endpoint appelé après le redirect Stripe Payment Link → /signup?session_id=...
+// Endpoint appelé après le redirect Stripe → /paiementreussi?session_id=...
 // Retourne le plan réellement payé (weekly/monthly) en interrogeant Stripe.
 //
-// Essai gratuit mensuel : si l’abonnement Stripe est en `trialing`, on ne donne
-// que MONTHLY_TRIAL_CREDITS (1 mytho). Le quota mensuel complet est appliqué
-// quand l’essai se termine (voir api/stripe-sync-trial.ts).
-
-const HEBDO_PRICE_ID = process.env.HEBDO_PRICE_ID || 'price_1TQbOECiUqAkK3BJpjzBf6kR'
-const MENSU_PRICE_ID = process.env.MENSU_PRICE_ID || 'price_1TQbP8CiUqAkK3BJ1mBxAgqA'
-
-const PLAN_CREDITS: Record<'weekly' | 'monthly' | 'free', number> = {
-  weekly: 160,
-  monthly: 560,
-  free: 3,
-}
-
-/** 1 mytho = même unité que côté app (AppCreate). */
-const CREDITS_PER_IMAGE = 8
-const MONTHLY_TRIAL_CREDITS = CREDITS_PER_IMAGE
-
-function planFromPriceId(priceId: string | undefined | null): 'weekly' | 'monthly' | null {
-  if (!priceId) return null
-  if (priceId === HEBDO_PRICE_ID) return 'weekly'
-  if (priceId === MENSU_PRICE_ID) return 'monthly'
-  return null
-}
-
-function resolveSubscription(
-  session: Stripe.Checkout.Session,
-  stripe: Stripe
-): Promise<Stripe.Subscription | null> {
-  const sub = session.subscription
-  if (!sub) return Promise.resolve(null)
-  if (typeof sub === 'string') return stripe.subscriptions.retrieve(sub)
-  return Promise.resolve(sub as Stripe.Subscription)
-}
+// Logs explicites côté serveur (Vercel → Logs) pour pouvoir tracer un paiement
+// qui ne se finalise pas : c'est la première chose à regarder en prod.
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
@@ -47,65 +17,78 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const stripeSecret = process.env.STRIPE_SECRET_KEY
   if (!stripeSecret) {
-    return res.status(500).json({ error: 'Stripe non configuré côté serveur' })
+    console.error('[stripe-verify] STRIPE_SECRET_KEY manquant dans Vercel')
+    return res.status(500).json({
+      error: 'Configuration serveur incomplète : STRIPE_SECRET_KEY manquant côté Vercel.',
+    })
   }
 
   const sessionId =
     (req.query.session_id as string | undefined) ||
-    (req.body && (req.body as any).session_id) ||
+    (req.body && (req.body as { session_id?: string }).session_id) ||
     ''
 
   if (!sessionId || typeof sessionId !== 'string') {
     return res.status(400).json({ error: 'session_id manquant' })
   }
 
+  // Détection prématurée : clé Live ↔ session Test (ou inverse) → message clair
+  const isLiveKey = stripeSecret.startsWith('sk_live_')
+  const isLiveSession = sessionId.startsWith('cs_live_')
+  const isTestSession = sessionId.startsWith('cs_test_')
+  if (isLiveKey && isTestSession) {
+    console.error('[stripe-verify] mode mismatch : clé LIVE, session TEST', { sessionId })
+    return res.status(400).json({
+      error: 'Mode Stripe incompatible : ta clé sur Vercel est en LIVE mais cette session est en TEST. Recharge un lien de paiement Live ou bascule la clé.',
+    })
+  }
+  if (!isLiveKey && isLiveSession) {
+    console.error('[stripe-verify] mode mismatch : clé TEST, session LIVE', { sessionId })
+    return res.status(400).json({
+      error: 'Mode Stripe incompatible : ta clé sur Vercel est en TEST mais ce paiement est en LIVE. Mets STRIPE_SECRET_KEY en LIVE sur Vercel.',
+    })
+  }
+
   try {
     const stripe = new Stripe(stripeSecret)
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ['line_items', 'line_items.data.price', 'subscription'],
-    })
-
-    const paidLike =
-      session.payment_status === 'paid' ||
-      session.payment_status === 'no_payment_required'
-
-    if (session.status !== 'complete' || !paidLike) {
-      return res.status(402).json({
-        error: 'Paiement non finalisé',
-        payment_status: session.payment_status,
-        status: session.status,
-      })
-    }
-
-    const lineItem = session.line_items?.data?.[0]
-    const priceId = (lineItem?.price?.id as string | undefined) || null
-    const plan = planFromPriceId(priceId)
-
-    if (!plan) {
+    const payload = await retrieveAndBuildCheckoutPayload(stripe, sessionId)
+    if (!payload) {
+      let session: Stripe.Checkout.Session
+      try {
+        session = await stripe.checkout.sessions.retrieve(sessionId)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        console.error('[stripe-verify] retrieve échoué', msg, { sessionId })
+        return res.status(404).json({
+          error: `Session Stripe introuvable : ${msg}`,
+        })
+      }
+      const paidLike =
+        session.payment_status === 'paid' ||
+        session.payment_status === 'no_payment_required'
+      if (session.status !== 'complete' || !paidLike) {
+        return res.status(402).json({
+          error: 'Paiement non finalisé côté Stripe',
+          payment_status: session.payment_status,
+          status: session.status,
+        })
+      }
+      // Paiement OK mais price.id non reconnu → variables d'env Vercel à corriger.
       return res.status(400).json({
-        error: 'Plan non reconnu',
-        priceId,
-        hint: 'Vérifie HEBDO_PRICE_ID / MENSU_PRICE_ID dans les variables d\'environnement Vercel.',
+        error: 'Plan non reconnu (les Price ID Stripe ne correspondent pas à HEBDO_PRICE_ID / MENSU_PRICE_ID dans Vercel).',
       })
     }
-
-    const subscription = await resolveSubscription(session, stripe)
-    const isTrialing = subscription?.status === 'trialing'
-
-    const credits =
-      plan === 'monthly' && isTrialing ? MONTHLY_TRIAL_CREDITS : PLAN_CREDITS[plan]
-
-    const subscription_status = plan === 'monthly' && isTrialing ? 'trialing' : 'active'
 
     return res.status(200).json({
-      plan,
-      credits,
-      email: session.customer_details?.email || session.customer_email || null,
-      customerId: typeof session.customer === 'string' ? session.customer : session.customer?.id || null,
-      subscription_status,
+      plan: payload.plan,
+      credits: payload.credits,
+      email: payload.email,
+      customerId: payload.customerId,
+      subscription_status: payload.subscription_status,
     })
-  } catch (err: any) {
-    console.error('[stripe-verify] error', err?.message || err)
-    return res.status(500).json({ error: err?.message || 'Vérification Stripe impossible' })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[stripe-verify] error', msg)
+    return res.status(500).json({ error: msg || 'Vérification Stripe impossible' })
   }
 }

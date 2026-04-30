@@ -1,11 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
 import { PRICE_IDS } from '@/lib/stripe'
+import { supabase } from '@/lib/supabase'
+import { hasPaidGoMythoAccess } from '@/lib/auth-access'
 
 export default function Unlock() {
+  const navigate = useNavigate()
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('weekly')
   const [isLoading] = useState(false)
 
@@ -27,9 +31,7 @@ export default function Unlock() {
       period: 'par mois',
       originalPrice: '19,90€',
       priceId: PRICE_IDS.monthly,
-      badge: 'LE PLUS CHOISI',
       features: [
-        '1 mytho offert pendant l’essai, puis 9,90€/mois',
         '70 images par mois une fois l’abonnement actif',
         'Qualité 2K',
         'Génération plus rapide',
@@ -40,11 +42,32 @@ export default function Unlock() {
     },
   }
 
-  // URL de succès Stripe : inclure ?session_id={CHECKOUT_SESSION_ID} pour que l’app vérifie le paiement.
+  // Payment Links Stripe : dans le Dashboard, après paiement, URL de succès du LIEN,
+  // pas seulement du produit — doit être absolue, ex. :
+  //   https://<ton-domaine>/paiementreussi?session_id={CHECKOUT_SESSION_ID}
+  // Sinon Stripe ne renvoie pas session_id et les utilisateurs repassent par le checkout.
   const PAYMENT_LINKS = {
     monthly: 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00',
     weekly: 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01',
   }
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session || cancelled) return
+      const { data: profile } = await supabase
+        .from('users')
+        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
+        .eq('id', session.user.id)
+        .maybeSingle()
+      if (cancelled || !hasPaidGoMythoAccess(profile)) return
+      navigate('/dashboard', { replace: true })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [navigate])
 
   const handleCheckout = () => {
     captureEvent(
@@ -104,26 +127,17 @@ export default function Unlock() {
               <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
             </button>
 
-            {/* Mensuel + badge au dessus */}
-            <div className="flex-1 relative flex flex-col items-center">
-              <span
-                className="absolute -top-5 px-2 py-0.5 rounded-full text-[9px] font-black whitespace-nowrap"
-                style={{ background: '#C6FF3C', color: '#0A0E1A', boxShadow: '0 0 8px rgba(198,255,60,0.6)' }}
-              >
-                LE PLUS CHOISI
-              </span>
-              <button
-                onClick={() => setSelectedPlan('monthly')}
-                className="w-full py-2.5 rounded-full text-sm font-bold transition-all duration-200"
-                style={{
-                  background: selectedPlan === 'monthly' ? '#C6FF3C' : 'transparent',
-                  color: selectedPlan === 'monthly' ? '#0A0E1A' : '#8A8FA0',
-                }}
-              >
-                Mensuel
-                <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
-              </button>
-            </div>
+            <button
+              onClick={() => setSelectedPlan('monthly')}
+              className="flex-1 py-2.5 rounded-full text-sm font-bold transition-all duration-200"
+              style={{
+                background: selectedPlan === 'monthly' ? '#C6FF3C' : 'transparent',
+                color: selectedPlan === 'monthly' ? '#0A0E1A' : '#8A8FA0',
+              }}
+            >
+              Mensuel
+              <span className="ml-1.5 text-[10px] opacity-70">-50%</span>
+            </button>
           </motion.div>
 
           {/* Card unique selon le plan sélectionné */}
@@ -132,22 +146,13 @@ export default function Unlock() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
-            className="rounded-2xl p-6 mb-5 relative"
+            className="rounded-2xl p-6 mb-5"
             style={{
               background: '#141826',
               border: '1.5px solid rgba(198,255,60,0.4)',
               boxShadow: '0 0 30px rgba(198,255,60,0.08)',
             }}
           >
-            {selectedPlan === 'monthly' && (
-              <div
-                className="absolute -top-3 left-5 px-3 py-0.5 rounded-full text-[11px] font-black"
-                style={{ background: '#C6FF3C', color: '#0A0E1A' }}
-              >
-                LE PLUS CHOISI
-              </div>
-            )}
-
             {/* Prix */}
             <div className="flex items-baseline gap-2 mb-1">
               {currentPlan.originalPrice && (

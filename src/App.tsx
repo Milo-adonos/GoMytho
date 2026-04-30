@@ -6,6 +6,7 @@ const Landing = lazy(() => import('./pages/Landing'))
 const Create = lazy(() => import('./pages/Create'))
 const Analyzing = lazy(() => import('./pages/Analyzing'))
 const Unlock = lazy(() => import('./pages/Unlock'))
+const PaiementReussi = lazy(() => import('./pages/PaiementReussi'))
 const Signup = lazy(() => import('./pages/Signup'))
 const Login = lazy(() => import('./pages/Login'))
 const AuthCallback = lazy(() => import('./pages/AuthCallback'))
@@ -57,6 +58,10 @@ function App() {
           <Route path="/uploadphoto" element={<Create />} />
           <Route path="/chargementmytho" element={<Analyzing />} />
           <Route path="/choixoffre" element={<Unlock />} />
+          <Route path="/choixoffremytho" element={<Unlock />} />
+          <Route path="/paiementreussi" element={<PaiementReussi />} />
+          {/* Trailing slash (hébergeur / Stripe) — sans ça React Router ne matche pas → écran blanc */}
+          <Route path="/paiementreussi/" element={<PaiementReussi />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/login" element={<Login />} />
           <Route path="/auth/callback" element={<AuthCallback />} />
@@ -89,6 +94,9 @@ function App() {
             <Route path="finance" element={<AdminFinance />} />
             <Route path="settings" element={<AdminSettings />} />
           </Route>
+
+          {/* Évite l’écran totalement vide si l’URL ne correspond à aucune route */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>
     </>
