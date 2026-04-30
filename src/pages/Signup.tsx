@@ -35,28 +35,45 @@ export default function Signup() {
   }, [searchParams])
 
   async function persistUserProfile(userId: string, userEmail: string, plan: VerifiedPlan) {
-    // Toujours upsert dans public.users — la vérification du paiement est notre
-    // seule source de vérité pour le plan + les crédits (cross-device).
-    // On stocke aussi stripe_customer_id (s'il a été retourné par stripe-verify)
-    // pour permettre à l'API stripe-portal d'ouvrir le portail sans re-chercher
-    // par email (évite l'erreur "No Stripe customer found" plus tard).
+    // Garde-fou anti-race-condition avec le webhook Stripe :
+    //   Le webhook (api/stripe-webhook.ts) écrit la VÉRITÉ depuis Stripe en
+    //   parallèle de l'inscription. Si le webhook arrive AVANT cet upsert et
+    //   pose le bon plan (weekly/monthly + crédits) en base, on ne doit
+    //   SURTOUT pas l'écraser avec une donnée moins sûre côté client (par ex.
+    //   plan='free' si /api/stripe-verify a échoué et qu'aucun pending_plan
+    //   n'était en localStorage).
+    let existingHasPaidPlan = false
+    let existingHasMoreCredits = false
+    try {
+      const { data: existing } = await supabase
+        .from('users')
+        .select('plan, credits_remaining')
+        .eq('id', userId)
+        .maybeSingle()
+      if (existing) {
+        existingHasPaidPlan = existing.plan === 'weekly' || existing.plan === 'monthly'
+        existingHasMoreCredits = (existing.credits_remaining ?? 0) > plan.credits
+      }
+    } catch { /* lecture non bloquante */ }
+
     try {
       const row: Record<string, unknown> = {
         id: userId,
         email: userEmail,
-        credits_remaining: plan.credits,
-        subscription_status: plan.subscription_status ?? 'active',
-        plan: plan.plan,
+      }
+      // On n'écrase JAMAIS un plan payant déjà posé par le webhook.
+      const shouldWritePlan = !(existingHasPaidPlan && plan.plan === 'free')
+      if (shouldWritePlan) {
+        row.plan = plan.plan
+        row.subscription_status = plan.subscription_status ?? 'active'
+        // Idem pour les crédits : on ne diminue jamais.
+        row.credits_remaining = existingHasMoreCredits
+          ? undefined
+          : plan.credits
+        if (row.credits_remaining === undefined) delete row.credits_remaining
       }
       if (plan.customerId) row.stripe_customer_id = plan.customerId
-      // Email réellement utilisé sur Stripe (peut différer de userEmail si
-      // paiement Apple Pay / Google Pay / alias). Permet à stripe-portal de
-      // retrouver le customer même quand stripe_customer_id manque.
-      if (plan.email && plan.email !== userEmail) {
-        row.stripe_payment_email = plan.email
-      } else if (plan.email) {
-        row.stripe_payment_email = plan.email
-      }
+      if (plan.email) row.stripe_payment_email = plan.email
       await supabase.from('users').upsert([row], { onConflict: 'id' })
     } catch (err) {
       console.warn('[signup] upsert users échoué (non bloquant):', err)
