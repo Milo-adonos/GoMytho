@@ -1,47 +1,25 @@
-import { useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
-import { hasPaidGoMythoAccess, resolveAccessProfile } from '@/lib/auth-access'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 
-// ─── Page Connexion (utilisateur déjà payant qui revient) ─────────────────
+// ─── Page Connexion ───────────────────────────────────────────────────────
 //
-// Flux simple :
-//   1. Email + mot de passe (ou Google)
-//   2. Connexion Supabase
-//   3. On vérifie qu'un abonnement actif existe pour ce compte
-//   4. OK → /makemytho        Pas de paiement → message + lien vers /choixoffre
-//
-// L'inscription se fait sur /signup après paiement Stripe (avec session_id).
+// Règle ultra-simple : si le compte existe dans Supabase, on connecte
+// directement vers /makemytho. La création de compte est strictement réservée
+// au flux post-paiement Stripe (/signup), donc tout compte qui existe ici a
+// forcément payé. Pas de check "abonnement actif" sur cette page.
 
 export default function Login() {
-  const [searchParams] = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    if (searchParams.get('reason') === 'no_access') {
-      setError("Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.")
-    }
-  }, [searchParams])
-
   const goToApp = () => {
     window.location.href = '/makemytho'
-  }
-
-  const checkAccessAndRedirect = async (userId: string, userEmail: string | null | undefined) => {
-    const profile = await resolveAccessProfile(userId, userEmail)
-    if (hasPaidGoMythoAccess(profile)) {
-      goToApp()
-      return true
-    }
-    await supabase.auth.signOut()
-    setError("Aucun abonnement actif lié à ce compte. Choisis une offre pour t'inscrire.")
-    return false
   }
 
   const handleEmailLogin = async (e: React.FormEvent) => {
@@ -58,12 +36,11 @@ export default function Login() {
         }
         return
       }
-      const session = data.session
-      if (!session) {
+      if (!data.session) {
         setError('Session non détectée. Réessaie.')
         return
       }
-      await checkAccessAndRedirect(session.user.id, session.user.email)
+      goToApp()
     } catch (err) {
       const e = err as { message?: string }
       setError(e.message || 'Une erreur est survenue. Réessaie.')
@@ -112,14 +89,8 @@ export default function Login() {
             className="bg-secondary-bg rounded-3xl p-8 border border-lime/10"
           >
             {error && (
-              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-sm space-y-3">
+              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-sm">
                 <p className="text-red-400">{error}</p>
-                <Link
-                  to="/choixoffre"
-                  className="block text-center text-lime font-semibold hover:underline"
-                >
-                  → Choisir une offre
-                </Link>
               </div>
             )}
 
