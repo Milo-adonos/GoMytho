@@ -31,8 +31,26 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_gomytho_2026'
 const ADMIN_STATS_EPOCH_ISO = '2026-04-30T00:00:00+02:00'
 const ADMIN_STATS_EPOCH_MS = new Date(ADMIN_STATS_EPOCH_ISO).getTime()
 
+/**
+ * Baseline annulations (churn). Toute annulation Stripe dont `canceled_at`
+ * est antérieur à cette date est IGNORÉE par le panel admin (cancelledAllTime,
+ * cancelledLast30d, churnRate, churnCount, totalSubscribersAllTime).
+ *
+ * Pourquoi : avant cette date, des annulations / suppressions ont été faites
+ * manuellement sur Stripe (ménage de tests, retraits de gratuités, etc.).
+ * Elles ne reflètent pas un vrai churn business → on les neutralise pour
+ * repartir d'une base propre. Tout abandon FUTUR sera compté normalement.
+ */
+const ADMIN_CHURN_EPOCH_ISO = '2026-04-30T17:00:00+02:00'
+const ADMIN_CHURN_EPOCH_MS = new Date(ADMIN_CHURN_EPOCH_ISO).getTime()
+
 function stripeCreatedOnOrAfterEpoch(tsSeconds: number): boolean {
   return tsSeconds * 1000 >= ADMIN_STATS_EPOCH_MS
+}
+
+function cancellationOnOrAfterChurnEpoch(canceledAtSec: number | null | undefined): boolean {
+  if (!canceledAtSec) return false
+  return canceledAtSec * 1000 >= ADMIN_CHURN_EPOCH_MS
 }
 
 function mythoOnOrAfterEpoch(iso: string): boolean {
@@ -288,13 +306,17 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
     if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
     if (skipEmail(subscriptionCustomerEmail(sub))) continue
     const cat = sub.canceled_at || 0
-    if (cat >= thirtyDaysAgo && stripeCreatedOnOrAfterEpoch(cat)) cancelledLast30d++
+    // Filtre baseline churn : on ignore tout désabonnement antérieur au
+    // « repart de zéro » (cf. ADMIN_CHURN_EPOCH_ISO).
+    if (!cancellationOnOrAfterChurnEpoch(cat)) continue
+    if (cat >= thirtyDaysAgo) cancelledLast30d++
   }
 
   const activeSubscribers = weeklySubscribers + monthlySubscribers
   const cancelledAllTime = canceledSubs.data.filter((s) =>
     stripeCreatedOnOrAfterEpoch(s.created) &&
-    !skipEmail(subscriptionCustomerEmail(s)) && stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
+    !skipEmail(subscriptionCustomerEmail(s)) &&
+    cancellationOnOrAfterChurnEpoch(s.canceled_at || 0),
   ).length
   const totalSubscribersAllTime = activeSubscribers + cancelledAllTime
 
@@ -769,7 +791,9 @@ async function handleFinance(res: VercelResponse) {
     (s) => s.created >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.created),
   ).length
   const cancelledThisMonth = stripeSubsCanceledFiltered.filter(
-    (s) => (s.canceled_at || 0) >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.canceled_at || 0),
+    (s) =>
+      (s.canceled_at || 0) >= startOfMonthTs &&
+      cancellationOnOrAfterChurnEpoch(s.canceled_at || 0),
   ).length
 
   const mythosThisMonth = mythos.filter(m => new Date(m.created_at) >= startOfMonth)
