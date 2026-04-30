@@ -485,6 +485,28 @@ async function handleDashboard(res: VercelResponse) {
 
   const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
 
+  // Set des comptes Supabase ENCORE existants ET non-masqués. On y restreint
+  // ensuite les mythos comptés. Sans ça, les mythos d'utilisateurs supprimés
+  // (manifest Storage orphelin) gonflent le total du dashboard alors qu'ils
+  // n'apparaissent dans aucun user de la liste → coût total ≠ somme des coûts
+  // par user. Avec ce filtre, dashboard et page Utilisateurs s'alignent.
+  const validUserIds = new Set<string>()
+  if (supabase) {
+    try {
+      const { data: rows } = await supabase
+        .from('users')
+        .select('id, created_at')
+        .gte('created_at', new Date(ADMIN_STATS_EPOCH_MS).toISOString())
+      for (const u of rows || []) {
+        const uid = String((u as any).id)
+        if (panelCtx.userIds.has(uid)) continue
+        validUserIds.add(uid)
+      }
+    } catch (err) {
+      console.warn('[admin/dashboard] valid users fetch:', (err as any)?.message || err)
+    }
+  }
+
   const mythosSqlPromise = (async () => {
     if (!supabase) return { data: [] as any[] }
     let q = supabase
@@ -513,15 +535,23 @@ async function handleDashboard(res: VercelResponse) {
 
   // On fusionne SQL + Storage par UUID dérivé. Storage est plus authoritative
   // côté front (c'est là que les mythos sont écrits en premier), SQL ne sert
-  // qu'au panel admin. La fusion garantit qu'on ne sous-compte jamais.
-  const sqlIds = new Set<string>(sqlMythos.map((m: any) => String(m.id)))
-  const merged: Array<{ id: string; created_at: string }> = sqlMythos.map((m: any) => ({
-    id: String(m.id),
-    created_at: String(m.created_at || ''),
-  }))
+  // qu'au panel admin. On ne garde que les mythos rattachés à un user
+  // actuellement visible (validUserIds). Dashboard total = somme des per-user.
+  const sqlIds = new Set<string>()
+  const merged: Array<{ id: string; created_at: string }> = []
+  for (const m of sqlMythos) {
+    const uid = String((m as any).user_id || '')
+    if (validUserIds.size > 0 && !validUserIds.has(uid)) continue
+    sqlIds.add(String((m as any).id))
+    merged.push({
+      id: String((m as any).id),
+      created_at: String((m as any).created_at || ''),
+    })
+  }
   let storageOnlyCount = 0
   for (const e of storageMythos) {
     if (panelCtx.userIds.has(e.user_id)) continue
+    if (validUserIds.size > 0 && !validUserIds.has(e.user_id)) continue
     if (!mythoOnOrAfterEpoch(e.created_at)) continue
     const sqlId = localIdToUuid(e.id)
     if (sqlIds.has(sqlId)) continue
@@ -941,8 +971,8 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   // ─── On fusionne 2 sources comme le dashboard : ────────────────────────────
   //   1) public.mythos (SQL) — mirror, peut être en retard / incomplet
   //   2) Storage manifests {uid}/index.json — vérité côté front
-  // Sans ça, la page Analyses était vide alors que des mythos existaient
-  // bien dans Storage (ce qui aussi expliquait Coût IA > 0 mais Analyses=0).
+  // Et on restreint aux user_ids encore présents en base (pour ignorer les
+  // mythos orphelins de comptes supprimés). Aligne le total avec le dashboard.
   let sqlQ = supabase
     .from('mythos')
     .select('id, user_id, prompt, image_url, created_at')
@@ -951,15 +981,25 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   if (panelCtx.userIds.size > 0) {
     sqlQ = sqlQ.not('user_id', 'in', `(${Array.from(panelCtx.userIds).join(',')})`)
   }
-  const [{ data: sqlRows, error: sqlErr }, storageMythos] = await Promise.all([
+  const [{ data: sqlRows, error: sqlErr }, storageMythos, validUsersRes] = await Promise.all([
     sqlQ,
     collectMythosFromStorage(supabase, panelCtx.userIds).catch((e) => {
       console.warn('[admin/mythos] storage scan KO:', e?.message || e)
       return [] as Array<{ id: string; user_id: string; created_at: string; image_path: string; prompt: string }>
     }),
+    supabase
+      .from('users')
+      .select('id')
+      .gte('created_at', epochIso),
   ])
   if (sqlErr) {
     console.warn('[admin/mythos] sql:', sqlErr.message)
+  }
+  const validUserIds = new Set<string>()
+  for (const u of (validUsersRes?.data as any[]) || []) {
+    const uid = String((u as any).id)
+    if (panelCtx.userIds.has(uid)) continue
+    validUserIds.add(uid)
   }
 
   type Item = {
@@ -973,11 +1013,13 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   const seenIds = new Set<string>()
 
   for (const row of (sqlRows as any[]) || []) {
+    const uid = String(row.user_id)
+    if (validUserIds.size > 0 && !validUserIds.has(uid)) continue
     const id = String(row.id)
     seenIds.add(id)
     items.push({
       id,
-      user_id: String(row.user_id),
+      user_id: uid,
       prompt: String(row.prompt || ''),
       image_url: row.image_url ? String(row.image_url) : null,
       created_at: String(row.created_at),
@@ -991,6 +1033,7 @@ async function handleMythos(req: VercelRequest, res: VercelResponse) {
   const SIGNED_URL_TTL = 60 * 60 * 24 * 7 // 7 jours
   const storageOnly = (storageMythos || []).filter((e) => {
     if (panelCtx.userIds.has(e.user_id)) return false
+    if (validUserIds.size > 0 && !validUserIds.has(e.user_id)) return false
     if (!mythoOnOrAfterEpoch(e.created_at)) return false
     const sqlId = localIdToUuid(e.id)
     return !seenIds.has(sqlId)
