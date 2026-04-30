@@ -239,17 +239,14 @@ export default function Signup() {
       const { data, error: signUpErr } = await supabase.auth.signUp({ email, password })
 
       if (signUpErr) {
-        // Compte existant → on bascule sur login en gardant les pending data
+        // Email déjà utilisé : pas de fallback connexion ici. La page /signup
+        // est strictement pour la création de compte. Le client est invité à
+        // utiliser le bouton « Connexion » de la landing page.
         if (/already registered|already exists|user.*exists/i.test(signUpErr.message)) {
-          const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password })
-          if (signInErr || !signInData.session) {
-            setError(`❌ Un compte existe déjà avec cet email. Connecte-toi depuis la page Login.`)
-            setIsLoading(false)
-            return
-          }
-          // Connexion OK → traiter comme un nouveau signup pour upsert du plan
-          await persistUserProfile(signInData.session.user.id, signInData.session.user.email || email, planToAssign)
-          await runAutoGeneration(signInData.session.user.id)
+          setError(
+            "Cet email a déjà un compte. Va sur la page d'accueil et clique sur « Connexion » pour te connecter.",
+          )
+          setIsLoading(false)
           return
         }
         throw signUpErr
@@ -492,13 +489,6 @@ export default function Signup() {
               <a href="/privacy" className="text-lime hover:underline">
                 politique de confidentialité
               </a>
-            </p>
-
-            <p className="text-center text-sm text-text-secondary mt-4">
-              Déjà un compte ?{' '}
-              <Link to="/login" className="text-lime hover:underline font-semibold">
-                Se connecter
-              </Link>
             </p>
           </motion.div>
 
