@@ -135,10 +135,11 @@ CREATE TRIGGER on_auth_user_created
     FOR EACH ROW
     EXECUTE FUNCTION public.handle_new_user();
 
--- Exclusions panel admin : masque un compte des listes et des agrégats (ne supprime pas Auth)
+-- Exclusions panel admin : masque un compte des listes et des agrégats (ne supprime pas Auth).
+-- user_id sans FK : évite l’échec si la table est créée avant un restore partiel ; l’app filtre par email_norm.
 CREATE TABLE IF NOT EXISTS public.admin_panel_exclusions (
     email_norm TEXT PRIMARY KEY,
-    user_id UUID REFERENCES public.users(id) ON DELETE SET NULL,
+    user_id UUID,
     excluded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_admin_panel_exclusions_user_id ON public.admin_panel_exclusions(user_id);
