@@ -109,6 +109,12 @@ export async function resolveNewUserPlan(searchParams: URLSearchParams): Promise
   if (sessionId) {
     const result = await verifyStripeSession(sessionId)
     if (result.ok) return result.ok
+    // Détail technique en console pour debug (visible Vercel logs / DevTools),
+    // jamais affiché à l'utilisateur final.
+    console.warn('[plan] vérification Stripe KO', {
+      sessionId,
+      ...result.failure,
+    })
     return {
       plan: 'free',
       credits: 0,
