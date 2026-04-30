@@ -162,23 +162,24 @@ export default function Unlock() {
             transition={{ delay: 0.05 }}
             className="relative mb-5"
           >
-            {/* Ruban flottant — magenta néon pour qu'il reste visible même
-                quand le bouton Hebdo est sélectionné (lime sur lime ne se
-                voit pas). Contraste fort avec le lime + l'arrière-plan. */}
+            {/* Ruban flottant — palette « cadeau 🎁 » : rouge boîte + or
+                ruban. Lit naturellement avec le titre « Ton mytho est prêt
+                🎁 », et reste hyper-lisible sur le bouton Hebdo lime. */}
             <div
               className={`absolute -top-2.5 z-10 ${POPULAR_PLAN === 'weekly' ? 'left-6' : 'right-6'}`}
             >
               <span
                 className="inline-flex items-center gap-1 px-2.5 py-[3px] rounded-full text-[9px] font-black uppercase tracking-[0.16em]"
                 style={{
-                  background: 'linear-gradient(135deg, #f0abfc 0%, #d946ef 100%)',
-                  color: '#1a0625',
+                  background: 'linear-gradient(135deg, #ef4444 0%, #f97316 55%, #fbbf24 100%)',
+                  color: '#fff',
                   boxShadow:
-                    '0 0 12px rgba(217,70,239,0.65), 0 0 26px rgba(240,171,252,0.35), inset 0 0 8px rgba(255,255,255,0.25)',
-                  textShadow: '0 0 6px rgba(255,255,255,0.5)',
+                    '0 0 12px rgba(239,68,68,0.6), 0 0 26px rgba(251,191,36,0.35), inset 0 0 8px rgba(255,255,255,0.22)',
+                  textShadow: '0 1px 2px rgba(0,0,0,0.35)',
                 }}
               >
-                ★ Plus choisi
+                <span style={{ filter: 'drop-shadow(0 0 4px rgba(251,191,36,0.85))' }}>🎁</span>
+                Plus choisi
               </span>
             </div>
 
