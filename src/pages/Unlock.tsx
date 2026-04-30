@@ -61,9 +61,11 @@ export default function Unlock() {
       priceId: PRICE_IDS.weekly,
       features: [
         '20 images par semaine',
-        'Qualité 1K',
+        'Qualité 2K',
+        'Génération plus rapide',
         'Aucun watermark',
         'Historique complet',
+        'Support prioritaire',
       ],
     },
     monthly: {
@@ -74,10 +76,8 @@ export default function Unlock() {
       features: [
         '70 images par mois une fois l’abonnement actif',
         'Qualité 2K',
-        'Génération plus rapide',
         'Aucun watermark',
         'Historique complet',
-        'Support prioritaire',
       ],
     },
   }
