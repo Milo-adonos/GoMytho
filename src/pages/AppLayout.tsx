@@ -240,7 +240,15 @@ export default function AppLayout() {
       // "Fresh payment" = retour explicite du flux Stripe Checkout avec session_id
       // (vérifiable côté serveur). localStorage / ?plan= seuls ne prouvent pas un
       // paiement — ils ne doivent pas ouvrir l’app ni attribuer de crédits payants.
-      const hasFreshPayment = !!searchParams.get('session_id')
+      // Cas spécial inscription : si l'utilisateur arrive d'un parcours /signup
+      // (flag posé avant Google OAuth), on traite comme un fresh payment pour
+      // éviter qu'il soit renvoyé sur /login pendant la phase d'upsert.
+      let isFromSignup = false
+      try { isFromSignup = sessionStorage.getItem('gomytho_signup_flow') === '1' } catch { /* ignore */ }
+      const hasFreshPayment = !!searchParams.get('session_id') || isFromSignup
+      if (isFromSignup) {
+        try { sessionStorage.removeItem('gomytho_signup_flow') } catch { /* ignore */ }
+      }
 
       // ─── 2. Si user fraîchement payé OU profil DB non initialisé → upsert ──
       // Le trigger Supabase crée la ligne avec credits=0/plan='free'. Si on

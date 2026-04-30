@@ -55,6 +55,21 @@ export default function AuthCallback() {
         goToApp()
         return
       }
+
+      // Si on arrive d'un parcours INSCRIPTION (Google Signup depuis /signup),
+      // on laisse PASSER systématiquement vers /makemytho. AppLayout gère la
+      // suite (upsert plan, redirect vers /choixoffre si pas d'abonnement).
+      // On ne renvoie JAMAIS un nouvel inscrit vers /login.
+      let isSignupFlow = searchParams.get('signup') === '1'
+      if (!isSignupFlow) {
+        try { isSignupFlow = sessionStorage.getItem('gomytho_signup_flow') === '1' } catch { /* ignore */ }
+      }
+      if (isSignupFlow) {
+        try { sessionStorage.removeItem('gomytho_signup_flow') } catch { /* ignore */ }
+        goToApp()
+        return
+      }
+
       // Cherche le profil payé : d'abord par id (cas nominal), puis fallback
       // par email — couvre le cas du client qui a payé sous email/mot de passe
       // mais essaye de revenir via Google (Supabase peut créer une nouvelle

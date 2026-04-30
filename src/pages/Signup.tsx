@@ -225,15 +225,11 @@ export default function Signup() {
     setIsLoading(true)
     setError('')
 
+    // /signup = page d'inscription pure. On ne BLOQUE jamais la création de
+    // compte ici, même si la vérif Stripe échoue : le client a payé pour
+    // arriver, on lui crée son compte. Le plan est résolu en best-effort
+    // (session_id → API → fallback localStorage → mensuel par défaut).
     const planToAssign = verified ?? (await resolveNewUserPlan(searchParams))
-
-    if (planToAssign.source !== 'stripe') {
-      setError(
-        'Pour créer un compte, finalise d’abord le paiement sur la page « Choix de l’offre ». Après Stripe, reviens via le lien de retour (avec confirmation sécurisée) — sans ça, aucun abonnement n’est détecté.',
-      )
-      setIsLoading(false)
-      return
-    }
 
     try {
       const { data, error: signUpErr } = await supabase.auth.signUp({ email, password })
@@ -290,25 +286,25 @@ export default function Signup() {
     setError('')
 
     try {
+      // Pas de blocage : la page /signup est dédiée à l'inscription. Le client
+      // a payé sur Stripe pour arriver ici, on le laisse créer son compte.
       const planResolved = verified ?? (await resolveNewUserPlan(searchParams))
-      if (planResolved.source !== 'stripe') {
-        setError(
-          'Connecte-toi avec Google uniquement après avoir payé : tu seras renvoyé depuis Stripe avec une confirmation sécurisée. Sinon, commence par « Choix de l’offre ».',
-        )
-        setIsLoading(false)
-        return
-      }
-      const planQuery = planResolved.plan === 'weekly' || planResolved.plan === 'monthly' ? planResolved.plan : 'monthly'
+      const planQuery = planResolved.plan === 'weekly' || planResolved.plan === 'monthly'
+        ? planResolved.plan
+        : 'monthly'
       const sessionParam = searchParams.get('session_id')
       const sidQuery = sessionParam ? `&session_id=${encodeURIComponent(sessionParam)}` : ''
       const origin = window.location.origin
+      // Marqueur pour que /auth/callback sache qu'on est sur un parcours INSCRIPTION
+      // (et pas simple connexion). Permet de ne pas rejeter le client si la
+      // session_id Stripe se perd dans le redirect Google ↔ Supabase.
+      try {
+        sessionStorage.setItem('gomytho_signup_flow', '1')
+      } catch { /* ignore */ }
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          // /auth/callback préserve plan + session_id puis redirige vers
-          // /resultats. AppLayout y fait l'upsert post-paiement et lance
-          // l'auto-génération du mytho.
-          redirectTo: `${origin}/auth/callback?plan=${planQuery}${sidQuery}`,
+          redirectTo: `${origin}/auth/callback?plan=${planQuery}&signup=1${sidQuery}`,
         },
       })
       if (oauthErr) throw oauthErr
@@ -358,28 +354,6 @@ export default function Signup() {
                   Plan {PLAN_LABELS[verified.plan]} — {verified.credits} crédits
                   <span className="ml-1 opacity-70">· Paiement vérifié ✓</span>
                 </span>
-              </div>
-            )}
-            {verified?.source === 'unpaid' && (
-              <div className="text-sm text-orange-300/95 max-w-sm mx-auto">
-                {verified.failure?.reason === 'no_session_id' ? (
-                  <p>
-                    Aucun paiement détecté.{' '}
-                    <Link to="/choixoffre" className="text-lime underline font-semibold">
-                      Choisis d’abord une offre
-                    </Link>
-                    , puis reviens ici après le paiement.
-                  </p>
-                ) : (
-                  <p>
-                    On n’arrive pas à confirmer ton paiement pour le moment. Si
-                    tu as bien été débité, écris-nous à{' '}
-                    <a href="mailto:tibautmytho@gmail.com" className="text-lime underline font-semibold">
-                      tibautmytho@gmail.com
-                    </a>{' '}
-                    avec ta preuve — on active ton accès rapidement.
-                  </p>
-                )}
               </div>
             )}
           </motion.div>
