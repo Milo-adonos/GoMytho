@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
@@ -20,26 +20,34 @@ export default function Unlock() {
   const [liveBumps, setLiveBumps] = useState(0)
   const [justBumped, setJustBumped] = useState(false)
 
-  // « Preuve sociale en direct » : on bump le compteur de +1 à des
-  // timings précis (7, 15, 23, 29, 35s) après l'arrivée sur la page.
-  // L'idée : pendant que l'utilisateur hésite, il voit le compteur
-  // grimper → impression que des gens payent en ce moment même.
-  // Pas de timing aléatoire pour rester déterministe et reproductible.
+  // « Preuve sociale en direct » : tant que la personne reste sur la
+  // page, on bump le compteur de +1 toutes les 5–10 secondes (intervalle
+  // aléatoire à chaque fois). L'idée : voir le chiffre grimper donne
+  // l'impression que d'autres gens payent en temps réel pendant que
+  // l'utilisateur hésite. setTimeout récursif pour pouvoir varier le
+  // délai à chaque tick (un setInterval forcerait un délai constant).
   useEffect(() => {
-    const bumpsAt = [7000, 15000, 23000, 29000, 35000]
-    const timers = bumpsAt.map((ms, idx) =>
-      window.setTimeout(() => {
+    let timerId: number | null = null
+    let flashId: number | null = null
+    let cancelled = false
+
+    const schedule = () => {
+      if (cancelled) return
+      const delay = 5000 + Math.random() * 5000 // 5–10s
+      timerId = window.setTimeout(() => {
         setLiveBumps((prev) => prev + 1)
-        // Petit flash visuel (pulse) sur la bulle au moment du bump.
         setJustBumped(true)
-        window.setTimeout(() => setJustBumped(false), 900)
-        // idx est utilisé pour debug uniquement (chaque cleanup
-        // suffit, on n'a pas besoin de l'index runtime).
-        void idx
-      }, ms),
-    )
+        flashId = window.setTimeout(() => setJustBumped(false), 1200)
+        schedule() // on enchaîne avec un nouveau délai aléatoire
+      }, delay)
+    }
+
+    schedule()
+
     return () => {
-      timers.forEach((id) => window.clearTimeout(id))
+      cancelled = true
+      if (timerId !== null) window.clearTimeout(timerId)
+      if (flashId !== null) window.clearTimeout(flashId)
     }
   }, [])
 
@@ -295,29 +303,65 @@ export default function Unlock() {
           </div>
 
           {/* Bulle compteur live — même style que la garantie pour la
-              cohérence visuelle, avec un mini point pulsant + un flash
-              à chaque incrément (preuve sociale en temps réel). */}
+              cohérence visuelle. Animation visible à chaque +1 :
+              - bulle qui flashe (background + bordure + halo)
+              - léger « pop » (scale)
+              - chiffre qui re-monte avec un flash
+              - badge « +1 » qui flotte vers le haut au-dessus
+              - point lumineux qui pulse en permanence (vibe « live »). */}
           <motion.div
             animate={
               justBumped
                 ? {
-                    scale: [1, 1.05, 1],
+                    scale: [1, 1.06, 1],
+                    backgroundColor: [
+                      'rgba(198,255,60,0.07)',
+                      'rgba(198,255,60,0.28)',
+                      'rgba(198,255,60,0.07)',
+                    ],
+                    borderColor: [
+                      'rgba(198,255,60,0.22)',
+                      'rgba(198,255,60,0.85)',
+                      'rgba(198,255,60,0.22)',
+                    ],
                     boxShadow: [
                       '0 0 0px rgba(198,255,60,0)',
-                      '0 0 22px rgba(198,255,60,0.55)',
+                      '0 0 28px rgba(198,255,60,0.7), 0 0 50px rgba(198,255,60,0.35)',
                       '0 0 0px rgba(198,255,60,0)',
                     ],
                   }
                 : { scale: 1 }
             }
-            transition={{ duration: 0.9, ease: 'easeOut' }}
-            className="flex items-center justify-center gap-2 px-4 py-2 rounded-full text-[13px] font-bold mb-3"
+            transition={{ duration: 1.1, ease: 'easeOut' }}
+            className="relative flex items-center justify-center gap-2 px-4 py-2 rounded-full text-[13px] font-bold mb-3"
             style={{
               background: 'rgba(198,255,60,0.07)',
               border: '1px solid rgba(198,255,60,0.22)',
               color: '#C6FF3C',
             }}
           >
+            {/* Badge « +1 » qui flotte vers le haut quand le compteur
+                bump. AnimatePresence pour gérer le mount/unmount propre. */}
+            <AnimatePresence>
+              {justBumped && (
+                <motion.div
+                  key={`plus1-${liveBumps}`}
+                  initial={{ opacity: 0, y: 0, scale: 0.6 }}
+                  animate={{ opacity: [0, 1, 1, 0], y: -34, scale: [0.6, 1.15, 1, 1] }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 1.1, ease: 'easeOut', times: [0, 0.15, 0.7, 1] }}
+                  className="absolute left-1/2 -top-1 -translate-x-1/2 pointer-events-none px-2 py-0.5 rounded-full text-[11px] font-black"
+                  style={{
+                    background: '#C6FF3C',
+                    color: '#0A0E1A',
+                    boxShadow: '0 0 14px rgba(198,255,60,0.8), 0 4px 10px rgba(0,0,0,0.3)',
+                  }}
+                >
+                  +1
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <motion.span
               aria-hidden
               animate={{ opacity: [1, 0.35, 1], scale: [1, 1.25, 1] }}
@@ -330,11 +374,11 @@ export default function Unlock() {
             />
             <motion.span
               key={dailyCount}
-              initial={justBumped ? { scale: 0.85, opacity: 0.4 } : false}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ duration: 0.4, ease: 'easeOut' }}
+              initial={{ scale: 0.7, opacity: 0.2, color: '#FFFFFF' }}
+              animate={{ scale: 1, opacity: 1, color: '#C6FF3C' }}
+              transition={{ duration: 0.55, ease: 'easeOut' }}
               className="font-black tabular-nums"
-              style={{ textShadow: '0 0 6px rgba(198,255,60,0.5)' }}
+              style={{ textShadow: '0 0 8px rgba(198,255,60,0.6)' }}
             >
               {dailyCount.toLocaleString('fr-FR')}
             </motion.span>
