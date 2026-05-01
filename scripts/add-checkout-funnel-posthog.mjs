@@ -82,17 +82,38 @@ async function findDashboard() {
 }
 
 // ─── Si un insight du même nom existe déjà sur le dashboard, on le purge ──
+//
+// Note : combiner `?search=...&dashboards=...` provoque un HTTP 500 côté
+// PostHog Cloud (au moins sur EU au 2026-04). On filtre donc côté client :
+// on liste les insights du dashboard puis on matche le nom localement.
 async function deleteInsightByName(dashId, name) {
-  // /insights/?dashboards={id}&search={name} fait le filtrage côté serveur.
-  const list = await api(`/insights/?dashboards=${dashId}&search=${encodeURIComponent(name)}&limit=50`)
-  const items = Array.isArray(list?.results) ? list.results : []
-  const matches = items.filter((it) => it.name === name && !it.deleted)
-  for (const it of matches) {
-    await api(`/insights/${it.id}/`, {
-      method: 'PATCH',
-      body: JSON.stringify({ deleted: true }),
-    })
-    console.log(`  → ✓ ancien insight "${name}" #${it.id} archivé`)
+  // PostHog Cloud renvoie un HTTP 500 quand on filtre /insights/ avec
+  // ?dashboards=... ou ?search=... (au moins sur EU au 2026-04). On liste
+  // donc tous les insights et on matche côté client par nom + dashboard.
+  let url = `/insights/?limit=200`
+  while (url) {
+    const list = await api(url)
+    const items = Array.isArray(list?.results) ? list.results : []
+    const matches = items.filter(
+      (it) =>
+        it.name === name &&
+        !it.deleted &&
+        Array.isArray(it.dashboards) &&
+        it.dashboards.includes(dashId),
+    )
+    for (const it of matches) {
+      await api(`/insights/${it.id}/`, {
+        method: 'PATCH',
+        body: JSON.stringify({ deleted: true }),
+      })
+      console.log(`  → ✓ ancien insight "${name}" #${it.id} archivé`)
+    }
+    if (typeof list?.next === 'string' && list.next) {
+      const u = new URL(list.next)
+      url = u.pathname.replace(`/api/projects/${PROJECT_ID}`, '') + u.search
+    } else {
+      url = null
+    }
   }
 }
 
