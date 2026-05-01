@@ -198,9 +198,9 @@ async function createExitsByPage(dashId) {
   console.log(`  → ✓ id=${insight.id}`)
 }
 
-// ─── Insight 4 : Funnel ITO 6 étapes ──────────────────────────────────────
+// ─── Insight 4 : Funnel ITO 6 étapes (pages uniquement) ───────────────────
 async function createFunnelITO(dashId) {
-  console.log('• Insight — Funnel ITO (6 étapes)…')
+  console.log('• Insight — Funnel ITO (6 étapes pages)…')
   const funnelPages = PAGES.filter((p) => typeof p.step === 'number').sort((a, b) => a.step - b.step)
   const insight = await api('/insights/', {
     method: 'POST',
@@ -235,6 +235,93 @@ async function createFunnelITO(dashId) {
   console.log(`  → ✓ id=${insight.id}`)
 }
 
+// ─── Insight 5 : Funnel ITO + checkout (events Stripe inclus) ─────────────
+async function createFunnelITOWithCheckout(dashId) {
+  console.log('• Insight — Funnel ITO + Checkout (complet)…')
+  const pageStep = (pageName, customName) => ({
+    kind: 'EventsNode',
+    event: '$pageview',
+    name: pageName,
+    custom_name: customName ?? pageName,
+    properties: [
+      { key: 'page_name', value: pageName, operator: 'exact', type: 'event' },
+    ],
+  })
+  const eventStep = (eventName, customName) => ({
+    kind: 'EventsNode',
+    event: eventName,
+    name: customName ?? eventName,
+    custom_name: customName ?? eventName,
+  })
+
+  const insight = await api('/insights/', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Funnel ITO + Checkout (complet)',
+      description:
+        'Funnel détaillé incluant les events Stripe : checkout_started ' +
+        '(clic sur Débloquer mon mytho) et checkout_opened (la personne ' +
+        'a effectivement quitté la page pour Stripe — signal pagehide).',
+      dashboards: [dashId],
+      query: {
+        kind: 'InsightVizNode',
+        source: {
+          kind: 'FunnelsQuery',
+          dateRange: { date_from: '-30d' },
+          series: [
+            pageStep('Landing'),
+            pageStep('Upload Photo'),
+            pageStep('Chargement Mytho'),
+            pageStep('Choix Offre'),
+            eventStep('checkout_started', 'Clic sur Débloquer'),
+            eventStep('checkout_opened', 'Stripe ouvert (pagehide)'),
+            pageStep('Paiement reussi'),
+            pageStep('Signup'),
+            pageStep('Mes Creations'),
+          ],
+          funnelsFilter: {
+            funnelVizType: 'steps',
+            funnelOrderType: 'ordered',
+            funnelWindowInterval: 14,
+            funnelWindowIntervalUnit: 'day',
+          },
+        },
+      },
+    }),
+  })
+  console.log(`  → ✓ id=${insight.id}`)
+}
+
+// ─── Insight 6 : Trend checkout_started vs checkout_opened ────────────────
+async function createCheckoutTrend(dashId) {
+  console.log('• Insight — Checkout : started vs opened (par plan)…')
+  const insight = await api('/insights/', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Checkout — started vs opened (par plan)',
+      description:
+        'Sur 30 jours : nombre de checkout_started (clic) vs checkout_opened ' +
+        '(arrivée effective sur Stripe), breakdown par plan (weekly / monthly).',
+      dashboards: [dashId],
+      query: {
+        kind: 'InsightVizNode',
+        source: {
+          kind: 'TrendsQuery',
+          dateRange: { date_from: '-30d' },
+          interval: 'day',
+          series: [
+            { kind: 'EventsNode', event: 'checkout_started', name: 'checkout_started', math: 'total' },
+            { kind: 'EventsNode', event: 'checkout_opened', name: 'checkout_opened', math: 'total' },
+          ],
+          breakdownFilter: { breakdown_type: 'event', breakdown: 'plan' },
+          trendsFilter: { display: 'ActionsLineGraph' },
+        },
+      },
+    }),
+  })
+  console.log(`  → ✓ id=${insight.id}`)
+}
+
 async function main() {
   console.log(`\n🦔 PostHog setup — host=${HOST}  project=${PROJECT_ID}\n`)
   await deleteDashboardIfRequested()
@@ -243,6 +330,8 @@ async function main() {
   await createUniqueVisitorsByPage(dash.id)
   await createExitsByPage(dash.id)
   await createFunnelITO(dash.id)
+  await createFunnelITOWithCheckout(dash.id)
+  await createCheckoutTrend(dash.id)
   const url = `${HOST}/project/${PROJECT_ID}/dashboard/${dash.id}`
   console.log(`\n✅ Dashboard prêt : ${url}\n`)
 }
