@@ -442,10 +442,6 @@ export default function Unlock() {
               {isLoading ? 'Chargement...' : 'DÉBLOQUER MON MYTHO →'}
             </Button>
           </motion.div>
-
-          <p className="text-center text-[11px] text-text-secondary leading-snug">
-            🔒 Paiement sécurisé Stripe · Annulable en un clic, remboursé si pas satisfait
-          </p>
         </div>
       </div>
     </div>
