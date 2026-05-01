@@ -17,8 +17,14 @@ const HOST =
 /**
  * Nom EXACT à utiliser dans les funnels PostHog (« checkout_started »).
  * (L’ancien nom `stripe_checkout_started` ne matchait pas → 0 % après Choix Offre.)
+ *
+ * - `checkout_started` : la personne A CLIQUÉ sur le bouton (intention).
+ * - `checkout_opened` : le navigateur quitte réellement la page pour partir
+ *   sur Stripe (signal `pagehide` après le redirect → on est sûrs que
+ *   l'utilisateur arrive sur la page Stripe, pas juste qu'il a cliqué).
  */
 export const EVENT_CHECKOUT_STARTED = 'checkout_started' as const
+export const EVENT_CHECKOUT_OPENED = 'checkout_opened' as const
 
 /** @deprecated alias — préfère EVENT_CHECKOUT_STARTED */
 export const EVENT_STRIPE_CHECKOUT_STARTED = EVENT_CHECKOUT_STARTED
@@ -127,7 +133,13 @@ export function capturePageview(): void {
 export function captureEvent(
   name: string,
   props?: Record<string, unknown>,
-  options?: { send_instantly?: boolean },
+  options?: {
+    send_instantly?: boolean
+    // Permet de forcer `sendBeacon` pour les events tirés pendant un
+    // `pagehide` / `beforeunload` (sinon la requête XHR async risque
+    // d'être tuée par le navigateur avant d'avoir abouti).
+    transport?: 'XHR' | 'sendBeacon' | 'fetch'
+  },
 ): void {
   if (!initialized || !KEY) return
   try {

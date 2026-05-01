@@ -3,7 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
-import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
+import {
+  captureEvent,
+  EVENT_CHECKOUT_STARTED,
+  EVENT_CHECKOUT_OPENED,
+} from '@/lib/analytics'
 import { PRICE_IDS } from '@/lib/stripe'
 import { supabase } from '@/lib/supabase'
 import { hasPaidGoMythoAccess } from '@/lib/auth-access'
@@ -110,21 +114,51 @@ export default function Unlock() {
   }, [navigate])
 
   const handleCheckout = () => {
+    const planForEvent = selectedPlan
+
+    // 1) Intention de paiement — la personne a cliqué.
     captureEvent(
       EVENT_CHECKOUT_STARTED,
-      { plan: selectedPlan, source: 'choixoffre', provider: 'stripe' },
+      { plan: planForEvent, source: 'choixoffre', provider: 'stripe' },
       { send_instantly: true },
     )
+
+    // 2) Listener `pagehide` : se déclenche pile au moment où le navigateur
+    //    quitte la page (= la redirection vers Stripe est en train d'aboutir,
+    //    Stripe va s'afficher dans la milliseconde qui suit). On envoie
+    //    `checkout_opened` à cet instant via sendBeacon → la requête survit
+    //    au unload même sur iOS Safari et mobiles capricieux.
+    //    Si la redirection échoue (cas rare), un timer de sécurité retire le
+    //    listener pour éviter qu'un futur `pagehide` (back, fermeture d'onglet)
+    //    ne tire un faux `checkout_opened`.
+    let alreadyFired = false
+    const fireOpened = () => {
+      if (alreadyFired) return
+      alreadyFired = true
+      captureEvent(
+        EVENT_CHECKOUT_OPENED,
+        { plan: planForEvent, source: 'choixoffre', provider: 'stripe' },
+        { transport: 'sendBeacon', send_instantly: true },
+      )
+    }
+    const onPageHide = () => fireOpened()
+    window.addEventListener('pagehide', onPageHide, { once: true })
+    // Filet de sécurité : si la nav échoue, on retire le listener au bout
+    // de 5 s pour qu'il ne soit pas réutilisé par une navigation ultérieure.
+    window.setTimeout(() => {
+      window.removeEventListener('pagehide', onPageHide)
+    }, 5000)
+
     // Sauvegarder le plan et le prompt en localStorage avant le redirect Stripe
     // (sessionStorage est effacé par les redirects externes)
-    localStorage.setItem('gomytho_pending_plan', selectedPlan)
+    localStorage.setItem('gomytho_pending_plan', planForEvent)
     const savedPrompt = sessionStorage.getItem('userPrompt') || ''
     const savedAspectRatio = sessionStorage.getItem('aspectRatio') || '9:16'
     if (savedPrompt) {
       localStorage.setItem('gomytho_pending_prompt', savedPrompt)
       localStorage.setItem('gomytho_pending_ratio', savedAspectRatio)
     }
-    window.location.href = PAYMENT_LINKS[selectedPlan]
+    window.location.href = PAYMENT_LINKS[planForEvent]
   }
 
   const currentPlan = plans[selectedPlan]

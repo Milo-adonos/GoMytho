@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
-import { captureEvent, EVENT_CHECKOUT_STARTED } from '@/lib/analytics'
+import {
+  captureEvent,
+  EVENT_CHECKOUT_STARTED,
+  EVENT_CHECKOUT_OPENED,
+} from '@/lib/analytics'
 import { supabase, User } from '@/lib/supabase'
 
 const STRIPE_CHECKOUT_HEBDO = 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01'
@@ -99,35 +103,50 @@ export default function AppSettings() {
         ? 560
         : 160
 
+  // Helper unique pour partir vers Stripe depuis les Réglages.
+  // Tire `checkout_started` (intention) tout de suite, et arme un listener
+  // `pagehide` qui tirera `checkout_opened` (avec sendBeacon) au moment
+  // précis où le navigateur quitte la page pour Stripe.
+  const goToStripeCheckout = (plan: 'monthly' | 'weekly', url: string) => {
+    captureEvent(
+      EVENT_CHECKOUT_STARTED,
+      { plan, source: 'settings', provider: 'stripe' },
+      { send_instantly: true },
+    )
+
+    let alreadyFired = false
+    const fireOpened = () => {
+      if (alreadyFired) return
+      alreadyFired = true
+      captureEvent(
+        EVENT_CHECKOUT_OPENED,
+        { plan, source: 'settings', provider: 'stripe' },
+        { transport: 'sendBeacon', send_instantly: true },
+      )
+    }
+    const onPageHide = () => fireOpened()
+    window.addEventListener('pagehide', onPageHide, { once: true })
+    window.setTimeout(() => {
+      window.removeEventListener('pagehide', onPageHide)
+    }, 5000)
+
+    localStorage.setItem('gomytho_pending_plan', plan)
+    window.location.href = url
+  }
+
   const menuItems = [
     {
       icon: '📈',
       label: 'Passer au Mensuel',
       sub: '70 images / mois · 9,90€',
-      action: () => {
-        captureEvent(
-          EVENT_CHECKOUT_STARTED,
-          { plan: 'monthly', source: 'settings', provider: 'stripe' },
-          { send_instantly: true },
-        )
-        localStorage.setItem('gomytho_pending_plan', 'monthly')
-        window.location.href = STRIPE_CHECKOUT_MENSUEL
-      },
+      action: () => goToStripeCheckout('monthly', STRIPE_CHECKOUT_MENSUEL),
       show: inferredPlan !== 'monthly',
     },
     {
       icon: '📉',
       label: 'Passer à l\'Hebdo',
       sub: '20 images / semaine · 2,99€',
-      action: () => {
-        captureEvent(
-          EVENT_CHECKOUT_STARTED,
-          { plan: 'weekly', source: 'settings', provider: 'stripe' },
-          { send_instantly: true },
-        )
-        localStorage.setItem('gomytho_pending_plan', 'weekly')
-        window.location.href = STRIPE_CHECKOUT_HEBDO
-      },
+      action: () => goToStripeCheckout('weekly', STRIPE_CHECKOUT_HEBDO),
       show: inferredPlan !== 'weekly',
     },
     {
