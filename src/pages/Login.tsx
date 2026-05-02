@@ -1,22 +1,43 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
+import {
+  fetchAccessProfile,
+  hasPaidGoMythoAccess,
+  shouldBypassAccessCheck,
+  NO_SUBSCRIPTION_FLAG_KEY,
+} from '@/lib/auth-access'
 
 // ─── Page Connexion ───────────────────────────────────────────────────────
 //
-// Règle ultra-simple : si le compte existe dans Supabase, on connecte
-// directement vers /makemytho. La création de compte est strictement réservée
-// au flux post-paiement Stripe (/signup), donc tout compte qui existe ici a
-// forcément payé. Pas de check "abonnement actif" sur cette page.
+// Règle d'accès : un compte authentifié n'a accès à l'app que si la DB
+// confirme un abonnement payant ou des crédits restants. Sans cette
+// vérification, Google OAuth créait des comptes Supabase pour n'importe
+// quel email Google → accès gratuit à l'app. Faille corrigée le 2026-05-02.
+
+const NO_SUB_MSG =
+  "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer."
 
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // Si un flag d'erreur a été posé par AuthCallback (Google OAuth refusé
+  // faute d'abonnement), on l'affiche ici puis on le purge.
+  useEffect(() => {
+    try {
+      const msg = sessionStorage.getItem(NO_SUBSCRIPTION_FLAG_KEY)
+      if (msg) {
+        setError(msg)
+        sessionStorage.removeItem(NO_SUBSCRIPTION_FLAG_KEY)
+      }
+    } catch { /* ignore */ }
+  }, [])
 
   const goToApp = () => {
     window.location.href = '/makemytho'
@@ -40,6 +61,19 @@ export default function Login() {
         setError('Session non détectée. Réessaie.')
         return
       }
+
+      // ─── Vérification accès payant ──────────────────────────────────────
+      // On laisse passer un user qui revient tout juste de Stripe (le
+      // webhook peut être en retard). Sinon on contrôle dans la DB.
+      if (!shouldBypassAccessCheck()) {
+        const profile = await fetchAccessProfile(data.session.user.id)
+        if (!hasPaidGoMythoAccess(profile)) {
+          await supabase.auth.signOut()
+          setError(NO_SUB_MSG)
+          return
+        }
+      }
+
       goToApp()
     } catch (err) {
       const e = err as { message?: string }

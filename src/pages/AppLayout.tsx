@@ -12,6 +12,7 @@ import {
   CREDITS_PER_IMAGE,
   type Plan,
 } from '@/lib/plan'
+import { hasPaidGoMythoAccess, NO_SUBSCRIPTION_FLAG_KEY } from '@/lib/auth-access'
 
 export interface AppUser extends User {}
 
@@ -330,12 +331,29 @@ export default function AppLayout() {
         }
       }
 
-      // ─── 2c. Plus de check « abonnement actif » côté app ───────────────────
-      // La règle est simple : la création d'un compte n'est possible que via
-      // /signup après paiement Stripe, donc tout user authentifié ici a
-      // forcément payé. Si dbUser est vide ou en plan='free', on n'expulse
-      // PAS — on affiche juste l'app avec ses crédits actuels (potentiellement
-      // 0, auquel cas le bouton « Recharger » mène à /choixoffre).
+      // ─── 2c. Vérification accès payant (defense in depth) ──────────────────
+      // Google OAuth crée auto un compte Supabase pour n'importe quel email
+      // Google → on ne peut pas se contenter de "session existe = compte
+      // payant". Login/AuthCallback gardent déjà ce check, mais on le
+      // double ici pour couvrir les sessions anciennes / contournements
+      // éventuels. On n'expulse PAS si :
+      //   - on revient juste de Stripe (?session_id= → upsert vient de se
+      //     faire au-dessus, dbUser est à jour),
+      //   - un plan en attente est posé (paiement abouti, webhook pas
+      //     encore arrivé : on laisse tourner, l'upsert finira par passer),
+      //   - le flag signup_flow est posé (post-paiement, en cours
+      //     d'attribution).
+      if (!hasFreshPayment && !pendingPlan && !hasPaidGoMythoAccess(dbUser)) {
+        try {
+          sessionStorage.setItem(
+            NO_SUBSCRIPTION_FLAG_KEY,
+            "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
+          )
+        } catch { /* ignore */ }
+        try { await supabase.auth.signOut() } catch { /* ignore */ }
+        window.location.replace('/login')
+        return
+      }
 
       // ─── 3. Construction de l'objet user (DB > cache local > défaut) ────────
       let resolvedUser: AppUser

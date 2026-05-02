@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import {
+  fetchAccessProfile,
+  hasPaidGoMythoAccess,
+  shouldBypassAccessCheck,
+  NO_SUBSCRIPTION_FLAG_KEY,
+} from '@/lib/auth-access'
 
 // ─── Page de redirect post-OAuth ──────────────────────────────────────────
 //
@@ -9,10 +15,15 @@ import { supabase } from '@/lib/supabase'
 // parser de façon asynchrone. Si on navigue trop vite, on perd le hash et la
 // session n'est pas sauvegardée. On attend donc qu'une session valide existe.
 //
-// Règle simple : dès qu'une session Supabase est détectée → /makemytho.
-// On n'effectue aucune vérification "abonnement actif" ici — la création de
-// compte est strictement réservée au flux post-paiement Stripe (/signup),
-// donc l'existence d'une session = compte légitime.
+// Règle d'accès (corrigée le 2026-05-02) : Google OAuth crée automatiquement
+// un compte Supabase pour n'importe quel email Google. Donc on NE peut PAS
+// se contenter de "session existe → on entre". On vérifie le profil DB :
+// pas d'abonnement payant → sign-out + redirection vers /login avec un
+// message clair. Bypass autorisé si l'utilisateur revient juste de Stripe
+// (`?session_id=`) ou est dans le flux signup post-paiement.
+
+const NO_SUB_MSG =
+  "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer."
 
 export default function AuthCallback() {
   const navigate = useNavigate()
@@ -23,9 +34,28 @@ export default function AuthCallback() {
     let cancelled = false
     let resolved = false
 
-    const goToApp = () => {
+    const proceed = async (userId: string) => {
       if (resolved || cancelled) return
       resolved = true
+
+      // Bypass : si on revient juste de Stripe ou si on est dans le flux
+      // signup, on ne contrôle pas l'accès payant (le webhook peut ne pas
+      // avoir fini, AppLayout fera l'upsert avec le session_id).
+      if (!shouldBypassAccessCheck(searchParams)) {
+        const profile = await fetchAccessProfile(userId)
+        if (!hasPaidGoMythoAccess(profile)) {
+          // Sign out → empêche l'accès aux pages internes via la session
+          // OAuth qui vient d'être créée. On renvoie sur /login avec un
+          // message lu sur cette même page.
+          try {
+            sessionStorage.setItem(NO_SUBSCRIPTION_FLAG_KEY, NO_SUB_MSG)
+          } catch { /* ignore */ }
+          try { await supabase.auth.signOut() } catch { /* ignore */ }
+          navigate('/login', { replace: true })
+          return
+        }
+      }
+
       try { sessionStorage.removeItem('gomytho_signup_flow') } catch { /* ignore */ }
       const plan = searchParams.get('plan')
       const sessionId = searchParams.get('session_id')
@@ -40,7 +70,7 @@ export default function AuthCallback() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (cancelled) return
       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
-        goToApp()
+        void proceed(session.user.id)
       }
     })
 
@@ -53,7 +83,7 @@ export default function AuthCallback() {
       const { data } = await supabase.auth.getSession()
       if (data?.session?.user) {
         clearInterval(interval)
-        goToApp()
+        void proceed(data.session.user.id)
         return
       }
       if (attempts >= maxAttempts) {
