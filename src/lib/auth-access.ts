@@ -99,6 +99,34 @@ export function shouldBypassAccessCheck(searchParams?: URLSearchParams): boolean
   return false
 }
 
+const STRIPE_SESSION_REGEX = /^cs_(live|test)_[A-Za-z0-9]+$/
+
+/**
+ * Lit un session_id Stripe « pending » dans localStorage (posé par
+ * /paiementreussi). Survit aux refresh sans query string, fermetures
+ * d'onglet partielles, ou success URLs Stripe mal configurées sans
+ * paramètre dans l'URL finale — indispensable pour déclencher le fallback
+ * `/api/stripe-verify` dans AppLayout.
+ */
+export function readPendingStripeSessionId(): string | null {
+  try {
+    const raw = localStorage.getItem('gomytho_pending_session_id')
+    if (!raw) return null
+    const trimmed = raw.trim()
+    if (!STRIPE_SESSION_REGEX.test(trimmed)) return null
+    return trimmed
+  } catch {
+    return null
+  }
+}
+
+/** À appeler après une sync réussie ou quand l'accès payant est confirmé. */
+export function clearPendingStripeSessionId() {
+  try {
+    localStorage.removeItem('gomytho_pending_session_id')
+  } catch { /* ignore */ }
+}
+
 /**
  * Clé sessionStorage utilisée pour transmettre un message d'erreur
  * d'accès depuis AuthCallback (Google OAuth refusé) jusqu'à la page de

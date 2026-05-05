@@ -17,14 +17,19 @@ export default function PaiementReussi() {
   const [searchParams] = useSearchParams()
 
   useEffect(() => {
-    // On préserve `session_id` dans l'URL de destination pour qu'AppLayout
-    // sache qu'on est dans la phase « post-paiement immédiat » (utile pour
-    // le bypass de l'access check le temps que le webhook arrive).
+    // On préserve `session_id` dans l'URL ET en localStorage. Sans ça,
+    // un refresh sur `/makemytho` sans query string fait perdre le seul
+    // signal permettant au fallback `/api/stripe-verify` de forcer la sync
+    // si le webhook Stripe tarde ou échoue.
     const sessionId = (searchParams.get('session_id') || '').trim()
-    const target = sessionId
-      ? `/makemytho?session_id=${encodeURIComponent(sessionId)}`
-      : '/makemytho'
-    window.location.replace(target)
+    if (sessionId && /^cs_(live|test)_[A-Za-z0-9]+$/.test(sessionId)) {
+      try {
+        localStorage.setItem('gomytho_pending_session_id', sessionId)
+      } catch { /* ignore */ }
+      window.location.replace(`/makemytho?session_id=${encodeURIComponent(sessionId)}`)
+      return
+    }
+    window.location.replace('/makemytho')
   }, [searchParams])
 
   return (

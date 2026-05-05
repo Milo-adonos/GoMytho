@@ -12,8 +12,10 @@ import {
   type Plan,
 } from '@/lib/plan'
 import {
+  clearPendingStripeSessionId,
   hasPaidGoMythoAccess,
   NO_SUBSCRIPTION_FLAG_KEY,
+  readPendingStripeSessionId,
 } from '@/lib/auth-access'
 
 export interface AppUser extends User {}
@@ -243,9 +245,9 @@ export default function AppLayout() {
 
       let dbUser: any = await fetchProfile()
       if (expectsWebhook && !hasPaidGoMythoAccess(dbUser)) {
-        // Polling : 8 tentatives × 750 ms ≈ 6 s. Suffisant en pratique
-        // pour que Stripe ait livré le webhook checkout.session.completed.
-        for (let i = 0; i < 8; i += 1) {
+        // Polling : 12 × 750 ms ≈ 9 s — dépasse rarement les pics webhook +
+        // cold starts Vercel.
+        for (let i = 0; i < 12; i += 1) {
           await new Promise((r) => setTimeout(r, 750))
           dbUser = await fetchProfile()
           if (hasPaidGoMythoAccess(dbUser)) break
@@ -253,37 +255,43 @@ export default function AppLayout() {
       }
 
       // ─── Filet de sécurité : webhook Stripe lent ou perdu ───────────────
-      // Si après 6 s de polling DB on n'a toujours pas l'abo ET qu'on a un
-      // session_id en URL, on force la sync côté serveur via stripe-verify
-      // (qui interroge Stripe directement et écrit dans Supabase). Couvre :
-      //   • webhook arrivé en plus de 6 s (rare)
-      //   • webhook perdu (incident Stripe)
-      //   • signature webhook KO (config Vercel manquante)
-      const sessionIdFromUrl = (searchParams.get('session_id') || '').trim()
+      // CRITIQUE : le fallback `/api/stripe-verify` doit pouvoir tourner même
+      // si `session_id` n'est plus dans l'URL (refresh partiel, navigation SPA,
+      // ou success Stripe sans placeholder `{CHECKOUT_SESSION_ID}`).
+      // On lit aussi `gomytho_pending_session_id` posé par `/paiementreussi`.
+      const sidUrl = (searchParams.get('session_id') || '').trim()
+      const sidStored = readPendingStripeSessionId()
+      const resolvedSessionId =
+        /^cs_(live|test)_[A-Za-z0-9]+$/.test(sidUrl) ? sidUrl : sidStored
+
       if (
         expectsWebhook &&
         !hasPaidGoMythoAccess(dbUser) &&
-        sessionIdFromUrl &&
+        resolvedSessionId &&
         session.access_token
       ) {
-        try {
-          const r = await fetch('/api/stripe-verify', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${session.access_token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ session_id: sessionIdFromUrl }),
-          })
-          const data = await r.json().catch(() => null)
-          if (r.ok && data?.synced) {
-            // La sync a écrit en DB → on relit
-            dbUser = await fetchProfile()
-          } else if (!r.ok) {
-            console.warn('[AppLayout] stripe-verify fallback KO', data)
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            const r = await fetch('/api/stripe-verify', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${session.access_token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ session_id: resolvedSessionId }),
+            })
+            const data = await r.json().catch(() => null)
+            if (r.ok && data?.synced) {
+              dbUser = await fetchProfile()
+              break
+            }
+            if (!r.ok) {
+              console.warn('[AppLayout] stripe-verify fallback KO', attempt, data)
+            }
+          } catch (e) {
+            console.warn('[AppLayout] stripe-verify fallback exception', attempt, e)
           }
-        } catch (e) {
-          console.warn('[AppLayout] stripe-verify fallback exception', e)
+          if (attempt < 3) await new Promise((res) => setTimeout(res, 1000))
         }
       }
 
@@ -326,7 +334,7 @@ export default function AppLayout() {
       // ─── 3. Vérification accès payant (filet final) ─────────────────────
       // Ici on a déjà :
       //   - lu la DB,
-      //   - pollé pendant 6 s si on attendait le webhook,
+      //   - pollé jusqu'à ~9 s si on attendait le webhook,
       //   - appelé stripe-verify en fallback (qui force la sync DB).
       // Si AUCUN de ces filets ne donne un abo, c'est que l'utilisateur
       // n'a tout simplement pas payé (a abandonné le checkout, a fermé la
@@ -338,7 +346,7 @@ export default function AppLayout() {
           sessionStorage.setItem(
             NO_SUBSCRIPTION_FLAG_KEY,
             expectsWebhook
-              ? "On n'a pas encore reçu la confirmation de ton paiement. Si tu viens de payer, attends quelques secondes et reconnecte-toi. Sinon, choisis une offre pour commencer."
+              ? "On n'a pas encore pu activer ton abonnement sur ton compte (liaison Stripe en cours ou retard réseau). Réessaie la connexion dans 30 secondes. Si ça persiste : connecte-toi puis ouvre « J'ai payé mais je n'arrive pas à accéder » et indique l'email utilisé sur Stripe — ça rattache automatiquement ton paiement."
               : "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
           )
         } catch { /* ignore */ }
@@ -346,13 +354,15 @@ export default function AppLayout() {
         // si l'utilisateur revient demain sans avoir payé, on ne veut pas
         // qu'il continue de bypass à cause de ce flag local.
         try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
+        clearPendingStripeSessionId()
         try { await supabase.auth.signOut() } catch { /* ignore */ }
         window.location.replace('/login')
         return
       }
 
-      // Abo confirmé → purge le flag d'attente
+      // Abo confirmé → purge les flags d'attente post-checkout
       try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
+      clearPendingStripeSessionId()
 
       // ─── 4. Construction de l'objet user (DB > cache local > défaut) ────────
       let resolvedUser: AppUser
