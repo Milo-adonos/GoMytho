@@ -221,3 +221,93 @@ export async function resolvePaidAccessViaStripe(
     return { ok: false, reason: 'network_error' }
   }
 }
+
+/**
+ * Résultat d'une tentative de claim « j'ai payé avec un autre email ».
+ */
+export type ClaimSubscriptionResult =
+  | {
+      ok: true
+      plan: 'weekly' | 'monthly'
+      credits: number
+      subscription_status: 'active' | 'trialing' | 'cancelled' | 'inactive'
+      customerId: string
+      paymentEmail: string | null
+    }
+  | {
+      ok: false
+      reason:
+        | 'no_customer'
+        | 'no_active_sub'
+        | 'already_linked'
+        | 'already_linked_metadata'
+        | 'invalid_email'
+        | 'unauthorized'
+        | 'server_error'
+        | 'network_error'
+      error: string
+    }
+
+/**
+ * Demande au serveur de lier le Customer Stripe d'un email donné au compte
+ * Supabase actuellement authentifié.
+ *
+ * À appeler quand `resolvePaidAccessViaStripe` a échoué : c'est typiquement
+ * que l'email Stripe ≠ email Supabase ET qu'aucun session_id n'est dispo
+ * (vieux compte, cross-device, données navigateur perdues).
+ *
+ * Côté serveur on vérifie qu'il existe bien un abonnement actif pour cet
+ * email, et que le Customer Stripe n'est pas déjà rattaché à un autre user.
+ */
+export async function claimSubscriptionByPaymentEmail(
+  accessToken: string,
+  paymentEmail: string,
+): Promise<ClaimSubscriptionResult> {
+  if (!accessToken) {
+    return {
+      ok: false,
+      reason: 'unauthorized',
+      error: 'Session expirée, reconnecte-toi.',
+    }
+  }
+  const email = (paymentEmail || '').trim().toLowerCase()
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: false, reason: 'invalid_email', error: 'Email invalide.' }
+  }
+  try {
+    const res = await fetch('/api/stripe-claim-subscription', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email }),
+    })
+    const data = (await res.json().catch(() => null)) as
+      | ClaimSubscriptionResult
+      | { ok?: unknown; error?: string; reason?: string }
+      | null
+    if (!data) {
+      return { ok: false, reason: 'server_error', error: 'Réponse serveur invalide.' }
+    }
+    if ((data as { ok: boolean }).ok === true) {
+      return data as Extract<ClaimSubscriptionResult, { ok: true }>
+    }
+    const reason =
+      typeof (data as { reason?: string }).reason === 'string'
+        ? (data as { reason: string }).reason
+        : 'server_error'
+    const error =
+      typeof (data as { error?: string }).error === 'string'
+        ? (data as { error: string }).error
+        : 'Liaison impossible.'
+    return {
+      ok: false,
+      reason: reason as Extract<ClaimSubscriptionResult, { ok: false }>['reason'],
+      error,
+    }
+  } catch (e) {
+    console.warn('[auth-access] claimSubscriptionByPaymentEmail a échoué :', e)
+    return { ok: false, reason: 'network_error', error: 'Connexion impossible.' }
+  }
+}

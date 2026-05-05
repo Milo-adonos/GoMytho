@@ -472,6 +472,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // ─── 7. Verrouille la liaison côté Stripe via metadata.supabase_user_id ─
+    // Toute tentative ultérieure de re-claim de ce Customer par un AUTRE user
+    // sera refusée par /api/stripe-claim-subscription (vérif metadata).
+    try {
+      await stripe.customers.update(customerId, {
+        metadata: {
+          supabase_user_id: userId,
+          supabase_email: userEmail,
+        },
+      })
+    } catch (e) {
+      console.warn('[stripe-resolve-access] metadata update KO (non bloquant):', (e as Error)?.message)
+    }
+
     return res.status(200).json({
       ok: true,
       plan,
