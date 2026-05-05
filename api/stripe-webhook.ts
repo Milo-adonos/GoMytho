@@ -130,8 +130,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const stripeSecret = process.env.STRIPE_SECRET_KEY
   const whSecret = process.env.STRIPE_WEBHOOK_SECRET
-  const supabaseUrl = process.env.VITE_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  // Variables sans préfixe VITE_ : disponibles partout côté serverless Vercel.
+  const supabaseUrl =
+    (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim() || ''
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() || ''
 
   if (!stripeSecret || !whSecret) {
     console.error('[stripe-webhook] missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET')
