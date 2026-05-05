@@ -33,6 +33,104 @@ type VerifiedCheckoutPayload = {
   customerId: string | null
 }
 
+// ─── Helper inliné (Vercel ne bundle pas les dynamic imports locaux) ─────
+const HEBDO_PRICE_ID = (process.env.HEBDO_PRICE_ID || '').trim()
+const MENSU_PRICE_ID = (process.env.MENSU_PRICE_ID || '').trim()
+const HEBDO_AMOUNT_CENTS = 299
+const MENSU_AMOUNT_CENTS = 990
+const PLAN_CREDITS_MAP: Record<'weekly' | 'monthly', number> = { weekly: 160, monthly: 560 }
+const MONTHLY_TRIAL_CREDITS = 8
+
+function planFromPriceId(priceId: string | undefined | null): 'weekly' | 'monthly' | null {
+  if (!priceId) return null
+  if (HEBDO_PRICE_ID && priceId === HEBDO_PRICE_ID) return 'weekly'
+  if (MENSU_PRICE_ID && priceId === MENSU_PRICE_ID) return 'monthly'
+  return null
+}
+
+function planFromAmount(
+  amountTotal: number | null | undefined,
+  unitAmount: number | null | undefined,
+): { plan: 'weekly' | 'monthly'; trial: boolean } {
+  const trial = amountTotal === 0 || amountTotal == null
+  const reference = unitAmount ?? amountTotal ?? 0
+  if (Math.abs(reference - HEBDO_AMOUNT_CENTS) <= 5) return { plan: 'weekly', trial }
+  if (Math.abs(reference - MENSU_AMOUNT_CENTS) <= 5) return { plan: 'monthly', trial }
+  if (reference > 0 && reference < 500) return { plan: 'weekly', trial }
+  return { plan: 'monthly', trial }
+}
+
+async function buildVerifiedPayloadFromSession(
+  stripe: StripeType,
+  session: StripeType.Checkout.Session,
+): Promise<VerifiedCheckoutPayload | null> {
+  const paidLike =
+    session.payment_status === 'paid' || session.payment_status === 'no_payment_required'
+  if (session.status !== 'complete' || !paidLike) {
+    console.warn('[stripe-verify] session non finalisée', {
+      id: session.id,
+      status: session.status,
+      payment_status: session.payment_status,
+    })
+    return null
+  }
+  const lineItem = session.line_items?.data?.[0]
+  const priceId = (lineItem?.price?.id as string | undefined) || null
+  const unitAmount = (lineItem?.price?.unit_amount as number | undefined) ?? null
+  let plan = planFromPriceId(priceId)
+  const fallback = planFromAmount(session.amount_total, unitAmount)
+  let trialFromAmount = false
+  if (!plan) {
+    plan = fallback.plan
+    trialFromAmount = fallback.trial
+  }
+  let subscription: StripeType.Subscription | null = null
+  const sub = session.subscription
+  if (sub) {
+    subscription = typeof sub === 'string' ? await stripe.subscriptions.retrieve(sub) : sub
+  }
+  const isTrialing = subscription?.status === 'trialing' || trialFromAmount
+  const credits = plan === 'monthly' && isTrialing ? MONTHLY_TRIAL_CREDITS : PLAN_CREDITS_MAP[plan]
+  const subscription_status: 'active' | 'trialing' =
+    plan === 'monthly' && isTrialing ? 'trialing' : 'active'
+  return {
+    plan,
+    credits,
+    subscription_status,
+    email: session.customer_details?.email || session.customer_email || null,
+    customerId:
+      typeof session.customer === 'string' ? session.customer : session.customer?.id || null,
+  }
+}
+
+async function retrieveAndBuildCheckoutPayload(
+  stripe: StripeType,
+  sessionId: string,
+): Promise<VerifiedCheckoutPayload | null> {
+  const session = await stripe.checkout.sessions.retrieve(sessionId, {
+    expand: ['line_items', 'line_items.data.price', 'subscription'],
+  })
+  if (!session.line_items?.data?.length) {
+    const { data: items } = await stripe.checkout.sessions.listLineItems(sessionId, {
+      limit: 10,
+      expand: ['data.price'],
+    })
+    if (items.length) {
+      const merged = {
+        ...session,
+        line_items: {
+          object: 'list' as const,
+          data: items,
+          has_more: false,
+          url: '',
+        },
+      }
+      return buildVerifiedPayloadFromSession(stripe, merged as StripeType.Checkout.Session)
+    }
+  }
+  return buildVerifiedPayloadFromSession(stripe, session)
+}
+
 async function syncSupabaseUserFromPayload(
   supabaseUrl: string,
   serviceKey: string,
@@ -165,16 +263,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const msg = e instanceof Error ? e.message : String(e)
       console.error('[stripe-webhook] Stripe SDK import', msg)
       return res.status(500).json({ error: `Stripe SDK import: ${msg}` })
-    }
-
-    let retrieveAndBuildCheckoutPayload: typeof import('./_lib/stripe-checkout-payload').retrieveAndBuildCheckoutPayload
-    try {
-      const helper = await import('./_lib/stripe-checkout-payload')
-      retrieveAndBuildCheckoutPayload = helper.retrieveAndBuildCheckoutPayload
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      console.error('[stripe-webhook] helper import', msg)
-      return res.status(500).json({ error: `Helper import: ${msg}` })
     }
 
     let stripe: StripeType
