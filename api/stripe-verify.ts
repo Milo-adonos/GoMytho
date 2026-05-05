@@ -11,30 +11,53 @@ import { retrieveAndBuildCheckoutPayload } from './_lib/stripe-checkout-payload'
  * erreur générique « réponse serveur invalide »).
  */
 function normalizePostBody(req: VercelRequest): Record<string, unknown> {
-  const raw = req.body as unknown
-  if (raw == null || raw === '') return {}
-  if (typeof raw === 'string') {
-    try {
-      const parsed = JSON.parse(raw) as unknown
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {}
-    } catch {
-      return {}
+  try {
+    const raw = req.body as unknown
+    if (raw == null || raw === '') return {}
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>
+        }
+        return {}
+      } catch {
+        return {}
+      }
     }
-  }
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(raw)) {
-    try {
-      const parsed = JSON.parse(raw.toString('utf8')) as unknown
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {}
-    } catch {
-      return {}
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(raw)) {
+      try {
+        const parsed = JSON.parse(raw.toString('utf8')) as unknown
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>
+        }
+        return {}
+      } catch {
+        return {}
+      }
     }
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      return raw as Record<string, unknown>
+    }
+    return {}
+  } catch (e) {
+    console.warn('[stripe-verify] normalizePostBody', e)
+    return {}
   }
-  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>
-  return {}
+}
+
+/** Toujours renvoyer du JSON — évite les 500 « corps vide » côté Vercel. */
+function sendJson(res: VercelResponse, status: number, payload: Record<string, unknown>) {
+  try {
+    res.status(status).setHeader('Content-Type', 'application/json; charset=utf-8').json(payload)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('[stripe-verify] sendJson serialization failure', msg)
+    res
+      .status(500)
+      .setHeader('Content-Type', 'application/json; charset=utf-8')
+      .json({ ok: false, reason: 'server_error', error: 'Erreur interne de sérialisation.' })
+  }
 }
 
 // ─── Vérification + sync forcée d'un paiement Stripe ──────────────────────
@@ -240,11 +263,14 @@ async function handleClaim(
   for (const c of customers) {
     let subs: Stripe.Subscription[] = []
     try {
+      // Pas d'`expand` ici : certains comptes / versions API Stripe renvoient
+      // une erreur sur des chemins expand mal supportés → exception globale si
+      // mal gérée. Sans expand, price peut être une string id ; planFromPriceAmount
+      // retombe alors sur la valeur par défaut (mensuel), ce qui suffit pour le claim.
       const r = await stripe.subscriptions.list({
         customer: c.id,
         status: 'all',
         limit: 10,
-        expand: ['data.items.data.price'],
       })
       subs = r.data
     } catch (e) {
@@ -363,90 +389,110 @@ async function handleClaim(
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
-
-  const stripeSecret = process.env.STRIPE_SECRET_KEY
-  const supabaseUrl = process.env.VITE_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  const anonKey = process.env.VITE_SUPABASE_ANON_KEY
-
-  if (!stripeSecret) {
-    console.error('[stripe-verify] STRIPE_SECRET_KEY manquant dans Vercel')
-    return res.status(500).json({
-      error: 'Configuration serveur incomplète : STRIPE_SECRET_KEY manquant côté Vercel.',
-    })
-  }
-
-  const postBody = req.method === 'POST' ? normalizePostBody(req) : {}
-  const qAction = typeof req.query.action === 'string' ? req.query.action.trim().toLowerCase() : ''
-  const bodyAction =
-    typeof postBody.action === 'string' ? postBody.action.trim().toLowerCase() : ''
-  const action = qAction || bodyAction || ''
-
-  // ─── Mode (3) : claim — récupérer un abo Stripe par email ───────────────
-  if (action === 'claim') {
-    try {
-      if (!supabaseUrl || !serviceKey) {
-        return res.status(500).json({
-          ok: false,
-          reason: 'server_error',
-          error: 'Configuration Supabase serveur incomplète.',
-        })
-      }
-      const emailRaw =
-        (typeof postBody.email === 'string' ? postBody.email : '') ||
-        (typeof req.query.email === 'string' ? req.query.email : '') ||
-        ''
-      const stripe = new Stripe(stripeSecret)
-      const result = await handleClaim(
-        stripe,
-        supabaseUrl,
-        serviceKey,
-        anonKey,
-        req.headers.authorization,
-        emailRaw,
-      )
-      return res.status(result.status).json(result.body)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      console.error('[stripe-verify] claim fatal', msg)
-      return res.status(500).json({
-        ok: false,
-        reason: 'server_error',
-        error: msg || 'Erreur serveur inattendue pendant la récupération.',
-      })
-    }
-  }
-
-  // ─── Modes (1) et (2) : verify avec session_id ──────────────────────────
-  const sessionId =
-    (typeof req.query.session_id === 'string' ? req.query.session_id : '') ||
-    (typeof postBody.session_id === 'string' ? postBody.session_id : '') ||
-    ''
-
-  if (!sessionId || typeof sessionId !== 'string') {
-    return res.status(400).json({ error: 'session_id manquant' })
-  }
-
-  // Mode mismatch (clé Live ↔ session Test ou inverse).
-  const isLiveKey = stripeSecret.startsWith('sk_live_')
-  const isLiveSession = sessionId.startsWith('cs_live_')
-  const isTestSession = sessionId.startsWith('cs_test_')
-  if (isLiveKey && isTestSession) {
-    console.error('[stripe-verify] mode mismatch : clé LIVE, session TEST', { sessionId })
-    return res.status(400).json({
-      error: 'Mode Stripe incompatible : ta clé sur Vercel est en LIVE mais cette session est en TEST. Recharge un lien de paiement Live ou bascule la clé.',
-    })
-  }
-  if (!isLiveKey && isLiveSession) {
-    console.error('[stripe-verify] mode mismatch : clé TEST, session LIVE', { sessionId })
-    return res.status(400).json({
-      error: 'Mode Stripe incompatible : ta clé sur Vercel est en TEST mais ce paiement est en LIVE. Mets STRIPE_SECRET_KEY en LIVE sur Vercel.',
-    })
+    return sendJson(res, 405, { error: 'Method not allowed' })
   }
 
   try {
+    const stripeSecret = process.env.STRIPE_SECRET_KEY
+    // Variables sans préfixe VITE_ : disponibles sur plus de configs Vercel
+    // pour les fonctions server-only (évite SUPABASE_URL vide → crash avant json).
+    const supabaseUrl =
+      (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim() || ''
+    const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() || ''
+    const anonKey =
+      (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim() ||
+      undefined
+
+    if (!stripeSecret) {
+      console.error('[stripe-verify] STRIPE_SECRET_KEY manquant dans Vercel')
+      return sendJson(res, 500, {
+        ok: false,
+        reason: 'server_error',
+        error: 'Configuration serveur : STRIPE_SECRET_KEY manquant sur Vercel.',
+      })
+    }
+
+    const postBody = req.method === 'POST' ? normalizePostBody(req) : {}
+    const qAction = typeof req.query.action === 'string' ? req.query.action.trim().toLowerCase() : ''
+    const bodyAction =
+      typeof postBody.action === 'string' ? postBody.action.trim().toLowerCase() : ''
+    const action = qAction || bodyAction || ''
+
+    // ─── Mode (3) : claim — récupérer un abo Stripe par email ───────────────
+    if (action === 'claim') {
+      try {
+        if (!supabaseUrl || !serviceKey) {
+          return sendJson(res, 500, {
+            ok: false,
+            reason: 'server_error',
+            error:
+              'Configuration Supabase incomplète sur le serveur. Ajoute SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (et optionnel SUPABASE_ANON_KEY) dans les variables Vercel — pas seulement les variables VITE_*.',
+          })
+        }
+        const emailRaw =
+          (typeof postBody.email === 'string' ? postBody.email : '') ||
+          (typeof req.query.email === 'string' ? req.query.email : '') ||
+          ''
+        let stripe: Stripe
+        try {
+          stripe = new Stripe(stripeSecret)
+        } catch (se) {
+          const m = se instanceof Error ? se.message : String(se)
+          console.error('[stripe-verify] Stripe SDK init', m)
+          return sendJson(res, 500, {
+            ok: false,
+            reason: 'server_error',
+            error: `Clé Stripe invalide ou SDK : ${m}`,
+          })
+        }
+        const result = await handleClaim(
+          stripe,
+          supabaseUrl,
+          serviceKey,
+          anonKey,
+          req.headers.authorization,
+          emailRaw,
+        )
+        return sendJson(res, result.status, result.body)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        console.error('[stripe-verify] claim fatal', msg)
+        return sendJson(res, 500, {
+          ok: false,
+          reason: 'server_error',
+          error: msg || 'Erreur serveur inattendue pendant la récupération.',
+        })
+      }
+    }
+
+    // ─── Modes (1) et (2) : verify avec session_id ──────────────────────────
+    const sessionId =
+      (typeof req.query.session_id === 'string' ? req.query.session_id : '') ||
+      (typeof postBody.session_id === 'string' ? postBody.session_id : '') ||
+      ''
+
+    if (!sessionId || typeof sessionId !== 'string') {
+      return sendJson(res, 400, { error: 'session_id manquant' })
+    }
+
+    const isLiveKey = stripeSecret.startsWith('sk_live_')
+    const isLiveSession = sessionId.startsWith('cs_live_')
+    const isTestSession = sessionId.startsWith('cs_test_')
+    if (isLiveKey && isTestSession) {
+      console.error('[stripe-verify] mode mismatch : clé LIVE, session TEST', { sessionId })
+      return sendJson(res, 400, {
+        error:
+          'Mode Stripe incompatible : clé LIVE mais session TEST.',
+      })
+    }
+    if (!isLiveKey && isLiveSession) {
+      console.error('[stripe-verify] mode mismatch : clé TEST, session LIVE', { sessionId })
+      return sendJson(res, 400, {
+        error:
+          'Mode Stripe incompatible : clé TEST mais session LIVE.',
+      })
+    }
+
     const stripe = new Stripe(stripeSecret)
     const payload = await retrieveAndBuildCheckoutPayload(stripe, sessionId)
     if (!payload) {
@@ -456,7 +502,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         console.error('[stripe-verify] retrieve échoué', msg, { sessionId })
-        return res.status(404).json({
+        return sendJson(res, 404, {
           error: `Session Stripe introuvable : ${msg}`,
         })
       }
@@ -464,28 +510,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         session.payment_status === 'paid' ||
         session.payment_status === 'no_payment_required'
       if (session.status !== 'complete' || !paidLike) {
-        return res.status(402).json({
+        return sendJson(res, 402, {
           error: 'Paiement non finalisé côté Stripe',
           payment_status: session.payment_status,
           status: session.status,
         })
       }
-      return res.status(400).json({
-        error: 'Plan non reconnu (les Price ID Stripe ne correspondent pas à HEBDO_PRICE_ID / MENSU_PRICE_ID dans Vercel).',
+      return sendJson(res, 400, {
+        error:
+          'Plan non reconnu (Price ID ou montants Stripe vs variables Vercel).',
       })
     }
 
-    // ─── Mode (2) : sync forcée DB si le client est authentifié ──────────
     let synced: { updated: boolean; reason: string } | null = null
     const authHeader = req.headers.authorization
     if (authHeader && supabaseUrl && serviceKey) {
       const keyForAuthCheck = anonKey || serviceKey
       const authed = await getAuthedUser(supabaseUrl, keyForAuthCheck, authHeader)
       if (authed) {
-        // Récupère le client_reference_id en re-faisant un retrieve « léger »
-        // (la session a déjà été récupérée par retrieveAndBuildCheckoutPayload
-        // mais on n'avait pas besoin du field — un retrieve supplémentaire est
-        // bon marché côté Stripe).
         let clientReferenceId: string | null = null
         try {
           const sessionLite = await stripe.checkout.sessions.retrieve(sessionId)
@@ -493,7 +535,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             typeof sessionLite.client_reference_id === 'string' && sessionLite.client_reference_id.trim()
               ? sessionLite.client_reference_id.trim()
               : null
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
 
         synced = await syncDbForAuthedUser({
           supabaseUrl,
@@ -506,7 +550,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    return res.status(200).json({
+    return sendJson(res, 200, {
       plan: payload.plan,
       credits: payload.credits,
       email: payload.email,
@@ -517,7 +561,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('[stripe-verify] error', msg)
-    return res.status(500).json({ error: msg || 'Vérification Stripe impossible' })
+    console.error('[stripe-verify] fatal', msg)
+    return sendJson(res, 500, {
+      ok: false,
+      reason: 'server_error',
+      error: msg || 'Erreur serveur Stripe.',
+    })
   }
 }
