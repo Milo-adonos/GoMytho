@@ -236,7 +236,7 @@ export default function AppSettings() {
       </button>
 
       <p className="text-center text-xs text-text-secondary pb-4">
-        Un problème ? <a href="mailto:support@gomytho.com" className="text-lime underline">support@gomytho.com</a>
+        Un problème ? <a href="mailto:gomytho.prank@gmail.com" className="text-lime underline">gomytho.prank@gmail.com</a>
       </p>
     </div>
   )

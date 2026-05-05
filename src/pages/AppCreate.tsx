@@ -427,7 +427,7 @@ export default function AppCreate() {
           >
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-lime mx-auto mb-3" />
             <p className="text-sm font-semibold text-lime">{step || 'Génération en cours...'}</p>
-            <p className="text-xs text-text-secondary mt-1">~15 secondes</p>
+            <p className="text-xs text-text-secondary mt-1">Environ 2 minutes, merci de patienter</p>
           </motion.div>
         )}
       </AnimatePresence>

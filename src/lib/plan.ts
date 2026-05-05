@@ -160,11 +160,20 @@ async function verifyStripeSession(sessionId: string): Promise<{
 //
 // Ordre :
 //   1. session_id en URL → vérif API (le plus fiable) → fallback amount/localStorage
-//   2. Pas de session_id mais `gomytho_pending_plan` en localStorage (posé sur
+//   2. session_id en localStorage (`gomytho_pending_session_id`, posé par
+//      /paiementreussi) → vérif API ; survit à un OAuth roundtrip qui aurait
+//      stripé la query string ou à une fermeture de fenêtre.
+//   3. Pas de session_id mais `gomytho_pending_plan` en localStorage (posé sur
 //      /choixoffre juste avant le redirect Stripe) → on assume le plan choisi
-//   3. Rien du tout → plan free / 0 crédits
+//   4. Rien du tout → plan free / 0 crédits
 export async function resolveNewUserPlan(searchParams: URLSearchParams): Promise<VerifiedPlan> {
-  const sessionId = searchParams.get('session_id')
+  let sessionId = searchParams.get('session_id')
+  if (!sessionId) {
+    try {
+      const stored = localStorage.getItem('gomytho_pending_session_id')
+      if (stored && STRIPE_SESSION_REGEX.test(stored)) sessionId = stored
+    } catch { /* ignore */ }
+  }
   if (sessionId) {
     const result = await verifyStripeSession(sessionId)
     if (result.ok) return result.ok

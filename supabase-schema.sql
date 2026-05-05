@@ -28,6 +28,44 @@ ALTER TABLE public.users ADD CONSTRAINT users_subscription_status_check
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_payment_email TEXT;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 
+-- ─── Table stripe_pending_links ────────────────────────────────────────────
+-- Enregistre TOUS les checkouts Stripe terminés (webhook checkout.session.completed),
+-- même si le user Supabase n'existe pas encore au moment où le webhook arrive.
+-- Permet de retrouver l'abonnement d'un client lors d'une connexion ultérieure
+-- même quand :
+--   - L'email du paiement (Apple Pay / Google Pay / Revolut Pay / alias) ≠
+--     l'email du compte Supabase.
+--   - Le client a payé sur un device puis s'est inscrit sur un autre.
+--   - Le client a vidé son localStorage / changé de navigateur.
+--   - Le webhook est arrivé avant la création du compte (paiement ultra rapide).
+--
+-- L'API stripe-resolve-access scanne cette table par session_id, customer_id
+-- et email (du paiement ou du compte) pour récupérer la liaison perdue.
+CREATE TABLE IF NOT EXISTS public.stripe_pending_links (
+    session_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    stripe_email TEXT,
+    plan TEXT NOT NULL CHECK (plan IN ('weekly', 'monthly')),
+    credits INTEGER NOT NULL,
+    subscription_status TEXT NOT NULL CHECK (subscription_status IN ('active', 'trialing')),
+    consumed_at TIMESTAMP WITH TIME ZONE,
+    consumed_by_user_id UUID,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_links_customer
+  ON public.stripe_pending_links(customer_id);
+CREATE INDEX IF NOT EXISTS idx_pending_links_email
+  ON public.stripe_pending_links(LOWER(stripe_email));
+CREATE INDEX IF NOT EXISTS idx_pending_links_unconsumed
+  ON public.stripe_pending_links(created_at DESC) WHERE consumed_at IS NULL;
+
+-- RLS : la table n'est jamais lue depuis le client. Seul le service_role
+-- (webhook + endpoint stripe-resolve-access) y accède.
+ALTER TABLE public.stripe_pending_links ENABLE ROW LEVEL SECURITY;
+-- Aucune policy : sans policy, RLS bloque par défaut tout accès qui n'utilise
+-- pas le service_role. C'est exactement ce qu'on veut.
+
 -- Table mythos
 CREATE TABLE IF NOT EXISTS public.mythos (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

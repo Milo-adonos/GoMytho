@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import {
   fetchAccessProfile,
   hasPaidGoMythoAccess,
+  resolvePaidAccessViaStripe,
   shouldBypassAccessCheck,
   NO_SUBSCRIPTION_FLAG_KEY,
 } from '@/lib/auth-access'
@@ -44,19 +45,38 @@ export default function AuthCallback() {
       if (!shouldBypassAccessCheck(searchParams)) {
         const profile = await fetchAccessProfile(userId)
         if (!hasPaidGoMythoAccess(profile)) {
-          // Sign out → empêche l'accès aux pages internes via la session
-          // OAuth qui vient d'être créée. On renvoie sur /login avec un
-          // message lu sur cette même page.
-          try {
-            sessionStorage.setItem(NO_SUBSCRIPTION_FLAG_KEY, NO_SUB_MSG)
-          } catch { /* ignore */ }
-          try { await supabase.auth.signOut() } catch { /* ignore */ }
-          navigate('/login', { replace: true })
-          return
+          // Filet de sécurité : la DB ne montre pas d'accès, mais Stripe
+          // peut être la vraie source de vérité (email du paiement ≠ email
+          // Google, webhook perdu, race au signup). On interroge Stripe
+          // avant de bloquer pour éviter qu'un client ayant payé soit
+          // refoulé à chaque connexion via Google.
+          const { data: { session } } = await supabase.auth.getSession()
+          const token = session?.access_token
+          let recovered = false
+          if (token) {
+            const access = await resolvePaidAccessViaStripe(token)
+            recovered = access.ok
+          }
+          if (!recovered) {
+            // Sign out → empêche l'accès aux pages internes via la session
+            // OAuth qui vient d'être créée. On renvoie sur /login avec un
+            // message lu sur cette même page.
+            try {
+              sessionStorage.setItem(NO_SUBSCRIPTION_FLAG_KEY, NO_SUB_MSG)
+            } catch { /* ignore */ }
+            try { await supabase.auth.signOut() } catch { /* ignore */ }
+            navigate('/login', { replace: true })
+            return
+          }
         }
       }
 
-      try { sessionStorage.removeItem('gomytho_signup_flow') } catch { /* ignore */ }
+      // NB : on NE retire PAS le flag `gomytho_signup_flow` ici. C'est
+      // AppLayout qui le consomme une seule fois après avoir fait l'upsert
+      // du profil payant. Si on le retirait à ce stade et que la session_id
+      // se perdait dans le redirect Google ↔ Supabase ↔ /auth/callback, le
+      // user fraîchement inscrit pouvait être éjecté vers /login par le
+      // contrôle d'accès d'AppLayout (la DB n'a pas encore le bon plan).
       const plan = searchParams.get('plan')
       const sessionId = searchParams.get('session_id')
       const params = new URLSearchParams()

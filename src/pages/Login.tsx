@@ -5,8 +5,10 @@ import { supabase } from '@/lib/supabase'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import {
+  clearPendingStripeSessionId,
   fetchAccessProfile,
   hasPaidGoMythoAccess,
+  resolvePaidAccessViaStripe,
   shouldBypassAccessCheck,
   NO_SUBSCRIPTION_FLAG_KEY,
 } from '@/lib/auth-access'
@@ -68,9 +70,24 @@ export default function Login() {
       if (!shouldBypassAccessCheck()) {
         const profile = await fetchAccessProfile(data.session.user.id)
         if (!hasPaidGoMythoAccess(profile)) {
-          await supabase.auth.signOut()
-          setError(NO_SUB_MSG)
-          return
+          // Filet de sécurité : la DB ne montre pas d'abonnement, mais
+          // Stripe peut être la vraie source de vérité (webhook perdu,
+          // email du paiement différent de l'email du compte, race
+          // condition au signup, …). resolvePaidAccessViaStripe utilise
+          // automatiquement un éventuel `gomytho_pending_session_id` posé
+          // par /paiementreussi : c'est ce session_id qui permet de lier
+          // un Customer Stripe (Apple Pay / Google Pay / Revolut Pay /
+          // alias) à un user Supabase MÊME quand les emails diffèrent.
+          const access = await resolvePaidAccessViaStripe(data.session.access_token)
+          if (!access.ok) {
+            await supabase.auth.signOut()
+            setError(NO_SUB_MSG)
+            return
+          }
+        } else {
+          // DB déjà cohérente → un éventuel session_id pending n'est plus
+          // utile, on purge pour éviter qu'il pollue une future session.
+          clearPendingStripeSessionId()
         }
       }
 

@@ -12,6 +12,18 @@ export default function PaiementReussi() {
 
   useEffect(() => {
     const sessionId = (searchParams.get('session_id') || '').trim()
+    if (sessionId) {
+      // Persiste le session_id en localStorage. Indispensable pour relier
+      // un compte Supabase à son Customer Stripe quand les emails diffèrent
+      // (Apple Pay, Google Pay, Revolut Pay, alias, casse). Le session_id
+      // contient TOUJOURS le couple (customer_id, email Stripe) côté serveur,
+      // donc tant qu'on l'a quelque part, on peut faire le lien — même si
+      // le client ferme la fenêtre, fait OAuth, change d'onglet, etc.
+      // Le flag est consommé/effacé à la première liaison réussie.
+      try {
+        localStorage.setItem('gomytho_pending_session_id', sessionId)
+      } catch { /* ignore */ }
+    }
     const target = sessionId
       ? `/signup?session_id=${encodeURIComponent(sessionId)}`
       : '/signup'

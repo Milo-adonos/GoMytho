@@ -96,10 +96,19 @@ export default function Signup() {
     const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
     const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
 
+    // Construit l'URL de retour vers l'app en préservant le session_id Stripe
+    // s'il est encore disponible : c'est le signal le plus fiable pour
+    // qu'AppLayout sache que ce visiteur vient juste de payer (et donc ne
+    // PAS l'éjecter sur /login pendant l'attribution du plan).
+    const sessionParam = searchParams.get('session_id')
+    const appUrl = sessionParam
+      ? `/makemytho?session_id=${encodeURIComponent(sessionParam)}`
+      : '/makemytho'
+
     if (!pendingImage || !pendingPrompt) {
       // Pas de mytho en attente : on emmène l'utilisateur direct sur l'écran
       // « Créer » pour qu'il fasse son premier mytho immédiatement.
-      window.location.href = '/makemytho'
+      window.location.href = appUrl
       return
     }
 
@@ -220,7 +229,7 @@ export default function Signup() {
 
       // Le mytho auto-généré est sauvegardé (cloud + cache) ; on envoie l'utilisateur
       // sur /makemytho pour enchaîner sur la création comme demandé.
-      window.location.href = '/makemytho'
+      window.location.href = appUrl
     } catch (genErr) {
       console.error('[signup] auto-génération échouée définitivement après retries :', genErr)
       // On stocke l'erreur pour affichage dans le banner stylé côté Créations.
@@ -239,7 +248,7 @@ export default function Signup() {
         })
       }
       // On GARDE les pending data → relance manuelle possible depuis /makemytho.
-      window.location.href = '/makemytho'
+      window.location.href = appUrl
     }
   }
 
@@ -296,6 +305,18 @@ export default function Signup() {
       const userId = session.user.id
       const userEmail = session.user.email || email
       await persistUserProfile(userId, userEmail, planToAssign)
+
+      // Marqueur « parcours INSCRIPTION post-paiement » consommé par AppLayout.
+      // Indispensable pour qu'AppLayout (qui s'exécute juste après la
+      // redirection vers /makemytho) ne ré-exécute pas son contrôle d'accès
+      // payant en croyant à un simple login : sans ce flag, un user qui vient
+      // de payer + créer son compte peut être éjecté vers /login si la DB n'a
+      // pas encore propagé l'upsert ou si la lecture renvoie un profil
+      // partiellement initialisé.
+      try {
+        sessionStorage.setItem('gomytho_signup_flow', '1')
+      } catch { /* ignore */ }
+
       await runAutoGeneration(userId)
     } catch (e: unknown) {
       const err = e as { message?: string }
@@ -348,7 +369,7 @@ export default function Signup() {
             <div className="w-20 h-20 rounded-full border-4 border-lime/20 border-t-lime animate-spin mx-auto mb-6" />
             <h2 className="text-2xl font-black text-white mb-2">Génération en cours...</h2>
             <p className="text-lime font-semibold text-sm mb-2">{genStep}</p>
-            <p className="text-text-secondary text-xs">Ça prend ~15 secondes, ne ferme pas cette page</p>
+            <p className="text-text-secondary text-xs">Ça prend environ 2 minutes, merci de patienter et ne ferme pas cette page</p>
             <div className="mt-6 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(198,255,60,0.1)' }}>
               <div className="h-full bg-lime animate-pulse rounded-full w-full" />
             </div>
