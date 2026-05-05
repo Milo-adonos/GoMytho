@@ -46,6 +46,68 @@ function normalizePostBody(req: VercelRequest): Record<string, unknown> {
   }
 }
 
+/**
+ * Diagnostic des variables d'env Vercel — appelé via ?action=diag.
+ * Ne révèle JAMAIS de valeur, uniquement présent/absent + longueur + format.
+ */
+function buildDiag(): Record<string, unknown> {
+  const vars = {
+    STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    VITE_SUPABASE_URL: process.env.VITE_SUPABASE_URL,
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+    VITE_SUPABASE_ANON_KEY: process.env.VITE_SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    VITE_KIE_API_KEY: process.env.VITE_KIE_API_KEY,
+    HEBDO_PRICE_ID: process.env.HEBDO_PRICE_ID,
+    MENSU_PRICE_ID: process.env.MENSU_PRICE_ID,
+  }
+  const summary: Record<string, { present: boolean; length: number; hint?: string }> = {}
+  for (const [key, val] of Object.entries(vars)) {
+    const trimmed = (val || '').trim()
+    const entry: { present: boolean; length: number; hint?: string } = {
+      present: trimmed.length > 0,
+      length: trimmed.length,
+    }
+    if (trimmed.length > 0) {
+      if (key === 'STRIPE_SECRET_KEY') {
+        entry.hint = trimmed.startsWith('sk_live_')
+          ? 'OK live'
+          : trimmed.startsWith('sk_test_')
+          ? '⚠️ mode TEST'
+          : '❌ format inattendu'
+      } else if (key === 'STRIPE_WEBHOOK_SECRET') {
+        entry.hint = trimmed.startsWith('whsec_') ? 'OK' : '❌ devrait commencer par whsec_'
+      } else if (key === 'SUPABASE_URL' || key === 'VITE_SUPABASE_URL') {
+        entry.hint =
+          trimmed.startsWith('https://') && trimmed.endsWith('.supabase.co')
+            ? 'OK'
+            : '❌ format inattendu'
+      }
+    }
+    summary[key] = entry
+  }
+  const missingCritical: string[] = []
+  if (!summary.STRIPE_SECRET_KEY.present) missingCritical.push('STRIPE_SECRET_KEY')
+  if (!summary.STRIPE_WEBHOOK_SECRET.present) missingCritical.push('STRIPE_WEBHOOK_SECRET')
+  if (!summary.SUPABASE_URL.present && !summary.VITE_SUPABASE_URL.present) {
+    missingCritical.push('SUPABASE_URL (ou VITE_SUPABASE_URL)')
+  }
+  if (!summary.SUPABASE_SERVICE_ROLE_KEY.present) {
+    missingCritical.push('SUPABASE_SERVICE_ROLE_KEY')
+  }
+  return {
+    ok: missingCritical.length === 0,
+    missingCritical,
+    summary,
+    help:
+      missingCritical.length === 0
+        ? 'Toutes les variables critiques sont présentes.'
+        : 'Ajoute les variables manquantes sur Vercel → Settings → Environment Variables, puis redéploie.',
+  }
+}
+
 /** Toujours renvoyer du JSON — évite les 500 « corps vide » côté Vercel. */
 function sendJson(res: VercelResponse, status: number, payload: Record<string, unknown>) {
   try {
@@ -394,14 +456,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const stripeSecret = process.env.STRIPE_SECRET_KEY
-    // Variables sans préfixe VITE_ : disponibles sur plus de configs Vercel
-    // pour les fonctions server-only (évite SUPABASE_URL vide → crash avant json).
     const supabaseUrl =
       (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim() || ''
     const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() || ''
     const anonKey =
       (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim() ||
       undefined
+
+    const postBody = req.method === 'POST' ? normalizePostBody(req) : {}
+    const qAction = typeof req.query.action === 'string' ? req.query.action.trim().toLowerCase() : ''
+    const bodyAction =
+      typeof postBody.action === 'string' ? postBody.action.trim().toLowerCase() : ''
+    const action = qAction || bodyAction || ''
+
+    // ─── Mode diagnostic : /api/stripe-verify?action=diag ────────────────
+    // Liste les variables d'env Vercel attendues sans révéler leurs valeurs
+    // (uniquement présent/absent + longueur + format). Sert à débugger en
+    // 1 clic les problèmes de config sans avoir besoin d'accès aux logs.
+    if (action === 'diag') {
+      return sendJson(res, 200, buildDiag())
+    }
 
     if (!stripeSecret) {
       console.error('[stripe-verify] STRIPE_SECRET_KEY manquant dans Vercel')
@@ -411,12 +485,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         error: 'Configuration serveur : STRIPE_SECRET_KEY manquant sur Vercel.',
       })
     }
-
-    const postBody = req.method === 'POST' ? normalizePostBody(req) : {}
-    const qAction = typeof req.query.action === 'string' ? req.query.action.trim().toLowerCase() : ''
-    const bodyAction =
-      typeof postBody.action === 'string' ? postBody.action.trim().toLowerCase() : ''
-    const action = qAction || bodyAction || ''
 
     // ─── Mode (3) : claim — récupérer un abo Stripe par email ───────────────
     if (action === 'claim') {

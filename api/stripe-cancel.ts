@@ -104,11 +104,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const updated = await stripe.subscriptions.update(sub.id, {
         cancel_at_period_end: true,
       })
+      // Cast `any` : `current_period_end` est déplacé selon la version de
+      // l'API Stripe ; on lit défensivement à la racine puis sur l'item.
+      const updatedAny = updated as unknown as {
+        current_period_end?: number
+        items?: { data?: Array<{ current_period_end?: number }> }
+      }
+      const endTs =
+        updatedAny.current_period_end ??
+        updatedAny.items?.data?.[0]?.current_period_end ??
+        null
       cancelled.push({
         id: updated.id,
-        endsAt: updated.current_period_end
-          ? new Date(updated.current_period_end * 1000).toISOString()
-          : null,
+        endsAt: endTs ? new Date(endTs * 1000).toISOString() : null,
       })
     }
 
