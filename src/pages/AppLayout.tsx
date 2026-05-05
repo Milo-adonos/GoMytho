@@ -14,7 +14,6 @@ import {
 import {
   clearPendingStripeSessionId,
   hasPaidGoMythoAccess,
-  NO_SUBSCRIPTION_FLAG_KEY,
   readPendingStripeSessionId,
 } from '@/lib/auth-access'
 
@@ -453,30 +452,15 @@ export default function AppLayout() {
       }
 
       // ─── 5. Vérification accès payant (filet final) ─────────────────────
-      // Ici on a déjà :
-      //   - lu la DB,
-      //   - appelé stripe-verify (réponse en ~500 ms qui aurait dû renvoyer
-      //     un payload OK si le paiement existe vraiment côté Stripe),
-      //   - pris l'accès basé sur le payload Stripe en filet « optimiste »,
-      //   - pollé la DB en filet ultime si Stripe lui-même n'a rien répondu.
-      // Si AUCUN de ces filets ne donne un abo, c'est presque toujours que
-      // l'utilisateur n'a pas réellement payé (il a abandonné le checkout
-      // ou fermé la page Stripe), ou que la session_id est invalide. On
-      // refuse l'accès — c'est ce qui empêche un visiteur qui n'a pas
-      // finalisé son paiement d'arriver dans l'interface payante.
+      // Si tous les filets ont échoué (DB vide, stripe-verify KO, pas de
+      // contexte Stripe pour accorder l'accès optimiste), on redirige
+      // l'utilisateur vers le choix d'offre — sans le déconnecter, pour
+      // qu'il puisse reprendre tout de suite son parcours d'abo avec son
+      // compte courant.
       if (!hasPaidGoMythoAccess(dbUser)) {
-        try {
-          sessionStorage.setItem(
-            NO_SUBSCRIPTION_FLAG_KEY,
-            expectsWebhook
-              ? "Stripe n'a pas confirmé ce paiement pour le moment. Si tu viens de payer, attends quelques secondes et reconnecte-toi. Sinon, choisis une offre pour activer ton compte."
-              : "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
-          )
-        } catch { /* ignore */ }
         try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
         clearPendingStripeSessionId()
-        try { await supabase.auth.signOut() } catch { /* ignore */ }
-        window.location.replace('/login')
+        window.location.replace('/choixoffre')
         return
       }
 

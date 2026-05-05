@@ -1,18 +1,11 @@
 // Règle d'accès à l'app GoMytho.
 //
-// Faille corrigée le 2026-05-02 : Google OAuth crée automatiquement un
-// compte Supabase pour n'importe quel email Google. Sans vérification
-// post-login, ces comptes accédaient à l'app sans avoir payé. Le trigger
-// SQL `on_auth_user_created` crée la ligne dans `public.users` avec
-// `plan: 'free'` / `credits: 0` — donc on a une source de vérité fiable
-// côté DB, et `hasPaidGoMythoAccess` retourne false pour ces comptes.
-//
-// Refonte 2026-05-05 : flux d'inscription AVANT paiement + utilisation
-// de `client_reference_id` côté Stripe. Le webhook lie toujours par
-// user.id, donc plus besoin de fallbacks complexes (resolve-by-stripe,
-// claim-by-email, pending-links côté client). Si la DB ne montre pas
-// d'abo, c'est qu'il n'y en a pas (ou que le webhook est en retard de
-// quelques secondes — géré par AppLayout via polling).
+// Avec le flux d'inscription AVANT paiement + utilisation de
+// `client_reference_id` côté Stripe, le webhook lie toujours le
+// Customer Stripe par user.id Supabase. Donc la table public.users
+// est la source de vérité unique : si elle ne montre pas d'abo, c'est
+// qu'il n'y en a pas (ou que le webhook est en retard de quelques
+// secondes — géré par AppLayout via polling + appel à /api/stripe-verify).
 
 import { supabase } from '@/lib/supabase'
 
@@ -27,17 +20,13 @@ export type UserAccessProfile = {
 
 /**
  * True si l'utilisateur a un abonnement payant ou des crédits restants.
- * Utilisé sur /choixoffre pour ne pas demander à un client payant de
- * repasser à la caisse, et sur les pages de login pour bloquer les
- * comptes non payants.
  *
- * Important : on ne considère PAS le simple fait d'avoir un
- * `stripe_customer_id` comme une preuve d'accès payant. Un Customer
- * Stripe persiste après refund / cancel / abandon de paiement, et un
- * vieux test peut laisser une référence orpheline en DB. La preuve
- * fiable, c'est :
- *   - des crédits > 0 (l'abo a été payé et le quota n'est pas épuisé)
- *   OU
+ * On ne considère PAS le simple fait d'avoir un `stripe_customer_id`
+ * comme une preuve d'accès payant — un Customer Stripe persiste après
+ * refund / cancel, et un vieux test peut laisser une référence orpheline.
+ *
+ * La preuve fiable :
+ *   - des crédits > 0, OU
  *   - un plan weekly/monthly avec un statut qui donne droit à l'accès
  *     (active, trialing, cancelled — cancelled = annulé mais accès
  *     conservé jusqu'à la fin de la période payée).
@@ -60,10 +49,7 @@ export function hasPaidGoMythoAccess(profile: UserAccessProfile): boolean {
   return false
 }
 
-/**
- * Lit le profil DB d'un utilisateur par son user.id Supabase.
- * Renvoie null en cas d'erreur ou de profil absent.
- */
+/** Lit le profil DB d'un utilisateur par son user.id Supabase. */
 export async function fetchAccessProfile(userId: string): Promise<UserAccessProfile> {
   try {
     const { data } = await supabase
@@ -84,8 +70,7 @@ export async function fetchAccessProfile(userId: string): Promise<UserAccessProf
  *
  * Cas couverts :
  * - L'utilisateur revient juste du flux Stripe (`?session_id=`) → le
- *   webhook peut ne pas avoir fini, on lui laisse le bénéfice du doute,
- *   AppLayout fait du polling pour attendre le webhook.
+ *   webhook peut ne pas avoir fini, on lui laisse le bénéfice du doute.
  * - Un plan en attente est posé dans localStorage (`gomytho_pending_plan`)
  *   → le paiement a abouti côté Stripe mais n'est pas encore reflété
  *   dans la DB.
@@ -103,10 +88,8 @@ const STRIPE_SESSION_REGEX = /^cs_(live|test)_[A-Za-z0-9]+$/
 
 /**
  * Lit un session_id Stripe « pending » dans localStorage (posé par
- * /paiementreussi). Survit aux refresh sans query string, fermetures
- * d'onglet partielles, ou success URLs Stripe mal configurées sans
- * paramètre dans l'URL finale — indispensable pour déclencher le fallback
- * `/api/stripe-verify` dans AppLayout.
+ * /paiementreussi). Survit aux refresh sans query string et fermetures
+ * d'onglet partielles.
  */
 export function readPendingStripeSessionId(): string | null {
   try {
@@ -120,7 +103,6 @@ export function readPendingStripeSessionId(): string | null {
   }
 }
 
-/** À appeler après une sync réussie ou quand l'accès payant est confirmé. */
 export function clearPendingStripeSessionId() {
   try {
     localStorage.removeItem('gomytho_pending_session_id')
@@ -129,108 +111,7 @@ export function clearPendingStripeSessionId() {
 
 /**
  * Clé sessionStorage utilisée pour transmettre un message d'erreur
- * d'accès depuis AuthCallback (Google OAuth refusé) jusqu'à la page de
- * destination (`/choixoffre` ou `/login`).
+ * d'accès depuis AuthCallback / AppLayout jusqu'à la page de
+ * destination (`/login` ou `/choixoffre`).
  */
 export const NO_SUBSCRIPTION_FLAG_KEY = 'gomytho_no_subscription_msg'
-
-/**
- * Résultat d'une tentative de claim « j'ai payé avec un autre email ».
- */
-export type ClaimSubscriptionResult =
-  | {
-      ok: true
-      plan: 'weekly' | 'monthly'
-      credits: number
-      subscription_status: 'active' | 'trialing' | 'cancelled' | 'inactive'
-      customerId: string
-      paymentEmail: string | null
-    }
-  | {
-      ok: false
-      reason:
-        | 'no_customer'
-        | 'no_active_sub'
-        | 'already_linked'
-        | 'already_linked_metadata'
-        | 'invalid_email'
-        | 'unauthorized'
-        | 'server_error'
-        | 'network_error'
-      error: string
-    }
-
-/**
- * Demande au serveur de lier le Customer Stripe d'un email donné au compte
- * Supabase actuellement authentifié. Sert à récupérer un abonnement payé
- * sous l'ancien flux (paiement avant création de compte) ou avec un email
- * différent (Apple Pay, alias).
- *
- * Côté serveur (`/api/stripe-verify` avec action=claim) :
- *  1. Vérifie le Bearer token Supabase (user authentifié requis).
- *  2. Cherche le Customer Stripe par email + un abo actif/trialing.
- *  3. Refuse si déjà lié à un autre user Supabase (anti-hijack).
- *  4. Sync public.users avec plan/credits/customer_id.
- *  5. Met à jour la metadata du Customer Stripe (verrou de liaison).
- */
-export async function claimSubscriptionByPaymentEmail(
-  accessToken: string,
-  paymentEmail: string,
-): Promise<ClaimSubscriptionResult> {
-  if (!accessToken) {
-    return { ok: false, reason: 'unauthorized', error: 'Connexion requise.' }
-  }
-  const email = (paymentEmail || '').trim().toLowerCase()
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return { ok: false, reason: 'invalid_email', error: 'Email invalide.' }
-  }
-  try {
-    const res = await fetch('/api/stripe-verify?action=claim', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email }),
-    })
-    const rawText = await res.text()
-    let parsed: unknown = null
-    if (rawText) {
-      try {
-        parsed = JSON.parse(rawText)
-      } catch {
-        parsed = null
-      }
-    }
-    const data = parsed as
-      | ClaimSubscriptionResult
-      | { ok?: unknown; reason?: string; error?: string }
-      | null
-    if (!data || typeof data !== 'object') {
-      const hint =
-        rawText && rawText.trim().startsWith('<')
-          ? 'Le serveur a renvoyé une page HTML au lieu de JSON (souvent une erreur de déploiement ou une URL incorrecte).'
-          : `Réponse vide ou invalide (HTTP ${res.status}). Réessaie dans quelques secondes.`
-      return { ok: false, reason: 'server_error', error: hint }
-    }
-    if ((data as { ok: boolean }).ok === true) {
-      return data as Extract<ClaimSubscriptionResult, { ok: true }>
-    }
-    const reason =
-      typeof (data as { reason?: string }).reason === 'string'
-        ? (data as { reason: string }).reason
-        : 'server_error'
-    const error =
-      typeof (data as { error?: string }).error === 'string'
-        ? (data as { error: string }).error
-        : 'Liaison impossible.'
-    return {
-      ok: false,
-      reason: reason as Extract<ClaimSubscriptionResult, { ok: false }>['reason'],
-      error,
-    }
-  } catch (e) {
-    console.warn('[auth-access] claimSubscriptionByPaymentEmail a échoué :', e)
-    return { ok: false, reason: 'network_error', error: 'Connexion impossible.' }
-  }
-}

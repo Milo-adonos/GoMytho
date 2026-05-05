@@ -1,30 +1,18 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
 import { fetchAccessProfile, hasPaidGoMythoAccess } from '@/lib/auth-access'
 
-// ─── Page d'inscription PRÉ-paiement ─────────────────────────────────────
+// ─── Page d'inscription PRÉ-paiement (version simplifiée) ───────────────
 //
-// NOUVEAU FLUX (2026-05-05) :
-//   /unlock (clic CTA, pas connecté)
-//     → /signup?plan=weekly|monthly (cette page)
-//     → création compte Supabase
-//     → redirect vers Stripe Payment Link AVEC `client_reference_id=user.id`
-//     → Stripe Checkout (paiement)
-//     → /paiementreussi
-//     → /makemytho
-//
-// Avantages :
-//   • Le compte Supabase existe AVANT le paiement → le webhook Stripe peut
-//     toujours lier par user.id, peu importe l'email utilisé sur Stripe
-//     (Apple Pay, Google Pay, Revolut Pay, alias…).
-//   • Plus de race condition « webhook avant signup ».
-//   • Plus de bug « payé mais pas de compte ».
-//   • Toute la complexité de fallback (resolve-access, claim-by-email,
-//     pending-links, signup_flow flag…) devient inutile.
+// Flux unique :
+//   /choixoffre (clic « DÉBLOQUER MON MYTHO ») → /signup?plan=weekly|monthly
+//     → 1. créer compte Supabase (ou Google OAuth)
+//     → 2. redirect Stripe Payment Link avec client_reference_id=user.id
+//     → 3. /paiementreussi → /makemytho
 
 const PAYMENT_LINKS: Record<'weekly' | 'monthly', string> = {
   monthly: 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00',
@@ -46,9 +34,14 @@ function buildPaymentLink(
   return url.toString()
 }
 
+function goToStripe(plan: 'weekly' | 'monthly', userId: string, userEmail: string | null) {
+  try { localStorage.setItem('gomytho_pending_plan', plan) } catch { /* ignore */ }
+  const link = buildPaymentLink(PAYMENT_LINKS[plan], { userId, email: userEmail })
+  window.location.href = link
+}
+
 export default function Signup() {
   const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -58,51 +51,25 @@ export default function Signup() {
   const plan: 'weekly' | 'monthly' =
     planParam === 'weekly' || planParam === 'monthly' ? planParam : 'weekly'
 
-  // Si l'utilisateur est DÉJÀ connecté quand il arrive sur /signup, on le
-  // dirige directement :
-  //   - s'il a déjà un accès payant → /makemytho
-  //   - sinon → page Stripe avec client_reference_id (pas besoin de re-créer
-  //     un compte qui existe déjà)
+  // Si l'utilisateur arrive ici déjà connecté :
+  //   - s'il a un abo → /makemytho
+  //   - sinon → on le bascule directement sur Stripe (pas besoin de
+  //     re-créer un compte qui existe déjà).
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       const { data: { session } } = await supabase.auth.getSession()
       if (cancelled || !session) return
-      const { data: profile } = await supabase
-        .from('users')
-        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
-        .eq('id', session.user.id)
-        .maybeSingle()
+      const profile = await fetchAccessProfile(session.user.id)
       if (cancelled) return
       if (hasPaidGoMythoAccess(profile)) {
         window.location.replace('/makemytho')
-        return
+      } else {
+        goToStripe(plan, session.user.id, session.user.email ?? null)
       }
-      // Connecté mais pas encore d'abo → on bascule direct sur Stripe.
-      const link = buildPaymentLink(PAYMENT_LINKS[plan], {
-        userId: session.user.id,
-        email: session.user.email ?? null,
-      })
-      window.location.replace(link)
     })()
     return () => { cancelled = true }
   }, [plan])
-
-  /**
-   * Redirige vers Stripe Checkout avec `client_reference_id` = user.id
-   * Supabase. Le webhook utilisera cet ID pour lier le Customer Stripe
-   * directement à ce compte, sans ambiguïté d'email.
-   */
-  const goToStripe = (userId: string, userEmail: string | null) => {
-    const link = buildPaymentLink(PAYMENT_LINKS[plan], {
-      userId,
-      email: userEmail,
-    })
-    // localStorage utile à AppLayout pour montrer un état d'attente cohérent
-    // si le webhook met 2-3s à arriver après le retour Stripe.
-    try { localStorage.setItem('gomytho_pending_plan', plan) } catch { /* ignore */ }
-    window.location.href = link
-  }
 
   const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -114,9 +81,7 @@ export default function Signup() {
 
       if (signUpErr) {
         if (/already registered|already exists|user.*exists/i.test(signUpErr.message)) {
-          setError(
-            "Cet email a déjà un compte. Connecte-toi via la page de connexion pour aller à ton paiement.",
-          )
+          setError("Cet email a déjà un compte. Connecte-toi pour aller au paiement.")
           setIsLoading(false)
           return
         }
@@ -130,9 +95,7 @@ export default function Signup() {
       }
 
       // Si email confirmation activée côté Supabase, signUp ne retourne pas
-      // de session → on tente de signer immédiatement avec le mot de passe
-      // qu'on vient juste de poser. Sinon on tombe sur le message « vérifie
-      // tes mails » (qui casse le flux paiement direct).
+      // de session → on tente d'ouvrir une session immédiatement.
       let session = data.session
       if (!session) {
         const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
@@ -147,17 +110,17 @@ export default function Signup() {
 
       // Anti-double paiement : si signUp a en fait reconnecté un compte
       // existant (Supabase peut le faire si email_confirmed = false), et
-      // que ce compte a DÉJÀ un abo actif, on évite le paiement en double.
+      // qu'il a déjà un abo, on évite le double paiement.
       const existing = await fetchAccessProfile(session.user.id)
       if (hasPaidGoMythoAccess(existing)) {
         window.location.replace('/makemytho')
         return
       }
 
-      goToStripe(session.user.id, session.user.email ?? email)
+      goToStripe(plan, session.user.id, session.user.email ?? email)
     } catch (e: unknown) {
       const err = e as { message?: string }
-      setError(err.message || 'Une erreur est survenue')
+      setError(err.message || 'Une erreur est survenue.')
       setIsLoading(false)
     }
   }
@@ -168,8 +131,8 @@ export default function Signup() {
 
     try {
       // Marqueur consommé par AuthCallback : indique que ce parcours OAuth
-      // doit, après authentification réussie, rediriger vers Stripe (et non
-      // vers /makemytho), avec le plan choisi.
+      // doit, après authentification réussie, rediriger vers Stripe avec
+      // le plan choisi.
       try { sessionStorage.setItem('gomytho_signup_to_stripe_plan', plan) } catch { /* ignore */ }
       const origin = window.location.origin
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
@@ -181,7 +144,7 @@ export default function Signup() {
       if (oauthErr) throw oauthErr
     } catch (e: unknown) {
       const err = e as { message?: string }
-      setError(err.message || 'Connexion Google impossible')
+      setError(err.message || 'Connexion Google impossible.')
       setIsLoading(false)
     }
   }
@@ -233,7 +196,7 @@ export default function Signup() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="w-full bg-primary-bg border-2 border-lime/20 rounded-2xl px-4 py-3 text-text-primary focus:border-lime focus:outline-none focus:glow-lime transition-all"
+                  className="w-full bg-primary-bg border-2 border-lime/20 rounded-2xl px-4 py-3 text-text-primary focus:border-lime focus:outline-none transition-all"
                   placeholder="ton@email.fr"
                 />
               </div>
@@ -249,7 +212,7 @@ export default function Signup() {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   minLength={6}
-                  className="w-full bg-primary-bg border-2 border-lime/20 rounded-2xl px-4 py-3 text-text-primary focus:border-lime focus:outline-none focus:glow-lime transition-all"
+                  className="w-full bg-primary-bg border-2 border-lime/20 rounded-2xl px-4 py-3 text-text-primary focus:border-lime focus:outline-none transition-all"
                   placeholder="••••••••"
                 />
                 <p className="text-xs text-text-secondary mt-2">
@@ -257,12 +220,7 @@ export default function Signup() {
                 </p>
               </div>
 
-              <Button
-                type="submit"
-                disabled={isLoading}
-                size="lg"
-                fullWidth
-              >
+              <Button type="submit" disabled={isLoading} size="lg" fullWidth>
                 {isLoading ? 'Création du compte…' : 'Créer mon compte → Paiement'}
               </Button>
             </form>
@@ -286,22 +244,10 @@ export default function Signup() {
               fullWidth
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
-                <path
-                  fill="currentColor"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                />
-                <path
-                  fill="currentColor"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                />
+                <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
               </svg>
               Continuer avec Google
             </Button>
@@ -309,24 +255,16 @@ export default function Signup() {
             <p className="text-xs text-center text-text-secondary mt-6">
               Tu seras redirigé vers Stripe pour finaliser le paiement
               <br />
-              <button
-                type="button"
-                onClick={() => navigate('/login')}
-                className="text-lime hover:underline mt-2 inline-block font-semibold"
-              >
+              <Link to="/login" className="text-lime hover:underline mt-2 inline-block font-semibold">
                 Déjà un compte ? Se connecter
-              </button>
+              </Link>
             </p>
 
             <p className="text-xs text-center text-text-secondary mt-6">
               En créant un compte, tu acceptes nos{' '}
-              <a href="/terms" className="text-lime hover:underline">
-                CGU
-              </a>{' '}
-              et notre{' '}
-              <a href="/privacy" className="text-lime hover:underline">
-                politique de confidentialité
-              </a>
+              <a href="/terms" className="text-lime hover:underline">CGU</a>
+              {' '}et notre{' '}
+              <a href="/privacy" className="text-lime hover:underline">politique de confidentialité</a>
             </p>
           </motion.div>
         </div>
