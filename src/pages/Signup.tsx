@@ -1,255 +1,107 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
-import { generateMytho, uploadToSupabase, KieBlockedError } from '@/lib/kie-api'
-import { saveMythoToCloud } from '@/lib/mythos-sync'
-import type { AspectRatio } from '@/lib/kie-api'
-import { setGenError } from '@/components/GenErrorBanner'
-import {
-  resolveNewUserPlan,
-  cachePlanLocally,
-  PLAN_LABELS,
-  CREDITS_PER_IMAGE,
-  type VerifiedPlan,
-} from '@/lib/plan'
+import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+
+// ─── Page d'inscription PRÉ-paiement ─────────────────────────────────────
+//
+// NOUVEAU FLUX (2026-05-05) :
+//   /unlock (clic CTA, pas connecté)
+//     → /signup?plan=weekly|monthly (cette page)
+//     → création compte Supabase
+//     → redirect vers Stripe Payment Link AVEC `client_reference_id=user.id`
+//     → Stripe Checkout (paiement)
+//     → /paiementreussi
+//     → /makemytho
+//
+// Avantages :
+//   • Le compte Supabase existe AVANT le paiement → le webhook Stripe peut
+//     toujours lier par user.id, peu importe l'email utilisé sur Stripe
+//     (Apple Pay, Google Pay, Revolut Pay, alias…).
+//   • Plus de race condition « webhook avant signup ».
+//   • Plus de bug « payé mais pas de compte ».
+//   • Toute la complexité de fallback (resolve-access, claim-by-email,
+//     pending-links, signup_flow flag…) devient inutile.
+
+const PAYMENT_LINKS: Record<'weekly' | 'monthly', string> = {
+  monthly: 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00',
+  weekly: 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01',
+}
+
+const PLAN_LABELS: Record<'weekly' | 'monthly', string> = {
+  weekly: 'Hebdomadaire (2,99€)',
+  monthly: 'Mensuel (9,90€)',
+}
+
+function buildPaymentLink(
+  baseUrl: string,
+  opts: { userId: string; email: string | null | undefined },
+): string {
+  const url = new URL(baseUrl)
+  url.searchParams.set('client_reference_id', opts.userId)
+  if (opts.email) url.searchParams.set('prefilled_email', opts.email)
+  return url.toString()
+}
 
 export default function Signup() {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [genStep, setGenStep] = useState('')
   const [error, setError] = useState('')
-  const [verified, setVerified] = useState<VerifiedPlan | null>(null)
 
+  const planParam = searchParams.get('plan')
+  const plan: 'weekly' | 'monthly' =
+    planParam === 'weekly' || planParam === 'monthly' ? planParam : 'weekly'
+
+  // Si l'utilisateur est DÉJÀ connecté quand il arrive sur /signup, on le
+  // dirige directement :
+  //   - s'il a déjà un accès payant → /makemytho
+  //   - sinon → page Stripe avec client_reference_id (pas besoin de re-créer
+  //     un compte qui existe déjà)
   useEffect(() => {
-    let alive = true
-    void resolveNewUserPlan(searchParams).then((v) => {
-      if (alive) setVerified(v)
-    })
-    return () => { alive = false }
-  }, [searchParams])
-
-  async function persistUserProfile(userId: string, userEmail: string, plan: VerifiedPlan) {
-    // Garde-fou anti-race-condition avec le webhook Stripe :
-    //   Le webhook (api/stripe-webhook.ts) écrit la VÉRITÉ depuis Stripe en
-    //   parallèle de l'inscription. Si le webhook arrive AVANT cet upsert et
-    //   pose le bon plan (weekly/monthly + crédits) en base, on ne doit
-    //   SURTOUT pas l'écraser avec une donnée moins sûre côté client (par ex.
-    //   plan='free' si /api/stripe-verify a échoué et qu'aucun pending_plan
-    //   n'était en localStorage).
-    let existingHasPaidPlan = false
-    let existingHasMoreCredits = false
-    try {
-      const { data: existing } = await supabase
+    let cancelled = false
+    ;(async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (cancelled || !session) return
+      const { data: profile } = await supabase
         .from('users')
-        .select('plan, credits_remaining')
-        .eq('id', userId)
+        .select('plan, subscription_status, credits_remaining, stripe_customer_id')
+        .eq('id', session.user.id)
         .maybeSingle()
-      if (existing) {
-        existingHasPaidPlan = existing.plan === 'weekly' || existing.plan === 'monthly'
-        existingHasMoreCredits = (existing.credits_remaining ?? 0) > plan.credits
+      if (cancelled) return
+      if (hasPaidGoMythoAccess(profile)) {
+        window.location.replace('/makemytho')
+        return
       }
-    } catch { /* lecture non bloquante */ }
+      // Connecté mais pas encore d'abo → on bascule direct sur Stripe.
+      const link = buildPaymentLink(PAYMENT_LINKS[plan], {
+        userId: session.user.id,
+        email: session.user.email ?? null,
+      })
+      window.location.replace(link)
+    })()
+    return () => { cancelled = true }
+  }, [plan])
 
-    try {
-      const row: Record<string, unknown> = {
-        id: userId,
-        email: userEmail,
-      }
-      // On n'écrase JAMAIS un plan payant déjà posé par le webhook.
-      const shouldWritePlan = !(existingHasPaidPlan && plan.plan === 'free')
-      if (shouldWritePlan) {
-        row.plan = plan.plan
-        row.subscription_status = plan.subscription_status ?? 'active'
-        // Idem pour les crédits : on ne diminue jamais.
-        row.credits_remaining = existingHasMoreCredits
-          ? undefined
-          : plan.credits
-        if (row.credits_remaining === undefined) delete row.credits_remaining
-      }
-      if (plan.customerId) row.stripe_customer_id = plan.customerId
-      if (plan.email) row.stripe_payment_email = plan.email
-      await supabase.from('users').upsert([row], { onConflict: 'id' })
-    } catch (err) {
-      console.warn('[signup] upsert users échoué (non bloquant):', err)
-    }
-    cachePlanLocally(plan.plan, plan.credits)
-    // On NE retire le pending_plan que si l'inscription s'est faite avec un
-    // VRAI plan payant. Sinon (plan='free' faute de session_id), on le garde
-    // pour permettre à AppLayout de rattraper le coup et corriger le compte
-    // à la première visite.
-    if (plan.plan === 'weekly' || plan.plan === 'monthly') {
-      try {
-        localStorage.removeItem('gomytho_pending_plan')
-      } catch { /* ignore */ }
-    }
-  }
-
-  async function runAutoGeneration(userId: string) {
-    const pendingImage = localStorage.getItem('gomytho_pending_image')
-    const pendingImage2 = localStorage.getItem('gomytho_pending_image2')
-    const pendingPrompt = localStorage.getItem('gomytho_pending_prompt')
-    const pendingRatio = (localStorage.getItem('gomytho_pending_ratio') || '9:16') as AspectRatio
-
-    // Construit l'URL de retour vers l'app en préservant le session_id Stripe
-    // s'il est encore disponible : c'est le signal le plus fiable pour
-    // qu'AppLayout sache que ce visiteur vient juste de payer (et donc ne
-    // PAS l'éjecter sur /login pendant l'attribution du plan).
-    const sessionParam = searchParams.get('session_id')
-    const appUrl = sessionParam
-      ? `/makemytho?session_id=${encodeURIComponent(sessionParam)}`
-      : '/makemytho'
-
-    if (!pendingImage || !pendingPrompt) {
-      // Pas de mytho en attente : on emmène l'utilisateur direct sur l'écran
-      // « Créer » pour qu'il fasse son premier mytho immédiatement.
-      window.location.href = appUrl
-      return
-    }
-
-    // Retry helper avec backoff exponentiel — on ne veut PAS échouer.
-    // Pas de retry sur un blocage modération : Kie répond pareil → relève direct.
-    const withRetry = async <T,>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> => {
-      let lastErr: unknown = null
-      for (let i = 1; i <= attempts; i += 1) {
-        try {
-          const r = await fn()
-          if (i > 1) console.info(`[signup] ${label} → réussi après ${i} tentatives`)
-          return r
-        } catch (err) {
-          lastErr = err
-          if (err instanceof KieBlockedError) throw err
-          console.warn(`[signup] ${label} échec ${i}/${attempts}:`, err)
-          if (i < attempts) {
-            const delay = Math.min(8000, 1500 * Math.pow(2, i - 1))
-            await new Promise((r) => setTimeout(r, delay))
-          }
-        }
-      }
-      throw lastErr
-    }
-
-    setIsLoading(false)
-    setIsGenerating(true)
-    try {
-      setGenStep('Conversion de ta photo...')
-      const res = await fetch(pendingImage)
-      const blob = await res.blob()
-      const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
-
-      let file2: File | null = null
-      if (pendingImage2) {
-        try {
-          const res2 = await fetch(pendingImage2)
-          const blob2 = await res2.blob()
-          file2 = new File([blob2], 'photo2.jpg', { type: 'image/jpeg' })
-        } catch (e2) {
-          console.warn('[signup] décodage photo 2 échoué:', e2)
-        }
-      }
-
-      setGenStep(file2 ? 'Upload de tes photos...' : 'Upload de ta photo...')
-      const publicUrl = await withRetry('upload photo 1', () => uploadToSupabase(file, userId))
-      let publicUrl2: string | null = null
-      if (file2) {
-        try {
-          publicUrl2 = await withRetry('upload photo 2', () => uploadToSupabase(file2 as File, userId))
-        } catch (e2) {
-          console.warn('[signup] upload photo 2 abandonné après retries:', e2)
-        }
-      }
-      const imageUrls = publicUrl2 ? [publicUrl, publicUrl2] : [publicUrl]
-
-      setGenStep('Génération de ton mytho...')
-      const { dataUrl, remoteUrl } = await withRetry(
-        'generateMytho',
-        () =>
-          generateMytho(
-            { userPrompt: pendingPrompt, imageUrls, aspectRatio: pendingRatio },
-            (s) => setGenStep(s)
-          ),
-        2
-      )
-
-      setGenStep('Sauvegarde...')
-      try {
-        await withRetry(
-          'saveMythoToCloud',
-          () => saveMythoToCloud({ userId, generatedDataUrl: dataUrl, prompt: pendingPrompt }),
-          2
-        )
-      } catch (saveErr) {
-        // L'image EXISTE — on garantit qu'elle apparaît dans Créations même si
-        // saveMythoToCloud a planté → fallback cache local pur.
-        console.warn('[signup] saveMythoToCloud KO, fallback cache local pur:', saveErr)
-        try {
-          const { readLocalCreations, writeLocalCreations } = await import('@/lib/mythos-sync')
-          const list = readLocalCreations(userId)
-          writeLocalCreations(userId, [
-            {
-              id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              user_id: userId,
-              image_url: remoteUrl || dataUrl,
-              preview_data_url: dataUrl,
-              prompt: pendingPrompt,
-              created_at: new Date().toISOString(),
-            },
-            ...list,
-          ])
-        } catch (cacheErr) {
-          console.error('[signup] fallback cache local lui-même KO:', cacheErr)
-          throw saveErr
-        }
-      }
-
-      localStorage.removeItem('gomytho_pending_image')
-      localStorage.removeItem('gomytho_pending_image2')
-      localStorage.removeItem('gomytho_pending_prompt')
-      localStorage.removeItem('gomytho_pending_ratio')
-
-      try {
-        const { data: row } = await supabase.from('users').select('credits_remaining').eq('id', userId).single()
-        const cur = Number(row?.credits_remaining ?? 0)
-        const next = Math.max(0, cur - CREDITS_PER_IMAGE)
-        await supabase.from('users').update({ credits_remaining: next }).eq('id', userId)
-        try {
-          const p = localStorage.getItem('gomytho_user_plan')
-          if (p === 'weekly' || p === 'monthly' || p === 'free') {
-            cachePlanLocally(p, next)
-          }
-        } catch { /* ignore */ }
-      } catch (credErr) {
-        console.warn('[signup] décrément crédits après auto-gen (non bloquant):', credErr)
-      }
-
-      // Le mytho auto-généré est sauvegardé (cloud + cache) ; on envoie l'utilisateur
-      // sur /makemytho pour enchaîner sur la création comme demandé.
-      window.location.href = appUrl
-    } catch (genErr) {
-      console.error('[signup] auto-génération échouée définitivement après retries :', genErr)
-      // On stocke l'erreur pour affichage dans le banner stylé côté Créations.
-      if (genErr instanceof KieBlockedError) {
-        setGenError({ code: genErr.code, message: genErr.message, blocked: true })
-      } else {
-        const msg =
-          (genErr as Error)?.message ||
-          'La génération automatique a rencontré un souci.'
-        setGenError({
-          code: 'GEN_FAILED',
-          message: msg.includes('Crédits Kie')
-            ? msg
-            : `La génération automatique a échoué. ${msg.length < 120 ? msg : ''} Tu peux relancer depuis l'onglet "Créer".`,
-          blocked: false,
-        })
-      }
-      // On GARDE les pending data → relance manuelle possible depuis /makemytho.
-      window.location.href = appUrl
-    }
+  /**
+   * Redirige vers Stripe Checkout avec `client_reference_id` = user.id
+   * Supabase. Le webhook utilisera cet ID pour lier le Customer Stripe
+   * directement à ce compte, sans ambiguïté d'email.
+   */
+  const goToStripe = (userId: string, userEmail: string | null) => {
+    const link = buildPaymentLink(PAYMENT_LINKS[plan], {
+      userId,
+      email: userEmail,
+    })
+    // localStorage utile à AppLayout pour montrer un état d'attente cohérent
+    // si le webhook met 2-3s à arriver après le retour Stripe.
+    try { localStorage.setItem('gomytho_pending_plan', plan) } catch { /* ignore */ }
+    window.location.href = link
   }
 
   const handleEmailSignup = async (e: React.FormEvent) => {
@@ -257,22 +109,13 @@ export default function Signup() {
     setIsLoading(true)
     setError('')
 
-    // /signup = page d'inscription pure. On ne BLOQUE jamais la création de
-    // compte ici, même si la vérif Stripe échoue : le client a payé pour
-    // arriver, on lui crée son compte. Le plan est résolu en best-effort
-    // (session_id → API → fallback localStorage → mensuel par défaut).
-    const planToAssign = verified ?? (await resolveNewUserPlan(searchParams))
-
     try {
       const { data, error: signUpErr } = await supabase.auth.signUp({ email, password })
 
       if (signUpErr) {
-        // Email déjà utilisé : pas de fallback connexion ici. La page /signup
-        // est strictement pour la création de compte. Le client est invité à
-        // utiliser le bouton « Connexion » de la landing page.
         if (/already registered|already exists|user.*exists/i.test(signUpErr.message)) {
           setError(
-            "Cet email a déjà un compte. Va sur la page d'accueil et clique sur « Connexion » pour te connecter.",
+            "Cet email a déjà un compte. Connecte-toi via la page de connexion pour aller à ton paiement.",
           )
           setIsLoading(false)
           return
@@ -281,12 +124,15 @@ export default function Signup() {
       }
 
       if (!data.user) {
-        setError('Création du compte impossible (utilisateur non créé). Réessaie.')
+        setError('Création du compte impossible. Réessaie.')
         setIsLoading(false)
         return
       }
 
-      // Si email confirmation activée, signUp ne retourne pas de session.
+      // Si email confirmation activée côté Supabase, signUp ne retourne pas
+      // de session → on tente de signer immédiatement avec le mot de passe
+      // qu'on vient juste de poser. Sinon on tombe sur le message « vérifie
+      // tes mails » (qui casse le flux paiement direct).
       let session = data.session
       if (!session) {
         const { data: signInData } = await supabase.auth.signInWithPassword({ email, password })
@@ -294,30 +140,12 @@ export default function Signup() {
       }
 
       if (!session) {
-        // Email confirmation activée dans Supabase → on ne peut pas auto-loguer.
-        // On persist quand même le plan en DB (via service role côté trigger),
-        // et on guide le user vers la confirmation puis le login.
-        setError('📧 Vérifie ta boîte mail (et les spams) pour confirmer ton compte, puis connecte-toi.')
+        setError('📧 Vérifie tes mails (et les spams) pour confirmer ton compte, puis recommence.')
         setIsLoading(false)
         return
       }
 
-      const userId = session.user.id
-      const userEmail = session.user.email || email
-      await persistUserProfile(userId, userEmail, planToAssign)
-
-      // Marqueur « parcours INSCRIPTION post-paiement » consommé par AppLayout.
-      // Indispensable pour qu'AppLayout (qui s'exécute juste après la
-      // redirection vers /makemytho) ne ré-exécute pas son contrôle d'accès
-      // payant en croyant à un simple login : sans ce flag, un user qui vient
-      // de payer + créer son compte peut être éjecté vers /login si la DB n'a
-      // pas encore propagé l'upsert ou si la lecture renvoie un profil
-      // partiellement initialisé.
-      try {
-        sessionStorage.setItem('gomytho_signup_flow', '1')
-      } catch { /* ignore */ }
-
-      await runAutoGeneration(userId)
+      goToStripe(session.user.id, session.user.email ?? email)
     } catch (e: unknown) {
       const err = e as { message?: string }
       setError(err.message || 'Une erreur est survenue')
@@ -330,52 +158,27 @@ export default function Signup() {
     setError('')
 
     try {
-      // Pas de blocage : la page /signup est dédiée à l'inscription. Le client
-      // a payé sur Stripe pour arriver ici, on le laisse créer son compte.
-      const planResolved = verified ?? (await resolveNewUserPlan(searchParams))
-      const planQuery = planResolved.plan === 'weekly' || planResolved.plan === 'monthly'
-        ? planResolved.plan
-        : 'monthly'
-      const sessionParam = searchParams.get('session_id')
-      const sidQuery = sessionParam ? `&session_id=${encodeURIComponent(sessionParam)}` : ''
+      // Marqueur consommé par AuthCallback : indique que ce parcours OAuth
+      // doit, après authentification réussie, rediriger vers Stripe (et non
+      // vers /makemytho), avec le plan choisi.
+      try { sessionStorage.setItem('gomytho_signup_to_stripe_plan', plan) } catch { /* ignore */ }
       const origin = window.location.origin
-      // Marqueur pour que /auth/callback sache qu'on est sur un parcours INSCRIPTION
-      // (et pas simple connexion). Permet de ne pas rejeter le client si la
-      // session_id Stripe se perd dans le redirect Google ↔ Supabase.
-      try {
-        sessionStorage.setItem('gomytho_signup_flow', '1')
-      } catch { /* ignore */ }
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${origin}/auth/callback?plan=${planQuery}&signup=1${sidQuery}`,
+          redirectTo: `${origin}/auth/callback?signup_to_stripe=${plan}`,
         },
       })
       if (oauthErr) throw oauthErr
     } catch (e: unknown) {
       const err = e as { message?: string }
-      setError(err.message || 'Une erreur est survenue')
+      setError(err.message || 'Connexion Google impossible')
       setIsLoading(false)
     }
   }
 
   return (
     <div className="min-h-screen bg-primary-bg">
-      {/* Écran de génération automatique */}
-      {isGenerating && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6"
-          style={{ background: '#0A0E1A' }}>
-          <div className="text-center max-w-sm">
-            <div className="w-20 h-20 rounded-full border-4 border-lime/20 border-t-lime animate-spin mx-auto mb-6" />
-            <h2 className="text-2xl font-black text-white mb-2">Génération en cours...</h2>
-            <p className="text-lime font-semibold text-sm mb-2">{genStep}</p>
-            <p className="text-text-secondary text-xs">Ça prend environ 2 minutes, merci de patienter et ne ferme pas cette page</p>
-            <div className="mt-6 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(198,255,60,0.1)' }}>
-              <div className="h-full bg-lime animate-pulse rounded-full w-full" />
-            </div>
-          </div>
-        </div>
-      )}
       <Header showLogin={false} />
 
       <div className="pt-32 pb-20 px-4">
@@ -383,23 +186,19 @@ export default function Signup() {
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-center mb-12"
+            className="text-center mb-8"
           >
             <h1 className="text-4xl md:text-5xl font-black mb-4">
               Crée ton compte
             </h1>
             <p className="text-text-secondary mb-3">
-              Pour accéder à tes mythos depuis n'importe où
+              Une étape rapide avant le paiement
             </p>
-            {verified?.source === 'stripe' && (
-              <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
-                <span className="w-2 h-2 rounded-full bg-lime animate-pulse" />
-                <span className="text-lime text-sm font-semibold">
-                  Plan {PLAN_LABELS[verified.plan]} — {verified.credits} crédits
-                  <span className="ml-1 opacity-70">· Paiement vérifié ✓</span>
-                </span>
-              </div>
-            )}
+            <div className="inline-flex items-center gap-2 bg-lime/10 border border-lime/30 rounded-full px-4 py-1.5">
+              <span className="text-lime text-sm font-semibold">
+                Plan {PLAN_LABELS[plan]}
+              </span>
+            </div>
           </motion.div>
 
           <motion.div
@@ -455,7 +254,7 @@ export default function Signup() {
                 size="lg"
                 fullWidth
               >
-                {isLoading ? 'Création...' : 'Créer mon compte'}
+                {isLoading ? 'Création du compte…' : 'Créer mon compte → Paiement'}
               </Button>
             </form>
 
@@ -499,6 +298,18 @@ export default function Signup() {
             </Button>
 
             <p className="text-xs text-center text-text-secondary mt-6">
+              Tu seras redirigé vers Stripe pour finaliser le paiement
+              <br />
+              <button
+                type="button"
+                onClick={() => navigate('/login')}
+                className="text-lime hover:underline mt-2 inline-block font-semibold"
+              >
+                Déjà un compte ? Se connecter
+              </button>
+            </p>
+
+            <p className="text-xs text-center text-text-secondary mt-6">
               En créant un compte, tu acceptes nos{' '}
               <a href="/terms" className="text-lime hover:underline">
                 CGU
@@ -509,7 +320,6 @@ export default function Signup() {
               </a>
             </p>
           </motion.div>
-
         </div>
       </div>
     </div>

@@ -13,10 +13,36 @@ import { supabase } from '@/lib/supabase'
 import { hasPaidGoMythoAccess } from '@/lib/auth-access'
 import { getDailyMythoCount } from '@/lib/daily-counter'
 
+/**
+ * Construit l'URL d'un Payment Link Stripe avec le `client_reference_id`
+ * (= user.id Supabase) et l'email pré-rempli. Avec ces deux paramètres,
+ * le webhook Stripe peut lier de manière FIABLE le Customer Stripe au
+ * compte Supabase courant, peu importe que :
+ *   - l'email Stripe diffère (Apple Pay, Google Pay, Revolut Pay, alias…)
+ *   - le user paie sur un autre device (cross-device)
+ *   - les redirections perdent la query string
+ *
+ * Doc Stripe : https://stripe.com/docs/payment-links/customer-data
+ */
+function buildPaymentLink(
+  baseUrl: string,
+  opts: { userId: string; email: string | null | undefined },
+): string {
+  const url = new URL(baseUrl)
+  url.searchParams.set('client_reference_id', opts.userId)
+  if (opts.email) {
+    url.searchParams.set('prefilled_email', opts.email)
+  }
+  return url.toString()
+}
+
 export default function Unlock() {
   const navigate = useNavigate()
   const [selectedPlan, setSelectedPlan] = useState<'weekly' | 'monthly'>('weekly')
   const [isLoading] = useState(false)
+  // Stocke le user déjà authentifié (signed in) pour pouvoir injecter son
+  // user.id dans le Payment Link Stripe. Si null → on redirige vers /signup.
+  const [authedUser, setAuthedUser] = useState<{ id: string; email: string | null } | null>(null)
 
   // Compteur de la journée — partagé avec la landing pour que la valeur
   // soit cohérente d'une page à l'autre (cf. src/lib/daily-counter.ts).
@@ -100,13 +126,17 @@ export default function Unlock() {
     ;(async () => {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session || cancelled) return
+      // Mémorise le user pour le bouton CTA → pas besoin de /signup s'il
+      // est déjà authentifié (paiement direct vers Stripe).
+      setAuthedUser({ id: session.user.id, email: session.user.email ?? null })
       const { data: profile } = await supabase
         .from('users')
         .select('plan, subscription_status, credits_remaining, stripe_customer_id')
         .eq('id', session.user.id)
         .maybeSingle()
       if (cancelled || !hasPaidGoMythoAccess(profile)) return
-      navigate('/dashboard', { replace: true })
+      // Déjà payant → on l'envoie sur l'app (évite le double paiement).
+      navigate('/makemytho', { replace: true })
     })()
     return () => {
       cancelled = true
@@ -122,6 +152,27 @@ export default function Unlock() {
       { plan: planForEvent, source: 'choixoffre', provider: 'stripe' },
       { send_instantly: true },
     )
+
+    // Sauvegarde du prompt + image en localStorage pour reprise après paiement
+    // (sessionStorage est effacé par les redirects externes).
+    localStorage.setItem('gomytho_pending_plan', planForEvent)
+    const savedPrompt = sessionStorage.getItem('userPrompt') || ''
+    const savedAspectRatio = sessionStorage.getItem('aspectRatio') || '9:16'
+    if (savedPrompt) {
+      localStorage.setItem('gomytho_pending_prompt', savedPrompt)
+      localStorage.setItem('gomytho_pending_ratio', savedAspectRatio)
+    }
+
+    // ─── Nouveau flux : INSCRIPTION AVANT PAIEMENT ─────────────────────────
+    // Si l'utilisateur n'est pas encore connecté, on lui demande de créer
+    // son compte AVANT d'aller sur Stripe. Le compte Supabase existera donc
+    // forcément quand le webhook Stripe arrivera, et on aura un user.id à
+    // injecter dans `client_reference_id` pour une liaison sans ambiguïté
+    // (cf. Apple Pay / Revolut Pay / alias / cross-device).
+    if (!authedUser) {
+      navigate(`/signup?plan=${planForEvent}`)
+      return
+    }
 
     // 2) Listener `pagehide` : se déclenche pile au moment où le navigateur
     //    quitte la page (= la redirection vers Stripe est en train d'aboutir,
@@ -149,16 +200,12 @@ export default function Unlock() {
       window.removeEventListener('pagehide', onPageHide)
     }, 5000)
 
-    // Sauvegarder le plan et le prompt en localStorage avant le redirect Stripe
-    // (sessionStorage est effacé par les redirects externes)
-    localStorage.setItem('gomytho_pending_plan', planForEvent)
-    const savedPrompt = sessionStorage.getItem('userPrompt') || ''
-    const savedAspectRatio = sessionStorage.getItem('aspectRatio') || '9:16'
-    if (savedPrompt) {
-      localStorage.setItem('gomytho_pending_prompt', savedPrompt)
-      localStorage.setItem('gomytho_pending_ratio', savedAspectRatio)
-    }
-    window.location.href = PAYMENT_LINKS[planForEvent]
+    // ─── Redirection vers Stripe avec liaison user.id Supabase ─────────────
+    const link = buildPaymentLink(PAYMENT_LINKS[planForEvent], {
+      userId: authedUser.id,
+      email: authedUser.email,
+    })
+    window.location.href = link
   }
 
   const currentPlan = plans[selectedPlan]

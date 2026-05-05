@@ -8,14 +8,11 @@ import {
   cachePlanLocally,
   PLAN_CREDITS,
   readCachedPlan,
-  resolveNewUserPlan,
   CREDITS_PER_IMAGE,
   type Plan,
 } from '@/lib/plan'
 import {
-  clearPendingStripeSessionId,
   hasPaidGoMythoAccess,
-  resolvePaidAccessViaStripe,
   NO_SUBSCRIPTION_FLAG_KEY,
 } from '@/lib/auth-access'
 
@@ -223,12 +220,36 @@ export default function AppLayout() {
       const authUser = session.user
 
       // ─── 1. Lecture du profil DB (source de vérité cross-device) ────────────
-      let dbUser: any = null
+      // Si on revient juste de Stripe (?session_id=) ou si un plan en attente
+      // est posé en localStorage, on POLLE quelques secondes pour laisser le
+      // webhook Stripe écrire le plan dans la DB (typiquement 0,5–3 s). Ce
+      // polling remplace tout l'ancien fallback resolve-by-stripe : avec le
+      // nouveau flux (inscription AVANT paiement + client_reference_id), le
+      // webhook lie TOUJOURS par user.id — il suffit de patienter.
+      const justFromStripe = !!searchParams.get('session_id')
+      let pendingPlan: 'weekly' | 'monthly' | null = null
       try {
-        const { data } = await supabase.from('users').select('*').eq('id', authUser.id).single()
-        dbUser = data || null
-      } catch {
-        dbUser = null
+        const stored = localStorage.getItem('gomytho_pending_plan')
+        if (stored === 'weekly' || stored === 'monthly') pendingPlan = stored
+      } catch { /* ignore */ }
+      const expectsWebhook = justFromStripe || !!pendingPlan
+
+      const fetchProfile = async () => {
+        try {
+          const { data } = await supabase.from('users').select('*').eq('id', authUser.id).single()
+          return data || null
+        } catch { return null }
+      }
+
+      let dbUser: any = await fetchProfile()
+      if (expectsWebhook && !hasPaidGoMythoAccess(dbUser)) {
+        // Polling : 8 tentatives × 750 ms ≈ 6 s. Suffisant en pratique
+        // pour que Stripe ait livré le webhook checkout.session.completed.
+        for (let i = 0; i < 8; i += 1) {
+          await new Promise((r) => setTimeout(r, 750))
+          dbUser = await fetchProfile()
+          if (hasPaidGoMythoAccess(dbUser)) break
+        }
       }
 
       // Identifie l'utilisateur dans PostHog (no-op si non configuré).
@@ -242,94 +263,8 @@ export default function AppLayout() {
       } catch { /* ignore */ }
 
       const hasPending = !!(localStorage.getItem('gomytho_pending_image') && localStorage.getItem('gomytho_pending_prompt'))
-      // "Fresh payment" = retour explicite du flux Stripe Checkout avec session_id
-      // (vérifiable côté serveur). localStorage / ?plan= seuls ne prouvent pas un
-      // paiement — ils ne doivent pas ouvrir l’app ni attribuer de crédits payants.
-      // Cas spécial inscription : si l'utilisateur arrive d'un parcours /signup
-      // (flag posé avant Google OAuth ou après création d'un compte email),
-      // on traite comme un fresh payment pour éviter qu'il soit renvoyé sur
-      // /login pendant la phase d'upsert.
-      let isFromSignup = false
-      try { isFromSignup = sessionStorage.getItem('gomytho_signup_flow') === '1' } catch { /* ignore */ }
-      // Filet de sécurité de DERNIER recours : si le compte Supabase Auth a
-      // été créé il y a moins de 10 minutes, on considère que l'utilisateur
-      // vient juste de s'inscrire — peu importe ce que dit la DB ou le
-      // localStorage. Ce signal est la vérité serveur : impossible à perdre
-      // dans une redirection, robuste face à un upsert lent / RLS / webhook
-      // en retard. Cas typique : email signup → /signup → /makemytho avec
-      // sessionStorage qui s'est purgé entre temps.
-      let isFreshlyCreatedAccount = false
-      try {
-        const createdAt = (authUser as { created_at?: string }).created_at
-        if (createdAt) {
-          const ageMs = Date.now() - new Date(createdAt).getTime()
-          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 10 * 60 * 1000) {
-            isFreshlyCreatedAccount = true
-          }
-        }
-      } catch { /* ignore */ }
-      const hasFreshPayment =
-        !!searchParams.get('session_id') || isFromSignup || isFreshlyCreatedAccount
-      if (isFromSignup) {
-        try { sessionStorage.removeItem('gomytho_signup_flow') } catch { /* ignore */ }
-      }
 
-      // ─── 2. Si user fraîchement payé OU profil DB non initialisé → upsert ──
-      // Le trigger Supabase crée la ligne avec credits=0/plan='free'. Si on
-      // détecte un paiement (URL ou pending storage) ou que le profil est
-      // resté à 0 crédits, on l'enrichit en vérifiant Stripe quand possible.
-      const dbIsUninitialized = !dbUser || (dbUser.plan === 'free' && (dbUser.credits_remaining ?? 0) === 0)
-
-      // Auto-réparation : si le profil est resté en « free / 0 crédits » alors
-      // qu'un plan a été choisi sur /choixoffre (gomytho_pending_plan présent),
-      // c'est qu'un paiement a abouti mais l'attribution du plan n'a pas suivi
-      // (session_id perdue, API stripe-verify HS, etc.). On re-tente l'upsert
-      // avec ce plan pour ne pas laisser le client bloqué à 0 crédits.
-      let pendingPlan: 'weekly' | 'monthly' | null = null
-      try {
-        const stored = localStorage.getItem('gomytho_pending_plan')
-        if (stored === 'weekly' || stored === 'monthly') pendingPlan = stored
-      } catch { /* ignore */ }
-
-      if (dbIsUninitialized && (hasFreshPayment || pendingPlan)) {
-        const verified = await resolveNewUserPlan(searchParams)
-        const upsertRow: Record<string, unknown> = {
-          id: authUser.id,
-          email: authUser.email!,
-          credits_remaining: verified.credits,
-          subscription_status: verified.subscription_status ?? 'active',
-          plan: verified.plan,
-        }
-        if (verified.customerId) {
-          upsertRow.stripe_customer_id = verified.customerId
-        }
-        // Email Stripe réel (peut différer de authUser.email si Apple Pay /
-        // Google Pay / alias). Indispensable pour retrouver le customer si
-        // stripe_customer_id n'est jamais persisté.
-        if (verified.email) {
-          upsertRow.stripe_payment_email = verified.email
-        }
-        try {
-          await supabase.from('users').upsert([upsertRow], { onConflict: 'id' })
-          dbUser = { ...upsertRow, created_at: new Date().toISOString() }
-        } catch (err) {
-          console.warn('[AppLayout] upsert plan échoué (fallback localStorage):', err)
-          dbUser = dbUser || {
-            ...upsertRow,
-            stripe_customer_id: verified.customerId || null,
-            stripe_payment_email: verified.email || null,
-            created_at: new Date().toISOString(),
-          }
-        }
-        cachePlanLocally(verified.plan, verified.credits)
-        // On retire pending_plan UNIQUEMENT si l'upsert s'est fait avec un plan
-        // payant. Sinon on le garde pour une nouvelle tentative ultérieure.
-        if (verified.plan === 'weekly' || verified.plan === 'monthly') {
-          try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
-        }
-      }
-
-      // ─── 2b. Fin d’essai mensuel Stripe : passage en actif + quota complet ───
+      // ─── 2. Fin d'essai mensuel Stripe : passage en actif + quota complet ───
       if (
         dbUser &&
         dbUser.plan === 'monthly' &&
@@ -350,85 +285,34 @@ export default function AppLayout() {
             }
             cachePlanLocally('monthly', payload.credits)
           }
-        } catch {
-          /* ignore */
-        }
+        } catch { /* ignore */ }
       }
 
-      // ─── 2c. Vérification accès payant (defense in depth) ──────────────────
-      // Google OAuth crée auto un compte Supabase pour n'importe quel email
-      // Google → on ne peut pas se contenter de "session existe = compte
-      // payant". Login/AuthCallback gardent déjà ce check, mais on le
-      // double ici pour couvrir les sessions anciennes / contournements
-      // éventuels. On n'expulse PAS si :
-      //   - on revient juste de Stripe (?session_id= → upsert vient de se
-      //     faire au-dessus, dbUser est à jour),
-      //   - un plan en attente est posé (paiement abouti, webhook pas
-      //     encore arrivé : on laisse tourner, l'upsert finira par passer),
-      //   - le flag signup_flow est posé (post-paiement, en cours
-      //     d'attribution),
-      //   - le compte Supabase a été créé il y a < 10 minutes (filet de
-      //     sécurité serveur, intégré dans `hasFreshPayment`).
-      //   - Stripe confirme qu'un Customer avec abo actif existe pour cet
-      //     utilisateur (filet de dernier recours, vraie source de vérité).
-      if (!hasFreshPayment && !pendingPlan && !hasPaidGoMythoAccess(dbUser)) {
-        // Avant d'éjecter, on demande à Stripe : c'est la vraie source de
-        // vérité. Couvre TOUS les moyens de paiement (Apple Pay, Google
-        // Pay, Revolut Pay, alias…) même quand l'email Stripe diffère de
-        // l'email Supabase, grâce au session_id stocké en localStorage par
-        // /paiementreussi (qui contient le couple customer_id + email
-        // côté Stripe). Couvre aussi : webhook perdu, upsert silencieux
-        // qui a foiré au signup.
-        const access = session?.access_token
-          ? await resolvePaidAccessViaStripe(session.access_token)
-          : { ok: false as const, reason: 'unauthorized' as const }
-        if (access.ok) {
-          // L'API a synchronisé la DB → on relit pour avoir le bon plan/
-          // crédits côté UI. Si la relecture foire, on construit dbUser à
-          // partir de la réponse Stripe + email auth pour ne pas planter.
-          try {
-            const { data: refreshed } = await supabase
-              .from('users')
-              .select('*')
-              .eq('id', authUser.id)
-              .single()
-            dbUser = refreshed || {
-              id: authUser.id,
-              email: authUser.email!,
-              plan: access.plan,
-              subscription_status: access.subscription_status,
-              credits_remaining: access.credits,
-              stripe_customer_id: access.customerId,
-              stripe_payment_email: access.paymentEmail,
-              created_at: new Date().toISOString(),
-            }
-          } catch {
-            dbUser = {
-              id: authUser.id,
-              email: authUser.email!,
-              plan: access.plan,
-              subscription_status: access.subscription_status,
-              credits_remaining: access.credits,
-              stripe_customer_id: access.customerId,
-              stripe_payment_email: access.paymentEmail,
-              created_at: new Date().toISOString(),
-            }
-          }
-          cachePlanLocally(access.plan, access.credits)
-        } else {
-          try {
-            sessionStorage.setItem(
-              NO_SUBSCRIPTION_FLAG_KEY,
-              "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
-            )
-          } catch { /* ignore */ }
-          try { await supabase.auth.signOut() } catch { /* ignore */ }
-          window.location.replace('/login')
-          return
-        }
+      // ─── 3. Vérification accès payant ───────────────────────────────────
+      // Avec le nouveau flux (inscription AVANT Stripe), le webhook fait
+      // toujours la liaison par user.id. Si après le polling la DB ne
+      // confirme toujours pas, on éjecte vers /login.
+      // Exception : si on est en attente du webhook (justFromStripe ou
+      // pendingPlan), on laisse l'utilisateur sur l'app — la prochaine
+      // navigation re-lira la DB.
+      if (!expectsWebhook && !hasPaidGoMythoAccess(dbUser)) {
+        try {
+          sessionStorage.setItem(
+            NO_SUBSCRIPTION_FLAG_KEY,
+            "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
+          )
+        } catch { /* ignore */ }
+        try { await supabase.auth.signOut() } catch { /* ignore */ }
+        window.location.replace('/login')
+        return
       }
 
-      // ─── 3. Construction de l'objet user (DB > cache local > défaut) ────────
+      // Si on était en attente du webhook et qu'il a livré → purge le flag
+      if (hasPaidGoMythoAccess(dbUser)) {
+        try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
+      }
+
+      // ─── 4. Construction de l'objet user (DB > cache local > défaut) ────────
       let resolvedUser: AppUser
       if (dbUser) {
         resolvedUser = dbUser as AppUser
@@ -436,13 +320,6 @@ export default function AppLayout() {
           (dbUser.plan as Plan) || 'monthly',
           Number(dbUser.credits_remaining ?? PLAN_CREDITS.monthly)
         )
-        // À ce stade le user est correctement reconnu comme payant côté DB.
-        // Si un session_id pending traîne en localStorage (paiement passé,
-        // déjà consommé), on le nettoie pour ne pas re-tenter une liaison
-        // sur ce session_id à chaque visite future.
-        if (hasPaidGoMythoAccess(dbUser)) {
-          clearPendingStripeSessionId()
-        }
       } else {
         const cached = readCachedPlan()
         resolvedUser = {
@@ -458,23 +335,11 @@ export default function AppLayout() {
       setUser(resolvedUser)
       setLoading(false)
 
-      // ─── 4. Auto-génération si fresh payment + pending photos ─────────────
-      // Cas valide  : user vient de payer et arrive sur l'app pour la 1ère
-      //               fois → on génère son mytho automatiquement.
-      // Cas invalide: simple login depuis la landing avec des pending résidus
-      //               de session précédente → on les purge pour pas qu'une
-      //               auto-gen absurde ne se déclenche.
-      //
-      // Note : hasFreshPayment suffit comme signal d'autorisation. Inutile
-      // de re-tester userIsInitialized — l'upsert juste au-dessus a marqué
-      // le user comme initialisé, ce qui ferait sauter à tort l'auto-gen.
-      if (hasPending && hasFreshPayment) {
+      // ─── 5. Auto-génération si fresh payment + pending photos ─────────────
+      if (hasPending && expectsWebhook) {
         setAutoGen(true)
         await tryAutoGenerate(authUser.id)
         setAutoGen(false)
-        // Atterrissage produit : page Créer (consultable + nouveau mytho
-        // possible). Le mytho auto-généré reste accessible via /resultats
-        // (bottom nav) ; l'erreur éventuelle est affichée via un banner stylé.
         navigate('/makemytho', { replace: true })
       } else if (hasPending) {
         clearPendingMytho()

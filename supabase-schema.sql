@@ -29,18 +29,16 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_payment_email TEXT;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 
 -- ─── Table stripe_pending_links ────────────────────────────────────────────
--- Enregistre TOUS les checkouts Stripe terminés (webhook checkout.session.completed),
--- même si le user Supabase n'existe pas encore au moment où le webhook arrive.
--- Permet de retrouver l'abonnement d'un client lors d'une connexion ultérieure
--- même quand :
---   - L'email du paiement (Apple Pay / Google Pay / Revolut Pay / alias) ≠
---     l'email du compte Supabase.
---   - Le client a payé sur un device puis s'est inscrit sur un autre.
---   - Le client a vidé son localStorage / changé de navigateur.
---   - Le webhook est arrivé avant la création du compte (paiement ultra rapide).
+-- Filet de sécurité : enregistre TOUS les checkouts Stripe terminés (webhook
+-- checkout.session.completed), même si le user Supabase n'existe pas au
+-- moment où le webhook arrive.
 --
--- L'API stripe-resolve-access scanne cette table par session_id, customer_id
--- et email (du paiement ou du compte) pour récupérer la liaison perdue.
+-- Avec le nouveau flux 2026-05-05 (inscription AVANT paiement +
+-- client_reference_id), cette table n'est plus utilisée par le client : le
+-- webhook lie directement par user.id Supabase. Elle reste cependant
+-- utile pour un éventuel script de backfill manuel sur les anciens clients
+-- pré-fix, et au cas où un paiement arriverait via un canal qui n'a pas
+-- transité par /signup.
 CREATE TABLE IF NOT EXISTS public.stripe_pending_links (
     session_id TEXT PRIMARY KEY,
     customer_id TEXT NOT NULL,
@@ -61,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_links_unconsumed
   ON public.stripe_pending_links(created_at DESC) WHERE consumed_at IS NULL;
 
 -- RLS : la table n'est jamais lue depuis le client. Seul le service_role
--- (webhook + endpoint stripe-resolve-access) y accède.
+-- (webhook) y accède.
 ALTER TABLE public.stripe_pending_links ENABLE ROW LEVEL SECURITY;
 -- Aucune policy : sans policy, RLS bloque par défaut tout accès qui n'utilise
 -- pas le service_role. C'est exactement ce qu'on veut.

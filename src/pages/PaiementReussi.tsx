@@ -1,32 +1,29 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-// Page tampon entre Stripe et /signup. AUCUNE vérif côté client : c'est /signup
-// (resolveNewUserPlan) qui appelle /api/stripe-verify avec le session_id pour
-// confirmer le paiement avant de permettre la création de compte. On évite
-// ainsi tout écran « bloqué » si l'API tarde, échoue, ou si Stripe envoie
-// l'utilisateur ici sans session_id (ex. clic sur « Retour au site »).
+// Page de retour Stripe — flux 2026-05-05.
+//
+// Avec le nouveau flux « inscription AVANT paiement », l'utilisateur arrive
+// ici DÉJÀ authentifié sur Supabase :
+//   /unlock → /signup (créer compte) → Stripe → /paiementreussi (ici) → /makemytho
+//
+// Le webhook Stripe a (ou va) écrire le plan dans `public.users` via le
+// `client_reference_id` (= user.id Supabase). On n'a donc plus besoin de
+// vérifier le paiement côté client (l'ancien `stripe-verify`) — AppLayout
+// fera un polling DB de quelques secondes pour attendre le webhook si
+// besoin, et lance l'auto-génération automatiquement.
 
 export default function PaiementReussi() {
   const [searchParams] = useSearchParams()
 
   useEffect(() => {
+    // On préserve `session_id` dans l'URL de destination pour qu'AppLayout
+    // sache qu'on est dans la phase « post-paiement immédiat » (utile pour
+    // le bypass de l'access check le temps que le webhook arrive).
     const sessionId = (searchParams.get('session_id') || '').trim()
-    if (sessionId) {
-      // Persiste le session_id en localStorage. Indispensable pour relier
-      // un compte Supabase à son Customer Stripe quand les emails diffèrent
-      // (Apple Pay, Google Pay, Revolut Pay, alias, casse). Le session_id
-      // contient TOUJOURS le couple (customer_id, email Stripe) côté serveur,
-      // donc tant qu'on l'a quelque part, on peut faire le lien — même si
-      // le client ferme la fenêtre, fait OAuth, change d'onglet, etc.
-      // Le flag est consommé/effacé à la première liaison réussie.
-      try {
-        localStorage.setItem('gomytho_pending_session_id', sessionId)
-      } catch { /* ignore */ }
-    }
     const target = sessionId
-      ? `/signup?session_id=${encodeURIComponent(sessionId)}`
-      : '/signup'
+      ? `/makemytho?session_id=${encodeURIComponent(sessionId)}`
+      : '/makemytho'
     window.location.replace(target)
   }, [searchParams])
 
@@ -35,7 +32,7 @@ export default function PaiementReussi() {
       <div className="text-center px-6">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-lime mx-auto mb-4" />
         <p className="text-text-primary font-bold text-lg mb-1">Paiement confirmé ✓</p>
-        <p className="text-text-secondary text-sm">Redirection vers la création de ton compte…</p>
+        <p className="text-text-secondary text-sm">Activation de ton compte…</p>
       </div>
     </div>
   )

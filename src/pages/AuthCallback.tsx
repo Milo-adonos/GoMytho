@@ -4,8 +4,6 @@ import { supabase } from '@/lib/supabase'
 import {
   fetchAccessProfile,
   hasPaidGoMythoAccess,
-  resolvePaidAccessViaStripe,
-  shouldBypassAccessCheck,
   NO_SUBSCRIPTION_FLAG_KEY,
 } from '@/lib/auth-access'
 
@@ -13,84 +11,89 @@ import {
 //
 // Cette page existe parce que signInWithOAuth(google) renvoie l'utilisateur
 // avec un hash `#access_token=...&refresh_token=...` que le SDK Supabase doit
-// parser de façon asynchrone. Si on navigue trop vite, on perd le hash et la
-// session n'est pas sauvegardée. On attend donc qu'une session valide existe.
+// parser de façon asynchrone. On attend qu'une session valide existe.
 //
-// Règle d'accès (corrigée le 2026-05-02) : Google OAuth crée automatiquement
-// un compte Supabase pour n'importe quel email Google. Donc on NE peut PAS
-// se contenter de "session existe → on entre". On vérifie le profil DB :
-// pas d'abonnement payant → sign-out + redirection vers /login avec un
-// message clair. Bypass autorisé si l'utilisateur revient juste de Stripe
-// (`?session_id=`) ou est dans le flux signup post-paiement.
+// Comportement après authentification réussie :
+//
+//   1. Si `?signup_to_stripe=weekly|monthly` est présent (= flux d'inscription
+//      depuis /signup → Google OAuth) → on redirige vers le Payment Link Stripe
+//      avec `client_reference_id=user.id`. PAS de vérification d'accès payant
+//      ici, c'est justement le point d'entrée pour s'abonner.
+//
+//   2. Sinon (= simple connexion via Google) → on vérifie l'accès payant en
+//      DB. Pas d'abo → on déconnecte et on renvoie sur /login avec un message.
+//      Avec le nouveau flux, le webhook Stripe lie via user.id donc la DB est
+//      toujours à jour. Plus besoin de fallback resolve-by-stripe.
 
 const NO_SUB_MSG =
   "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer."
 
+const PAYMENT_LINKS: Record<'weekly' | 'monthly', string> = {
+  monthly: 'https://buy.stripe.com/fZu4gyauk4oy0rg8dVgYU00',
+  weekly: 'https://buy.stripe.com/dRm6oGaukcV4c9Y1PxgYU01',
+}
+
+function buildPaymentLink(
+  baseUrl: string,
+  opts: { userId: string; email: string | null | undefined },
+): string {
+  const url = new URL(baseUrl)
+  url.searchParams.set('client_reference_id', opts.userId)
+  if (opts.email) url.searchParams.set('prefilled_email', opts.email)
+  return url.toString()
+}
+
 export default function AuthCallback() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [message, setMessage] = useState('Connexion en cours...')
+  const [message, setMessage] = useState('Connexion en cours…')
 
   useEffect(() => {
     let cancelled = false
     let resolved = false
 
-    const proceed = async (userId: string) => {
+    const proceed = async (userId: string, userEmail: string | null) => {
       if (resolved || cancelled) return
       resolved = true
 
-      // Bypass : si on revient juste de Stripe ou si on est dans le flux
-      // signup, on ne contrôle pas l'accès payant (le webhook peut ne pas
-      // avoir fini, AppLayout fera l'upsert avec le session_id).
-      if (!shouldBypassAccessCheck(searchParams)) {
-        const profile = await fetchAccessProfile(userId)
-        if (!hasPaidGoMythoAccess(profile)) {
-          // Filet de sécurité : la DB ne montre pas d'accès, mais Stripe
-          // peut être la vraie source de vérité (email du paiement ≠ email
-          // Google, webhook perdu, race au signup). On interroge Stripe
-          // avant de bloquer pour éviter qu'un client ayant payé soit
-          // refoulé à chaque connexion via Google.
-          const { data: { session } } = await supabase.auth.getSession()
-          const token = session?.access_token
-          let recovered = false
-          if (token) {
-            const access = await resolvePaidAccessViaStripe(token)
-            recovered = access.ok
-          }
-          if (!recovered) {
-            // Sign out → empêche l'accès aux pages internes via la session
-            // OAuth qui vient d'être créée. On renvoie sur /login avec un
-            // message lu sur cette même page.
-            try {
-              sessionStorage.setItem(NO_SUBSCRIPTION_FLAG_KEY, NO_SUB_MSG)
-            } catch { /* ignore */ }
-            try { await supabase.auth.signOut() } catch { /* ignore */ }
-            navigate('/login', { replace: true })
-            return
-          }
-        }
+      // ─── Cas 1 : flux d'inscription Google → Stripe ─────────────────────
+      // Le user vient de cliquer « Continuer avec Google » sur /signup pour
+      // s'abonner. On le bascule directement sur le Payment Link Stripe avec
+      // son user.id en client_reference_id.
+      const planFromQuery = searchParams.get('signup_to_stripe')
+      let planFromStorage: string | null = null
+      try {
+        planFromStorage = sessionStorage.getItem('gomytho_signup_to_stripe_plan')
+        sessionStorage.removeItem('gomytho_signup_to_stripe_plan')
+      } catch { /* ignore */ }
+      const wantedPlan = planFromQuery || planFromStorage
+      if (wantedPlan === 'weekly' || wantedPlan === 'monthly') {
+        const link = buildPaymentLink(PAYMENT_LINKS[wantedPlan], {
+          userId,
+          email: userEmail,
+        })
+        try { localStorage.setItem('gomytho_pending_plan', wantedPlan) } catch { /* ignore */ }
+        window.location.replace(link)
+        return
       }
 
-      // NB : on NE retire PAS le flag `gomytho_signup_flow` ici. C'est
-      // AppLayout qui le consomme une seule fois après avoir fait l'upsert
-      // du profil payant. Si on le retirait à ce stade et que la session_id
-      // se perdait dans le redirect Google ↔ Supabase ↔ /auth/callback, le
-      // user fraîchement inscrit pouvait être éjecté vers /login par le
-      // contrôle d'accès d'AppLayout (la DB n'a pas encore le bon plan).
-      const plan = searchParams.get('plan')
-      const sessionId = searchParams.get('session_id')
-      const params = new URLSearchParams()
-      if (plan) params.set('plan', plan)
-      if (sessionId) params.set('session_id', sessionId)
-      const query = params.toString()
-      navigate(`/makemytho${query ? `?${query}` : ''}`, { replace: true })
+      // ─── Cas 2 : connexion Google standard → vérif accès payant ─────────
+      const profile = await fetchAccessProfile(userId)
+      if (!hasPaidGoMythoAccess(profile)) {
+        try { sessionStorage.setItem(NO_SUBSCRIPTION_FLAG_KEY, NO_SUB_MSG) } catch { /* ignore */ }
+        try { await supabase.auth.signOut() } catch { /* ignore */ }
+        navigate('/login', { replace: true })
+        return
+      }
+
+      navigate('/makemytho', { replace: true })
     }
 
     // 1. Listener — réagit dès que le SDK a parsé le hash et créé la session.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (cancelled) return
       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
-        void proceed(session.user.id)
+        void proceed(session.user.id, session.user.email ?? null)
       }
     })
 
@@ -103,13 +106,13 @@ export default function AuthCallback() {
       const { data } = await supabase.auth.getSession()
       if (data?.session?.user) {
         clearInterval(interval)
-        void proceed(data.session.user.id)
+        void proceed(data.session.user.id, data.session.user.email ?? null)
         return
       }
       if (attempts >= maxAttempts) {
         clearInterval(interval)
         if (cancelled || resolved) return
-        setMessage('Connexion impossible. On te ramène à la page de connexion...')
+        setMessage('Connexion impossible. On te ramène à la page de connexion…')
         setTimeout(() => {
           if (!cancelled && !resolved) navigate('/login', { replace: true })
         }, 1500)

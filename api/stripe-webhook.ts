@@ -20,10 +20,26 @@ function readRawBody(req: VercelRequest): Promise<Buffer> {
   })
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function syncSupabaseUserFromPayload(
   supabaseUrl: string,
   serviceKey: string,
   payload: VerifiedCheckoutPayload,
+  /**
+   * `client_reference_id` posé par le frontend dans la session Checkout
+   * (au moment du redirect vers Stripe). On y stocke TOUJOURS le user.id
+   * Supabase de l'utilisateur authentifié — cf. nouveau flux « inscription
+   * AVANT paiement » : on a la garantie que le compte existe déjà et que
+   * son ID est connu côté client. Avec ça, plus aucun match d'email n'est
+   * nécessaire — la liaison se fait par ID, donc :
+   *   • Apple Pay / Google Pay / Revolut Pay / alias → email Stripe peut
+   *     être totalement différent, ça marche quand même
+   *   • Cross-device / casse / accents → idem, ça marche
+   *   • Pas de race condition « webhook avant signup » → l'utilisateur
+   *     existe forcément.
+   */
+  clientReferenceId: string | null,
 ) {
   const emailNorm = payload.email?.trim().toLowerCase() || ''
   const cid = payload.customerId || ''
@@ -36,7 +52,20 @@ async function syncSupabaseUserFromPayload(
   }
   const supabase = createClient(supabaseUrl, serviceKey)
   let updated = false
-  if (emailNorm) {
+
+  // ─── 1. PRIORITÉ ABSOLUE : client_reference_id (= user.id Supabase) ──
+  // C'est la voie « propre » du nouveau flux. Si elle marche, on s'arrête là.
+  if (clientReferenceId && UUID_REGEX.test(clientReferenceId)) {
+    const r0 = await supabase
+      .from('users')
+      .update(row)
+      .eq('id', clientReferenceId)
+      .select('id')
+    if (r0.data?.length) updated = true
+  }
+
+  // ─── 2. Fallback email (anciens comptes / liens non passés par /signup) ──
+  if (!updated && emailNorm) {
     const r1 = await supabase.from('users').update(row).eq('email', emailNorm).select('id')
     if (r1.data?.length) { updated = true }
     if (!updated) {
@@ -140,15 +169,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session
         const payload = await retrieveAndBuildCheckoutPayload(stripe, session.id)
+        // `client_reference_id` est posé par le frontend (Unlock.tsx /
+        // Signup.tsx) avec le user.id Supabase de l'utilisateur authentifié.
+        // C'est la clé de liaison la plus fiable — elle survit à TOUS les
+        // mismatches d'email (Apple Pay, alias, casse…).
+        const clientReferenceId =
+          typeof session.client_reference_id === 'string' && session.client_reference_id.trim()
+            ? session.client_reference_id.trim()
+            : null
         if (supabaseUrl && serviceKey && payload) {
-          // 1) On enregistre TOUJOURS la liaison dans stripe_pending_links,
-          //    AVANT toute tentative de mise à jour. Si la mise à jour des
-          //    `users` échoue (user pas encore créé, RLS, race), la liaison
-          //    reste récupérable plus tard via /api/stripe-resolve-access.
+          // 1) On garde l'enregistrement dans stripe_pending_links comme
+          //    filet pour les flux exotiques (paiement direct via lien
+          //    partagé sans passer par /signup).
           await recordPendingLink(supabaseUrl, serviceKey, session.id, payload)
-          // 2) Tentative de mise à jour directe de la table `users`.
-          //    Continue d'être faite dès que possible pour les flux nominaux.
-          await syncSupabaseUserFromPayload(supabaseUrl, serviceKey, payload)
+          // 2) Tentative de mise à jour directe de la table `users` : par
+          //    user.id en priorité (client_reference_id), fallback email.
+          await syncSupabaseUserFromPayload(
+            supabaseUrl,
+            serviceKey,
+            payload,
+            clientReferenceId,
+          )
         } else if (!payload) {
           console.warn('[stripe-webhook] checkout.session.completed — payload null', session.id)
         }

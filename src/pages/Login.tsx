@@ -1,25 +1,30 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import {
-  claimSubscriptionByPaymentEmail,
-  clearPendingStripeSessionId,
   fetchAccessProfile,
   hasPaidGoMythoAccess,
-  resolvePaidAccessViaStripe,
   shouldBypassAccessCheck,
   NO_SUBSCRIPTION_FLAG_KEY,
 } from '@/lib/auth-access'
 
-// ─── Page Connexion ───────────────────────────────────────────────────────
+// ─── Page Connexion ──────────────────────────────────────────────────────
 //
-// Règle d'accès : un compte authentifié n'a accès à l'app que si la DB
-// confirme un abonnement payant ou des crédits restants. Sans cette
-// vérification, Google OAuth créait des comptes Supabase pour n'importe
-// quel email Google → accès gratuit à l'app. Faille corrigée le 2026-05-02.
+// Avec le nouveau flux (inscription AVANT paiement + client_reference_id),
+// le webhook Stripe lie TOUJOURS le Customer par user.id Supabase. Donc
+// au login on a juste à :
+//   1) signInWithPassword
+//   2) Lire la DB → vérifier qu'il y a un abo
+//   3) Si oui → /makemytho
+//   4) Si non → on garde le compte mais on le redirige vers /choixoffre
+//      (il pourra reprendre son abo, son user.id sera réutilisé pour la
+//      liaison Stripe).
+//
+// Plus de fallback complexe (resolve-by-stripe, claim-by-email, etc.) :
+// la DB est la source de vérité, et le webhook s'occupe du reste.
 
 const NO_SUB_MSG =
   "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer."
@@ -30,18 +35,9 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // Quand l'accès payant n'est pas trouvé, on garde la session vivante et
-  // on propose au user de saisir l'email Stripe qu'il a utilisé pour payer
-  // (cas Apple Pay / Google Pay / Revolut Pay / alias = email Stripe ≠
-  // email Supabase). Sans ça, un client qui a vraiment payé peut se
-  // retrouver bloqué sur /login pour toujours.
-  const [accessDeniedToken, setAccessDeniedToken] = useState<string | null>(null)
-  const [claimEmail, setClaimEmail] = useState('')
-  const [claimLoading, setClaimLoading] = useState(false)
-  const [claimError, setClaimError] = useState('')
-
   // Si un flag d'erreur a été posé par AuthCallback (Google OAuth refusé
-  // faute d'abonnement), on l'affiche ici puis on le purge.
+  // faute d'abonnement) ou par AppLayout (session sans abo détectée), on
+  // l'affiche ici puis on le purge.
   useEffect(() => {
     try {
       const msg = sessionStorage.getItem(NO_SUBSCRIPTION_FLAG_KEY)
@@ -60,8 +56,6 @@ export default function Login() {
     e.preventDefault()
     setIsLoading(true)
     setError('')
-    setClaimError('')
-    setAccessDeniedToken(null)
     try {
       const { data, error: signInErr } = await supabase.auth.signInWithPassword({ email, password })
       if (signInErr) {
@@ -83,33 +77,12 @@ export default function Login() {
       if (!shouldBypassAccessCheck()) {
         const profile = await fetchAccessProfile(data.session.user.id)
         if (!hasPaidGoMythoAccess(profile)) {
-          // Filet de sécurité : la DB ne montre pas d'abonnement, mais
-          // Stripe peut être la vraie source de vérité (webhook perdu,
-          // email du paiement différent de l'email du compte, race
-          // condition au signup, …). resolvePaidAccessViaStripe utilise
-          // automatiquement un éventuel `gomytho_pending_session_id` posé
-          // par /paiementreussi : c'est ce session_id qui permet de lier
-          // un Customer Stripe (Apple Pay / Google Pay / Revolut Pay /
-          // alias) à un user Supabase MÊME quand les emails diffèrent.
-          const access = await resolvePaidAccessViaStripe(data.session.access_token)
-          if (!access.ok) {
-            // ─── Dernier recours : flux manuel « Récupérer mon abonnement ».
-            // On NE déconnecte PAS le user immédiatement : on garde sa
-            // session pour qu'il puisse saisir l'email Stripe utilisé
-            // pour payer. La déconnexion ne se fait qu'en cas d'abandon
-            // explicite via « Choisir une offre ».
-            setAccessDeniedToken(data.session.access_token)
-            // Pré-remplit l'input avec l'email du compte (utile dans le
-            // cas où l'email Stripe = email Supabase mais que la liaison
-            // a juste foiré).
-            setClaimEmail(email)
-            setError(NO_SUB_MSG)
-            return
-          }
-        } else {
-          // DB déjà cohérente → un éventuel session_id pending n'est plus
-          // utile, on purge pour éviter qu'il pollue une future session.
-          clearPendingStripeSessionId()
+          // Pas d'abo en DB → on déconnecte pour que /choixoffre ne croie
+          // pas qu'on a déjà payé. L'utilisateur peut alors reprendre son
+          // parcours d'inscription/paiement avec son MÊME compte.
+          await supabase.auth.signOut()
+          setError(NO_SUB_MSG)
+          return
         }
       }
 
@@ -120,33 +93,6 @@ export default function Login() {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  // ─── Flux « Récupérer mon abonnement » ─────────────────────────────────
-  const handleClaimSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!accessDeniedToken) return
-    setClaimLoading(true)
-    setClaimError('')
-    try {
-      const result = await claimSubscriptionByPaymentEmail(accessDeniedToken, claimEmail)
-      if (result.ok) {
-        clearPendingStripeSessionId()
-        goToApp()
-        return
-      }
-      setClaimError(result.error || 'Liaison impossible.')
-    } finally {
-      setClaimLoading(false)
-    }
-  }
-
-  const handleAbandonClaim = async () => {
-    setAccessDeniedToken(null)
-    setClaimEmail('')
-    setClaimError('')
-    try { await supabase.auth.signOut() } catch { /* ignore */ }
-    window.location.href = '/choixoffre'
   }
 
   const handleGoogleLogin = async () => {
@@ -193,53 +139,6 @@ export default function Login() {
                 <p className="text-red-400">{error}</p>
               </div>
             )}
-
-            <AnimatePresence>
-              {accessDeniedToken && (
-                <motion.div
-                  initial={{ opacity: 0, y: -8, height: 0 }}
-                  animate={{ opacity: 1, y: 0, height: 'auto' }}
-                  exit={{ opacity: 0, y: -8, height: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="mb-6 overflow-hidden"
-                >
-                  <div className="p-5 rounded-2xl border border-lime/30 bg-lime/5">
-                    <p className="text-sm font-bold text-lime mb-1">
-                      Tu as payé avec un autre email ?
-                    </p>
-                    <p className="text-xs text-text-secondary mb-4 leading-relaxed">
-                      Apple Pay, Google Pay, Revolut Pay et certains moyens de paiement
-                      utilisent un email différent de celui de ton compte. Indique
-                      l'email exact que tu as utilisé pour payer sur Stripe — on
-                      retrouvera ton abonnement automatiquement.
-                    </p>
-                    <form onSubmit={handleClaimSubmit} className="space-y-3">
-                      <input
-                        type="email"
-                        value={claimEmail}
-                        onChange={(e) => setClaimEmail(e.target.value)}
-                        required
-                        placeholder="email-utilisé-sur-stripe@…"
-                        className="w-full bg-primary-bg border-2 border-lime/20 rounded-2xl px-4 py-3 text-sm text-text-primary focus:border-lime focus:outline-none transition-all"
-                      />
-                      {claimError && (
-                        <p className="text-xs text-red-400">{claimError}</p>
-                      )}
-                      <Button type="submit" disabled={claimLoading} size="md" fullWidth>
-                        {claimLoading ? 'Vérification…' : 'Lier mon abonnement'}
-                      </Button>
-                      <button
-                        type="button"
-                        onClick={handleAbandonClaim}
-                        className="w-full text-center text-xs text-text-secondary hover:text-text-primary underline pt-1"
-                      >
-                        Je n'ai pas encore d'abonnement → choisir une offre
-                      </button>
-                    </form>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
 
             <form onSubmit={handleEmailLogin} className="space-y-6">
               <div>
