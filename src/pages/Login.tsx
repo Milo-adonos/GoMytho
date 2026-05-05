@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import {
+  claimSubscriptionByPaymentEmail,
   fetchAccessProfile,
   hasPaidGoMythoAccess,
   shouldBypassAccessCheck,
@@ -34,6 +35,15 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // ─── État pour le flux « Récupérer mon abonnement » ────────────────────
+  const [claimOpen, setClaimOpen] = useState(false)
+  const [claimEmail, setClaimEmail] = useState('')
+  const [claimPwd, setClaimPwd] = useState('')
+  const [claimStripeEmail, setClaimStripeEmail] = useState('')
+  const [claimLoading, setClaimLoading] = useState(false)
+  const [claimError, setClaimError] = useState('')
+  const [claimSuccess, setClaimSuccess] = useState('')
 
   // Si un flag d'erreur a été posé par AuthCallback (Google OAuth refusé
   // faute d'abonnement) ou par AppLayout (session sans abo détectée), on
@@ -110,6 +120,80 @@ export default function Login() {
       const e = err as { message?: string }
       setError(e.message || 'Connexion Google impossible.')
       setIsLoading(false)
+    }
+  }
+
+  // ─── Récupération d'abonnement (anciens clients pré-refonte) ─────────
+  // Le user fournit :
+  //  - L'email/password de SON COMPTE Supabase (qu'il vient de créer ou
+  //    qu'il avait déjà) → on l'authentifie
+  //  - L'email avec lequel il a payé sur Stripe (peut être différent)
+  // Le serveur vérifie qu'il y a bien un abo actif sur Stripe pour cet
+  // email, puis lie le tout à son compte courant.
+  const handleClaimSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setClaimLoading(true)
+    setClaimError('')
+    setClaimSuccess('')
+    try {
+      // 1. Essayer de se connecter avec les identifiants fournis ; si le
+      //    compte n'existe pas, on le crée à la volée.
+      let session: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['data']['session'] = null
+
+      const { data: signInData, error: signInErr } =
+        await supabase.auth.signInWithPassword({ email: claimEmail, password: claimPwd })
+      if (signInData?.session) {
+        session = signInData.session
+      } else {
+        const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+          email: claimEmail,
+          password: claimPwd,
+        })
+        if (signUpErr) {
+          if (/Invalid login credentials/i.test(signInErr?.message || '')) {
+            setClaimError('Email ou mot de passe incorrect.')
+          } else {
+            setClaimError(signUpErr.message || 'Création/connexion du compte impossible.')
+          }
+          return
+        }
+        if (signUpData.session) {
+          session = signUpData.session
+        } else {
+          // Email confirmation activée : tente un signIn pour récupérer la session.
+          const retry = await supabase.auth.signInWithPassword({
+            email: claimEmail,
+            password: claimPwd,
+          })
+          session = retry.data?.session ?? null
+          if (!session) {
+            setClaimError('📧 Vérifie tes mails (et les spams) pour confirmer ton compte, puis recommence.')
+            return
+          }
+        }
+      }
+
+      if (!session) {
+        setClaimError('Connexion impossible. Réessaie.')
+        return
+      }
+
+      // 2. Lance le claim côté serveur
+      const result = await claimSubscriptionByPaymentEmail(session.access_token, claimStripeEmail)
+      if (!result.ok) {
+        setClaimError(result.error)
+        return
+      }
+
+      setClaimSuccess('Abonnement récupéré ! Redirection vers ton app…')
+      setTimeout(() => {
+        window.location.href = '/makemytho'
+      }, 1000)
+    } catch (e) {
+      const err = e as { message?: string }
+      setClaimError(err.message || 'Une erreur est survenue.')
+    } finally {
+      setClaimLoading(false)
     }
   }
 
@@ -205,6 +289,122 @@ export default function Login() {
                 Choisir une offre
               </Link>
             </p>
+          </motion.div>
+
+          {/* ─── Récupération d'abonnement (anciens clients) ─────────────── */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="mt-6 bg-secondary-bg/60 rounded-3xl border border-lime/10 overflow-hidden"
+          >
+            <button
+              type="button"
+              onClick={() => setClaimOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-3 px-6 py-4 text-left hover:bg-lime/5 transition-colors"
+            >
+              <span className="flex items-center gap-3">
+                <span className="w-9 h-9 rounded-full bg-lime/15 border border-lime/30 flex items-center justify-center text-lime text-sm font-black">
+                  ?
+                </span>
+                <span>
+                  <span className="block font-bold text-text-primary">
+                    J'ai payé mais je n'arrive pas à accéder à mon compte
+                  </span>
+                  <span className="block text-xs text-text-secondary mt-0.5">
+                    Récupérer mon abonnement avec mon email Stripe
+                  </span>
+                </span>
+              </span>
+              <span className={`text-lime text-lg transition-transform ${claimOpen ? 'rotate-180' : ''}`}>
+                ▼
+              </span>
+            </button>
+
+            <AnimatePresence initial={false}>
+              {claimOpen && (
+                <motion.div
+                  key="claim-form"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.25 }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-6 pb-6 pt-2">
+                    {claimError && (
+                      <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">
+                        {claimError}
+                      </div>
+                    )}
+                    {claimSuccess && (
+                      <div className="mb-4 p-3 bg-lime/10 border border-lime/30 rounded-xl text-lime text-sm font-semibold">
+                        ✓ {claimSuccess}
+                      </div>
+                    )}
+
+                    <p className="text-xs text-text-secondary mb-4 leading-relaxed">
+                      Si tu as payé sur Stripe avant la mise à jour, ton paiement
+                      est bien enregistré. Crée (ou connecte-toi à) un compte
+                      ci-dessous, et indique l'email avec lequel tu as payé sur
+                      Stripe — on relie le tout automatiquement.
+                    </p>
+
+                    <form onSubmit={handleClaimSubmit} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold mb-1.5 text-text-secondary uppercase tracking-wide">
+                          1. Ton email de connexion (compte GoMytho)
+                        </label>
+                        <input
+                          type="email"
+                          value={claimEmail}
+                          onChange={(e) => setClaimEmail(e.target.value)}
+                          required
+                          className="w-full bg-primary-bg border-2 border-lime/20 rounded-xl px-4 py-2.5 text-text-primary focus:border-lime focus:outline-none transition-all text-sm"
+                          placeholder="ton@email.fr"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold mb-1.5 text-text-secondary uppercase tracking-wide">
+                          2. Mot de passe
+                        </label>
+                        <input
+                          type="password"
+                          value={claimPwd}
+                          onChange={(e) => setClaimPwd(e.target.value)}
+                          required
+                          minLength={6}
+                          className="w-full bg-primary-bg border-2 border-lime/20 rounded-xl px-4 py-2.5 text-text-primary focus:border-lime focus:outline-none transition-all text-sm"
+                          placeholder="6 caractères minimum"
+                        />
+                        <p className="text-[11px] text-text-secondary mt-1">
+                          On crée le compte s'il n'existe pas encore.
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold mb-1.5 text-text-secondary uppercase tracking-wide">
+                          3. Email utilisé sur Stripe pour payer
+                        </label>
+                        <input
+                          type="email"
+                          value={claimStripeEmail}
+                          onChange={(e) => setClaimStripeEmail(e.target.value)}
+                          required
+                          className="w-full bg-primary-bg border-2 border-lime/20 rounded-xl px-4 py-2.5 text-text-primary focus:border-lime focus:outline-none transition-all text-sm"
+                          placeholder="email-de-ton-paiement@…"
+                        />
+                        <p className="text-[11px] text-text-secondary mt-1">
+                          Peut être différent de celui de connexion (Apple Pay, alias…).
+                        </p>
+                      </div>
+                      <Button type="submit" disabled={claimLoading} size="md" fullWidth>
+                        {claimLoading ? 'Vérification…' : 'Récupérer mon abonnement'}
+                      </Button>
+                    </form>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         </div>
       </div>

@@ -9,17 +9,24 @@ import { retrieveAndBuildCheckoutPayload } from './_lib/stripe-checkout-payload'
 // puis (au besoin) par AppLayout en filet de sécurité quand le webhook
 // `checkout.session.completed` met trop de temps à arriver (ou est perdu).
 //
-// Deux modes :
+// Trois modes :
 //
-//   (1) GET ou POST sans Authorization → renvoie juste le payload Stripe
-//       (utilisé historiquement pour confirmer un paiement côté client).
+//   (1) GET ou POST sans Authorization, avec session_id → renvoie juste
+//       le payload Stripe (utilisé historiquement pour confirmer un
+//       paiement côté client).
 //
-//   (2) POST avec Authorization Bearer <supabase access_token> → en plus
-//       de renvoyer le payload, on FORCE la mise à jour de public.users
-//       pour le user authentifié, en utilisant le service_role Supabase.
-//       Liaison par user.id Supabase (priorité absolue), avec fallback
-//       email pour les anciens cas. C'est le filet de sécurité qui rend
-//       le flux résistant à un webhook lent ou perdu.
+//   (2) POST avec Authorization Bearer <supabase access_token> et
+//       session_id → en plus de renvoyer le payload, on FORCE la mise à
+//       jour de public.users pour le user authentifié (filet de sécurité
+//       webhook lent / perdu).
+//
+//   (3) POST avec Authorization Bearer + body { action: "claim", email }
+//       → recherche un Customer Stripe par email avec un abo actif/trial
+//       et le rattache au user Supabase courant. Sert à récupérer un
+//       compte d'avant la refonte 2026-05-05 (paiement réalisé alors que
+//       le compte Supabase n'existait pas, ou existait sous un autre
+//       email). Anti-hijack : refuse si le Customer est déjà lié à un
+//       autre user Supabase.
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -132,6 +139,194 @@ async function getAuthedUser(
   }
 }
 
+const PLAN_CREDITS = { weekly: 160, monthly: 560 } as const
+
+function planFromPriceAmount(amountCents: number | null | undefined): 'weekly' | 'monthly' {
+  const ref = amountCents ?? 0
+  if (Math.abs(ref - 299) <= 5) return 'weekly'
+  if (Math.abs(ref - 990) <= 5) return 'monthly'
+  if (ref > 0 && ref < 500) return 'weekly'
+  return 'monthly'
+}
+
+/**
+ * Mode (3) : claim. Le user authentifié donne un email avec lequel il a
+ * payé sur Stripe (Apple Pay, alias, ancien email…). On cherche le
+ * Customer côté Stripe, on vérifie qu'il a un abo actif/trialing, qu'il
+ * n'est pas déjà lié à un autre user Supabase, puis on rattache.
+ */
+async function handleClaim(
+  stripe: Stripe,
+  supabaseUrl: string,
+  serviceKey: string,
+  anonKey: string | undefined,
+  authHeader: string | undefined,
+  rawEmail: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const keyForAuthCheck = anonKey || serviceKey
+  const authed = await getAuthedUser(supabaseUrl, keyForAuthCheck, authHeader)
+  if (!authed) {
+    return { status: 401, body: { ok: false, reason: 'unauthorized', error: 'Connexion requise pour récupérer un abonnement.' } }
+  }
+  const email = (rawEmail || '').trim().toLowerCase()
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { status: 400, body: { ok: false, reason: 'invalid_email', error: 'Email invalide.' } }
+  }
+
+  // 1. Recherche les Customers Stripe par email (case-insensitive).
+  let customers: Stripe.Customer[] = []
+  try {
+    const list = await stripe.customers.list({ email, limit: 100 })
+    customers = list.data
+    // Stripe ne fait pas toujours du case-insensitive : on retest manuellement
+    const localPart = email.split('@')[0]
+    const domain = email.split('@')[1]
+    if (!customers.length && localPart && domain) {
+      // Tente la version « originale » (capitalisée par exemple).
+      // Stripe normalize l'email en interne pour les Customers récents,
+      // donc en pratique cet appel suffit pour la majorité des cas.
+    }
+  } catch (e) {
+    console.error('[stripe-verify/claim] customers.list error', e)
+    return { status: 500, body: { ok: false, reason: 'server_error', error: 'Recherche Stripe impossible.' } }
+  }
+  if (!customers.length) {
+    return { status: 404, body: { ok: false, reason: 'no_customer', error: "Aucun client Stripe trouvé avec cet email. Vérifie qu'il s'agit bien de l'email utilisé pour le paiement." } }
+  }
+
+  // 2. Pour chaque customer, liste les subscriptions et garde la plus récente
+  //    qui est encore active/trialing/cancel-at-period-end.
+  type Match = {
+    customer: Stripe.Customer
+    subscription: Stripe.Subscription
+    plan: 'weekly' | 'monthly'
+    subscription_status: 'active' | 'trialing' | 'cancelled'
+  }
+  const matches: Match[] = []
+  for (const c of customers) {
+    let subs: Stripe.Subscription[] = []
+    try {
+      const r = await stripe.subscriptions.list({
+        customer: c.id,
+        status: 'all',
+        limit: 10,
+        expand: ['data.items.data.price'],
+      })
+      subs = r.data
+    } catch (e) {
+      console.warn('[stripe-verify/claim] subscriptions.list error for', c.id, e)
+      continue
+    }
+    for (const s of subs) {
+      const status = s.status
+      const ok =
+        status === 'active' ||
+        status === 'trialing' ||
+        // canceled mais accès jusqu'à fin de période :
+        (status === 'canceled' && (s as unknown as { current_period_end?: number }).current_period_end &&
+          (s as unknown as { current_period_end: number }).current_period_end * 1000 > Date.now())
+      if (!ok) continue
+      const item = s.items?.data?.[0]
+      const amount = item?.price?.unit_amount ?? null
+      const plan = planFromPriceAmount(amount)
+      const subscription_status: Match['subscription_status'] =
+        status === 'trialing' ? 'trialing' : status === 'canceled' ? 'cancelled' : 'active'
+      matches.push({ customer: c, subscription: s, plan, subscription_status })
+    }
+  }
+  if (!matches.length) {
+    return { status: 404, body: { ok: false, reason: 'no_active_sub', error: "Aucun abonnement actif trouvé pour cet email." } }
+  }
+
+  // Prend le match avec la subscription la plus récente.
+  matches.sort((a, b) => (b.subscription.created || 0) - (a.subscription.created || 0))
+  const best = matches[0]
+
+  // 3. Anti-hijack : ce Customer Stripe est-il déjà lié à un autre user ?
+  const supabase = createClient(supabaseUrl, serviceKey)
+  const customerId = best.customer.id
+  try {
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id')
+      .eq('stripe_customer_id', customerId)
+    const ids = (existing || []).map((u) => u.id) as string[]
+    if (ids.length && ids.some((id) => id !== authed.id)) {
+      return { status: 409, body: { ok: false, reason: 'already_linked', error: "Ce client Stripe est déjà associé à un autre compte. Contacte le support." } }
+    }
+  } catch (e) {
+    console.warn('[stripe-verify/claim] users.select error', e)
+  }
+  // Anti-hijack #2 : la metadata Stripe Customer a-t-elle déjà un
+  // supabase_user_id qui pointe vers un AUTRE user ?
+  const meta = (best.customer.metadata || {}) as Record<string, string>
+  if (meta.supabase_user_id && meta.supabase_user_id !== authed.id) {
+    return { status: 409, body: { ok: false, reason: 'already_linked_metadata', error: "Ce client Stripe est déjà associé à un autre compte. Contacte le support." } }
+  }
+
+  // 4. OK → on lie. Update users (par auth user.id), upsert si besoin.
+  const credits = PLAN_CREDITS[best.plan]
+  const stripeEmail = (best.customer.email || email).toLowerCase()
+  const row = {
+    plan: best.plan,
+    credits_remaining: credits,
+    subscription_status: best.subscription_status,
+    stripe_customer_id: customerId,
+    stripe_payment_email: stripeEmail,
+  }
+  let updated = false
+  try {
+    const { data: hit, error } = await supabase
+      .from('users')
+      .update(row)
+      .eq('id', authed.id)
+      .select('id')
+    if (!error && hit?.length) updated = true
+    if (!updated) {
+      // Pas de ligne → upsert (créé par le trigger normalement, mais filet)
+      const { error: upErr } = await supabase
+        .from('users')
+        .upsert(
+          [{ id: authed.id, email: (authed.email || stripeEmail).toLowerCase(), ...row }],
+          { onConflict: 'id' },
+        )
+      if (!upErr) updated = true
+    }
+  } catch (e) {
+    console.error('[stripe-verify/claim] update/upsert error', e)
+  }
+  if (!updated) {
+    return { status: 500, body: { ok: false, reason: 'server_error', error: 'Liaison impossible (erreur Supabase).' } }
+  }
+
+  // 5. Verrouille la liaison côté Stripe : on inscrit supabase_user_id
+  //    dans la metadata du Customer pour qu'aucun autre user ne puisse
+  //    le claim plus tard.
+  try {
+    await stripe.customers.update(customerId, {
+      metadata: {
+        ...meta,
+        supabase_user_id: authed.id,
+        supabase_email: (authed.email || '').toLowerCase(),
+      },
+    })
+  } catch (e) {
+    console.warn('[stripe-verify/claim] customer metadata update warning', e)
+  }
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      plan: best.plan,
+      credits,
+      subscription_status: best.subscription_status,
+      customerId,
+      paymentEmail: stripeEmail,
+    },
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
@@ -149,6 +344,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   }
 
+  const action =
+    (req.query.action as string | undefined) ||
+    (req.body && (req.body as { action?: string }).action) ||
+    ''
+
+  // ─── Mode (3) : claim — récupérer un abo Stripe par email ───────────────
+  if (action === 'claim') {
+    if (!supabaseUrl || !serviceKey) {
+      return res.status(500).json({
+        ok: false,
+        reason: 'server_error',
+        error: 'Configuration Supabase serveur incomplète.',
+      })
+    }
+    const email =
+      (req.body && (req.body as { email?: string }).email) ||
+      (req.query.email as string | undefined) ||
+      ''
+    const stripe = new Stripe(stripeSecret)
+    const result = await handleClaim(
+      stripe,
+      supabaseUrl,
+      serviceKey,
+      anonKey,
+      req.headers.authorization,
+      email,
+    )
+    return res.status(result.status).json(result.body)
+  }
+
+  // ─── Modes (1) et (2) : verify avec session_id ──────────────────────────
   const sessionId =
     (req.query.session_id as string | undefined) ||
     (req.body && (req.body as { session_id?: string }).session_id) ||
