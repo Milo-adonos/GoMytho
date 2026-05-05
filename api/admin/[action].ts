@@ -32,29 +32,52 @@ const ADMIN_STATS_EPOCH_ISO = '2026-04-30T00:00:00+02:00'
 const ADMIN_STATS_EPOCH_MS = new Date(ADMIN_STATS_EPOCH_ISO).getTime()
 
 /**
- * Baseline annulations (churn). Toute annulation Stripe dont `canceled_at`
- * est antérieur à cette date est IGNORÉE par le panel admin (cancelledAllTime,
- * cancelledLast30d, churnRate, churnCount, totalSubscribersAllTime).
+ * Baseline annulations (churn) — fallback hardcodé. La VRAIE valeur est lue
+ * depuis `public.admin_settings.key='churn_epoch_ms'` à chaque requête,
+ * pour pouvoir être réinitialisée à la volée depuis le panel admin
+ * (Paramètres → « Réinitialiser le compteur d'annulations »).
  *
- * Pourquoi : on a annulé/remboursé manuellement des abonnements sur Stripe
- * (ménage de tests, doublons, demandes de remboursement). Ces actions
- * n'étaient PAS du churn business — c'est nous qui avons coupé. On
- * pousse donc régulièrement la baseline à la date du dernier ménage pour
- * repartir d'une base propre. Tout abandon SPONTANÉ après cette date
- * sera compté normalement.
+ * Toute annulation Stripe dont `canceled_at` est antérieur à cette baseline
+ * est IGNORÉE (cancelledAllTime, cancelledLast30d, churnRate, churnCount,
+ * totalSubscribersAllTime, validRevenueCustomerIds).
  *
- * Dernier reset : 2026-05-05 ~14h45 (annulations + remboursements de tests).
+ * Raison : annulations / remboursements faits par l'admin via le Dashboard
+ * Stripe (ménage de tests, doublons, demandes de remboursement). Ces actions
+ * ne sont PAS du churn business. À chaque vague de ménage, on clique
+ * « Réinitialiser » pour repartir d'une base propre — toutes les annulations
+ * SPONTANÉES (par les vrais users) après cette date seront comptées.
  */
-const ADMIN_CHURN_EPOCH_ISO = '2026-05-05T14:45:00+02:00'
-const ADMIN_CHURN_EPOCH_MS = new Date(ADMIN_CHURN_EPOCH_ISO).getTime()
+const ADMIN_CHURN_EPOCH_FALLBACK_ISO = '2026-05-05T14:45:00+02:00'
+const ADMIN_CHURN_EPOCH_FALLBACK_MS = new Date(ADMIN_CHURN_EPOCH_FALLBACK_ISO).getTime()
+
+async function getChurnEpochMs(
+  supabase: ReturnType<typeof getSupabase>,
+): Promise<number> {
+  if (!supabase) return ADMIN_CHURN_EPOCH_FALLBACK_MS
+  try {
+    const { data, error } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('key', 'churn_epoch_ms')
+      .maybeSingle()
+    if (error || !data?.value) return ADMIN_CHURN_EPOCH_FALLBACK_MS
+    const ms = Number(data.value)
+    return Number.isFinite(ms) && ms > 0 ? ms : ADMIN_CHURN_EPOCH_FALLBACK_MS
+  } catch {
+    return ADMIN_CHURN_EPOCH_FALLBACK_MS
+  }
+}
 
 function stripeCreatedOnOrAfterEpoch(tsSeconds: number): boolean {
   return tsSeconds * 1000 >= ADMIN_STATS_EPOCH_MS
 }
 
-function cancellationOnOrAfterChurnEpoch(canceledAtSec: number | null | undefined): boolean {
+function cancellationOnOrAfterChurnEpoch(
+  canceledAtSec: number | null | undefined,
+  churnEpochMs: number,
+): boolean {
   if (!canceledAtSec) return false
-  return canceledAtSec * 1000 >= ADMIN_CHURN_EPOCH_MS
+  return canceledAtSec * 1000 >= churnEpochMs
 }
 
 function mythoOnOrAfterEpoch(iso: string): boolean {
@@ -294,7 +317,11 @@ function planFromPriceId(priceId: string | undefined | null): 'weekly' | 'monthl
   return 'unknown'
 }
 
-async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string>): Promise<StripeStats> {
+async function fetchStripeStats(
+  stripe: Stripe,
+  panelExcludedEmails: Set<string> | undefined,
+  churnEpochMs: number,
+): Promise<StripeStats> {
   const exc = panelExcludedEmails && panelExcludedEmails.size > 0 ? panelExcludedEmails : null
   const skipEmail = (e: string | null | undefined) => (exc ? isPanelExcludedEmail(e, exc) : false)
 
@@ -363,7 +390,7 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   for (const sub of canceledSubs.data) {
     if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
     if (skipEmail(subscriptionCustomerEmail(sub))) continue
-    if (!cancellationOnOrAfterChurnEpoch(sub.canceled_at || 0)) continue
+    if (!cancellationOnOrAfterChurnEpoch(sub.canceled_at || 0, churnEpochMs)) continue
     const cid = subscriptionCustomerId(sub)
     if (cid) validRevenueCustomerIds.add(cid)
   }
@@ -437,8 +464,8 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
     if (skipEmail(subscriptionCustomerEmail(sub))) continue
     const cat = sub.canceled_at || 0
     // Filtre baseline churn : on ignore tout désabonnement antérieur au
-    // « repart de zéro » (cf. ADMIN_CHURN_EPOCH_ISO).
-    if (!cancellationOnOrAfterChurnEpoch(cat)) continue
+    // « repart de zéro » (cf. churnEpochMs lu en DB).
+    if (!cancellationOnOrAfterChurnEpoch(cat, churnEpochMs)) continue
     if (cat >= thirtyDaysAgo) cancelledLast30d++
   }
 
@@ -446,7 +473,7 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   const cancelledAllTime = canceledSubs.data.filter((s) =>
     stripeCreatedOnOrAfterEpoch(s.created) &&
     !skipEmail(subscriptionCustomerEmail(s)) &&
-    cancellationOnOrAfterChurnEpoch(s.canceled_at || 0),
+    cancellationOnOrAfterChurnEpoch(s.canceled_at || 0, churnEpochMs),
   ).length
   const totalSubscribersAllTime = activeSubscribers + cancelledAllTime
 
@@ -550,6 +577,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
         return await handlePurgeStatsEpoch(res)
       }
+      case 'reset-churn-epoch': {
+        if (req.method !== 'POST') {
+          res.status(405).json({ error: 'POST requis' })
+          return
+        }
+        return await handleResetChurnEpoch(res)
+      }
       case 'exclusions':
         return await handlePanelExclusions(req, res)
       default:
@@ -569,6 +603,7 @@ function emptyForAction(action: string) {
     case 'users': return { users: [], total: 0 }
     case 'settings': return { costPerImage: COST_PER_IMAGE, maintenanceMode: false, notificationEmail: '' }
     case 'purge-stats-epoch': return { ok: false }
+    case 'reset-churn-epoch': return { ok: false }
     case 'exclusions': return { exclusions: [] }
     default: return {}
   }
@@ -590,6 +625,7 @@ async function handleDashboard(res: VercelResponse) {
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30)
 
   const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
+  const churnEpochMs = await getChurnEpochMs(supabase)
 
   // Set des comptes Supabase ENCORE existants ET non-masqués. On y restreint
   // ensuite les mythos comptés. Sans ça, les mythos d'utilisateurs supprimés
@@ -626,7 +662,7 @@ async function handleDashboard(res: VercelResponse) {
   })()
 
   const [stripeStats, mythosData, storageMythos] = await Promise.all([
-    stripe ? fetchStripeStats(stripe, panelCtx.emails).catch((e) => {
+    stripe ? fetchStripeStats(stripe, panelCtx.emails, churnEpochMs).catch((e) => {
       console.error('[admin/dashboard] stripe error:', e?.message || e)
       return null
     }) : Promise.resolve(null),
@@ -872,6 +908,7 @@ async function handleFinance(res: VercelResponse) {
   const supabase = getSupabase()
   const stripe = getStripe()
   const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
+  const churnEpochMs = await getChurnEpochMs(supabase)
 
   const now = new Date()
   const currentYear = now.getFullYear()
@@ -924,14 +961,6 @@ async function handleFinance(res: VercelResponse) {
     ...stripeSubsCanceled,
   ])
 
-  const stripeInvoicesFiltered = stripeInvoices
-    .filter((inv) => stripeCreatedOnOrAfterEpoch(inv.created))
-    .filter((inv) => !isPanelExcludedEmail(inv.customer_email || null, panelCtx.emails))
-    .filter((inv) => {
-      const cid = invoiceStripeCustomerId(inv)
-      return !cid || !preEpochStripeCustFinance.has(cid)
-    })
-
   const stripeSubsActiveFiltered = stripeSubsActive.filter(
     (s) =>
       stripeCreatedOnOrAfterEpoch(s.created) &&
@@ -942,6 +971,35 @@ async function handleFinance(res: VercelResponse) {
       stripeCreatedOnOrAfterEpoch(s.created) &&
       !isPanelExcludedEmail(subscriptionCustomerEmail(s), panelCtx.emails),
   )
+
+  // ─── Set des Customer Stripe « comptés » ──────────────────────────────────
+  // Mêmes règles que `fetchStripeStats` (cohérence dashboard ↔ finance) :
+  //  • soit la sub est encore active (et créée après baseline stats),
+  //  • soit elle a été annulée APRÈS la baseline churn (vrai désabonnement
+  //    user). Tout sub annulée par l'admin AVANT la baseline est ignorée
+  //    → ses paiements n'apparaissent plus en CA.
+  const validRevenueCustomerIds = new Set<string>()
+  for (const sub of stripeSubsActiveFiltered) {
+    const cid = subscriptionCustomerId(sub)
+    if (cid) validRevenueCustomerIds.add(cid)
+  }
+  for (const sub of stripeSubsCanceledFiltered) {
+    if (!cancellationOnOrAfterChurnEpoch(sub.canceled_at || 0, churnEpochMs)) continue
+    const cid = subscriptionCustomerId(sub)
+    if (cid) validRevenueCustomerIds.add(cid)
+  }
+
+  const stripeInvoicesFiltered = stripeInvoices
+    .filter((inv) => stripeCreatedOnOrAfterEpoch(inv.created))
+    .filter((inv) => !isPanelExcludedEmail(inv.customer_email || null, panelCtx.emails))
+    .filter((inv) => {
+      const cid = invoiceStripeCustomerId(inv)
+      return !cid || !preEpochStripeCustFinance.has(cid)
+    })
+    .filter((inv) => {
+      const cid = invoiceStripeCustomerId(inv)
+      return !!cid && validRevenueCustomerIds.has(cid)
+    })
 
   // ─── 2. Supabase : analyses (mythos) des 6 derniers mois ──────────────────
   let mythos: Array<{ id: string; user_id: string; created_at: string }> = []
@@ -968,7 +1026,7 @@ async function handleFinance(res: VercelResponse) {
   const cancelledThisMonth = stripeSubsCanceledFiltered.filter(
     (s) =>
       (s.canceled_at || 0) >= startOfMonthTs &&
-      cancellationOnOrAfterChurnEpoch(s.canceled_at || 0),
+      cancellationOnOrAfterChurnEpoch(s.canceled_at || 0, churnEpochMs),
   ).length
 
   const mythosThisMonth = mythos.filter(m => new Date(m.created_at) >= startOfMonth)
@@ -1264,6 +1322,7 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
   const statusFilter = (req.query.status as string) || 'all'
 
   const panelCtx = supabase ? await getAdminPanelExclusionContext(supabase) : { userIds: new Set<string>(), emails: new Set<string>() }
+  const churnEpochMs = await getChurnEpochMs(supabase)
 
   // ─── 1. Liste tous les abonnés Stripe (active + canceled) ─────────────────
   type StripeUser = {
@@ -1283,7 +1342,7 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
       // exclus du panel : ces gens ne sont plus clients, donc plus dans la
       // liste « Utilisateurs ». S'ils annulent à nouveau dans le futur, ce
       // sera capturé par les agrégats churn (dashboard / finance) après la
-      // baseline `ADMIN_CHURN_EPOCH_MS`.
+      // baseline churnEpochMs (lue dynamiquement en DB).
       const subsActive = await stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] })
       // On charge aussi les canceled APRÈS la baseline churn = vrais churns
       // postérieurs au reset, qu'on veut afficher dans la liste pour le suivi.
@@ -1294,7 +1353,7 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
         ...subsCanceled.data.filter(
           (s) =>
             !isSubFromDeletedCustomer(s) &&
-            cancellationOnOrAfterChurnEpoch(s.canceled_at || 0),
+            cancellationOnOrAfterChurnEpoch(s.canceled_at || 0, churnEpochMs),
         ),
       ]
 
@@ -1497,6 +1556,35 @@ async function handleSettings(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true })
   }
   return res.status(405).json({ error: 'Méthode non autorisée' })
+}
+
+// Pousse `admin_settings.churn_epoch_ms` à NOW() côté DB. Conséquence :
+// toutes les annulations Stripe existantes (faites par l'admin via le
+// Dashboard) sont désormais antérieures à la baseline → exclues du panel
+// (cancelledAllTime, cancelledLast30d, churnRate, churnCount, et aussi du
+// CA puisque les invoices de ces customers sortent de validRevenueCustomerIds).
+// Les futures annulations (par les vrais users) seront comptées normalement.
+async function handleResetChurnEpoch(res: VercelResponse) {
+  const supabase = getSupabase()
+  if (!supabase) return res.status(500).json({ error: 'Supabase non configuré' })
+  const nowMs = Date.now()
+  try {
+    const { error } = await supabase
+      .from('admin_settings')
+      .upsert(
+        { key: 'churn_epoch_ms', value: String(nowMs), updated_at: new Date().toISOString() },
+        { onConflict: 'key' },
+      )
+    if (error) throw error
+    return res.status(200).json({
+      ok: true,
+      churn_epoch_ms: nowMs,
+      churn_epoch_iso: new Date(nowMs).toISOString(),
+    })
+  } catch (e: any) {
+    console.error('[admin/reset-churn-epoch]', e?.message || e)
+    return res.status(500).json({ error: e?.message || 'Reset impossible' })
+  }
 }
 
 // Supprime les lignes public.mythos antérieures à la baseline stats admin

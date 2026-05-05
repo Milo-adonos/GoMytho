@@ -8,6 +8,34 @@ export default function AdminSettings() {
   const [showPassword, setShowPassword] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [resettingChurn, setResettingChurn] = useState(false)
+  const [churnResetMsg, setChurnResetMsg] = useState<string | null>(null)
+
+  const handleResetChurn = async () => {
+    if (!confirm(
+      'Cette action exclut TOUTES les annulations Stripe actuelles du panel admin.\n\n' +
+      "À utiliser après avoir annulé / remboursé toi-même des abonnements depuis le Dashboard Stripe :\n" +
+      "ton ménage manuel ne polluera plus les chiffres (annulations, churn, CA).\n\n" +
+      'Les futures annulations (par les vrais utilisateurs) seront comptées normalement.\n\n' +
+      'Continuer ?'
+    )) return
+    setResettingChurn(true)
+    setChurnResetMsg(null)
+    try {
+      const r = await fetch('/api/admin/reset-churn-epoch', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      setChurnResetMsg('✓ Compteur d\'annulations réinitialisé. Rafraîchis le dashboard.')
+    } catch (e) {
+      setChurnResetMsg('Erreur : ' + (e instanceof Error ? e.message : 'inconnue'))
+    } finally {
+      setResettingChurn(false)
+      setTimeout(() => setChurnResetMsg(null), 6000)
+    }
+  }
 
   useEffect(() => {
     fetch('/api/admin/settings', { credentials: 'include' })
@@ -93,6 +121,30 @@ export default function AdminSettings() {
       <button onClick={handleSave} disabled={saving} className="w-full py-3 rounded-xl font-black bg-lime text-primary-bg transition-all active:scale-95 disabled:opacity-50">
         {saving ? 'Sauvegarde...' : saved ? '✓ Sauvegardé !' : 'Sauvegarder les paramètres'}
       </button>
+
+      {/* Réinitialisation du compteur d'annulations */}
+      <div className="rounded-2xl p-5 space-y-4" style={{ background: '#141826', border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div>
+          <p className="text-sm font-bold text-white">Compteur d'annulations</p>
+          <p className="text-xs text-text-secondary mt-1 leading-relaxed">
+            Quand tu annules / rembourses toi-même un abonnement depuis le Dashboard Stripe,
+            ça n'est PAS du churn business. Clique ici pour exclure toutes les annulations
+            actuelles du panel. Les futures annulations (par les vrais utilisateurs) seront
+            comptées normalement.
+          </p>
+        </div>
+        <button
+          onClick={handleResetChurn}
+          disabled={resettingChurn}
+          className="w-full py-3 rounded-xl font-bold text-sm transition-all active:scale-95 disabled:opacity-50"
+          style={{ background: 'rgba(198,255,60,0.08)', border: '1px solid rgba(198,255,60,0.25)', color: '#C6FF3C' }}
+        >
+          {resettingChurn ? 'Réinitialisation…' : 'Réinitialiser le compteur d\'annulations'}
+        </button>
+        {churnResetMsg && (
+          <p className={`text-xs ${churnResetMsg.startsWith('Erreur') ? 'text-red-400' : 'text-lime'}`}>{churnResetMsg}</p>
+        )}
+      </div>
     </div>
   )
 }

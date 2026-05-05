@@ -82,32 +82,38 @@ ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mythos ENABLE ROW LEVEL SECURITY;
 
 -- Policies pour users
+DROP POLICY IF EXISTS "Users can view their own data" ON public.users;
 CREATE POLICY "Users can view their own data"
     ON public.users
     FOR SELECT
     USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can update their own data" ON public.users;
 CREATE POLICY "Users can update their own data"
     ON public.users
     FOR UPDATE
     USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can insert their own data" ON public.users;
 CREATE POLICY "Users can insert their own data"
     ON public.users
     FOR INSERT
     WITH CHECK (auth.uid() = id);
 
 -- Policies pour mythos
+DROP POLICY IF EXISTS "Users can view their own mythos" ON public.mythos;
 CREATE POLICY "Users can view their own mythos"
     ON public.mythos
     FOR SELECT
     USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert their own mythos" ON public.mythos;
 CREATE POLICY "Users can insert their own mythos"
     ON public.mythos
     FOR INSERT
     WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete their own mythos" ON public.mythos;
 CREATE POLICY "Users can delete their own mythos"
     ON public.mythos
     FOR DELETE
@@ -119,7 +125,8 @@ VALUES ('mythos', 'mythos', true)
 ON CONFLICT (id) DO NOTHING;
 
 -- Policy upload: l'utilisateur upload dans son dossier {uid}/...
-CREATE POLICY IF NOT EXISTS "Authenticated users can upload own mythos"
+DROP POLICY IF EXISTS "Authenticated users can upload own mythos" ON storage.objects;
+CREATE POLICY "Authenticated users can upload own mythos"
 ON storage.objects
 FOR INSERT
 TO authenticated
@@ -129,14 +136,16 @@ WITH CHECK (
 );
 
 -- Policy lecture publique
-CREATE POLICY IF NOT EXISTS "Public can read mythos"
+DROP POLICY IF EXISTS "Public can read mythos" ON storage.objects;
+CREATE POLICY "Public can read mythos"
 ON storage.objects
 FOR SELECT
 TO public
 USING (bucket_id = 'mythos');
 
 -- Policy suppression: uniquement son dossier
-CREATE POLICY IF NOT EXISTS "Users can delete own mythos"
+DROP POLICY IF EXISTS "Users can delete own mythos" ON storage.objects;
+CREATE POLICY "Users can delete own mythos"
 ON storage.objects
 FOR DELETE
 TO authenticated
@@ -182,6 +191,20 @@ CREATE INDEX IF NOT EXISTS idx_admin_panel_exclusions_user_id ON public.admin_pa
 
 COMMENT ON TABLE public.admin_panel_exclusions IS
     'Comptes exclus du panel admin (stats, analyses, liste utilisateurs) ; les données restent en base.';
+
+-- ─── Table admin_settings ────────────────────────────────────────────────
+-- Couple clé / valeur pour des paramètres d'admin modifiables sans redeploy.
+-- Ex: 'churn_epoch_ms' = timestamp en ms à partir duquel les annulations
+-- Stripe sont comptées dans le panel (les annulations antérieures = ménage
+-- manuel / remboursements admin et ne doivent pas polluer le churn business).
+CREATE TABLE IF NOT EXISTS public.admin_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE public.admin_settings IS
+    'Paramètres d''admin modifiables à chaud (clé/valeur).';
 
 -- Vue pour les statistiques (optionnel)
 CREATE OR REPLACE VIEW public.user_stats AS
