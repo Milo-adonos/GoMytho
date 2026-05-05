@@ -185,20 +185,33 @@ export async function claimSubscriptionByPaymentEmail(
     return { ok: false, reason: 'invalid_email', error: 'Email invalide.' }
   }
   try {
-    const res = await fetch('/api/stripe-verify', {
+    const res = await fetch('/api/stripe-verify?action=claim', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ action: 'claim', email }),
+      body: JSON.stringify({ email }),
     })
-    const data = (await res.json().catch(() => null)) as
+    const rawText = await res.text()
+    let parsed: unknown = null
+    if (rawText) {
+      try {
+        parsed = JSON.parse(rawText)
+      } catch {
+        parsed = null
+      }
+    }
+    const data = parsed as
       | ClaimSubscriptionResult
       | { ok?: unknown; reason?: string; error?: string }
       | null
-    if (!data) {
-      return { ok: false, reason: 'server_error', error: 'Réponse serveur invalide.' }
+    if (!data || typeof data !== 'object') {
+      const hint =
+        rawText && rawText.trim().startsWith('<')
+          ? 'Le serveur a renvoyé une page HTML au lieu de JSON (souvent une erreur de déploiement ou une URL incorrecte).'
+          : `Réponse vide ou invalide (HTTP ${res.status}). Réessaie dans quelques secondes.`
+      return { ok: false, reason: 'server_error', error: hint }
     }
     if ((data as { ok: boolean }).ok === true) {
       return data as Extract<ClaimSubscriptionResult, { ok: true }>

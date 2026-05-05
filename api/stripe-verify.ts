@@ -3,6 +3,40 @@ import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { retrieveAndBuildCheckoutPayload } from './_lib/stripe-checkout-payload'
 
+/**
+ * Normalise `req.body` côté Vercel : selon runtime / Content-Type, la POST
+ * peut arriver comme objet déjà parsé, chaîne JSON brute, ou Buffer.
+ * Sans ça, `action: 'claim'` et `email` sont parfois invisibles → la requête
+ * ne déclenche pas le mode claim (symptôme côté client : parsing JSON KO ou
+ * erreur générique « réponse serveur invalide »).
+ */
+function normalizePostBody(req: VercelRequest): Record<string, unknown> {
+  const raw = req.body as unknown
+  if (raw == null || raw === '') return {}
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(raw)) {
+    try {
+      const parsed = JSON.parse(raw.toString('utf8')) as unknown
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>
+  return {}
+}
+
 // ─── Vérification + sync forcée d'un paiement Stripe ──────────────────────
 //
 // Endpoint appelé après le redirect Stripe → /paiementreussi?session_id=...
@@ -344,40 +378,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  const action =
-    (req.query.action as string | undefined) ||
-    (req.body && (req.body as { action?: string }).action) ||
-    ''
+  const postBody = req.method === 'POST' ? normalizePostBody(req) : {}
+  const qAction = typeof req.query.action === 'string' ? req.query.action.trim().toLowerCase() : ''
+  const bodyAction =
+    typeof postBody.action === 'string' ? postBody.action.trim().toLowerCase() : ''
+  const action = qAction || bodyAction || ''
 
   // ─── Mode (3) : claim — récupérer un abo Stripe par email ───────────────
   if (action === 'claim') {
-    if (!supabaseUrl || !serviceKey) {
+    try {
+      if (!supabaseUrl || !serviceKey) {
+        return res.status(500).json({
+          ok: false,
+          reason: 'server_error',
+          error: 'Configuration Supabase serveur incomplète.',
+        })
+      }
+      const emailRaw =
+        (typeof postBody.email === 'string' ? postBody.email : '') ||
+        (typeof req.query.email === 'string' ? req.query.email : '') ||
+        ''
+      const stripe = new Stripe(stripeSecret)
+      const result = await handleClaim(
+        stripe,
+        supabaseUrl,
+        serviceKey,
+        anonKey,
+        req.headers.authorization,
+        emailRaw,
+      )
+      return res.status(result.status).json(result.body)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[stripe-verify] claim fatal', msg)
       return res.status(500).json({
         ok: false,
         reason: 'server_error',
-        error: 'Configuration Supabase serveur incomplète.',
+        error: msg || 'Erreur serveur inattendue pendant la récupération.',
       })
     }
-    const email =
-      (req.body && (req.body as { email?: string }).email) ||
-      (req.query.email as string | undefined) ||
-      ''
-    const stripe = new Stripe(stripeSecret)
-    const result = await handleClaim(
-      stripe,
-      supabaseUrl,
-      serviceKey,
-      anonKey,
-      req.headers.authorization,
-      email,
-    )
-    return res.status(result.status).json(result.body)
   }
 
   // ─── Modes (1) et (2) : verify avec session_id ──────────────────────────
   const sessionId =
-    (req.query.session_id as string | undefined) ||
-    (req.body && (req.body as { session_id?: string }).session_id) ||
+    (typeof req.query.session_id === 'string' ? req.query.session_id : '') ||
+    (typeof postBody.session_id === 'string' ? postBody.session_id : '') ||
     ''
 
   if (!sessionId || typeof sessionId !== 'string') {
