@@ -343,6 +343,79 @@ export default function AppLayout() {
         cachePlanLocally(stripePayload.plan, stripePayload.credits)
       }
 
+      // ─── 4bis. Filet « optimiste fort » : si on revient de Stripe avec
+      //          un session_id valide ET un pending_plan posé par /signup
+      //          (= preuve quasi-certaine que l'utilisateur revient bien
+      //          d'un checkout Stripe payé), on accorde l'accès basé sur
+      //          le plan choisi avant Stripe.
+      //
+      //          On arrive ici uniquement si :
+      //            • la DB n'a pas encore d'abo, ET
+      //            • stripe-verify n'a rien renvoyé (côté serveur Vercel
+      //              il y a un souci : variables d'env Supabase manquantes,
+      //              clé Stripe en mauvais mode, webhook en retard, etc.)
+      //
+      //          Plutôt que d'envoyer l'utilisateur sur /login (signOut
+      //          + perte de session), on lui donne accès à l'app. La
+      //          prochaine reconnexion sans session_id ré-évaluera la
+      //          DB — qui aura été synchronisée entretemps par le webhook
+      //          ou un retry stripe-verify. Si vraiment l'utilisateur
+      //          n'a pas payé, sa session Stripe sera invalide et il
+      //          n'aura pas d'accès au prochain refresh.
+      if (
+        !hasPaidGoMythoAccess(dbUser) &&
+        !stripePayload &&
+        expectsWebhook &&
+        pendingPlan &&
+        resolvedSessionId
+      ) {
+        const optimisticCredits = pendingPlan === 'weekly'
+          ? PLAN_CREDITS.weekly
+          : PLAN_CREDITS.monthly
+        console.warn(
+          '[AppLayout] accès optimiste basé sur pending_plan — stripe-verify a échoué côté serveur, ' +
+          'la sync DB se fera quand le webhook arrivera. Vérifie les variables d\'env Vercel : ' +
+          'SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, STRIPE_SECRET_KEY.',
+        )
+        dbUser = {
+          ...(dbUser || {
+            id: authUser.id,
+            email: authUser.email,
+            created_at: new Date().toISOString(),
+          }),
+          plan: pendingPlan,
+          subscription_status: 'active' as const,
+          credits_remaining: optimisticCredits,
+        }
+        cachePlanLocally(pendingPlan, optimisticCredits)
+
+        // Tente quand même un dernier retry stripe-verify en arrière-plan,
+        // sans bloquer l'UI : si ça finit par marcher, la prochaine
+        // navigation/refresh aura les vrais chiffres en DB.
+        if (session.access_token) {
+          void (async () => {
+            for (let i = 0; i < 6; i += 1) {
+              await new Promise((r) => setTimeout(r, 5000))
+              try {
+                const r = await fetch('/api/stripe-verify', {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${session.access_token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ session_id: resolvedSessionId }),
+                })
+                const data = await r.json().catch(() => null)
+                if (r.ok && data?.synced) {
+                  console.info('[AppLayout] sync DB Stripe finalement OK en arrière-plan.')
+                  break
+                }
+              } catch { /* ignore */ }
+            }
+          })()
+        }
+      }
+
       // Identifie l'utilisateur dans PostHog (no-op si non configuré).
       try {
         const { identifyUser } = await import('@/lib/analytics')
