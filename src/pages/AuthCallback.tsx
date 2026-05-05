@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import {
+  claimSubscriptionByPaymentEmail,
   fetchAccessProfile,
   hasPaidGoMythoAccess,
   NO_SUBSCRIPTION_FLAG_KEY,
@@ -55,6 +56,47 @@ export default function AuthCallback() {
     const proceed = async (userId: string, userEmail: string | null) => {
       if (resolved || cancelled) return
       resolved = true
+
+      // ─── Cas 0 : flux de RÉCUPÉRATION via Google (anciens clients) ──────
+      // Le user vient de cliquer « Récupérer avec mon compte Google » sur
+      // /login. Il a fourni l'email Stripe qu'on a stocké en sessionStorage
+      // avant le redirect. Maintenant qu'il est authentifié via Google, on
+      // lance le claim côté serveur pour rattacher l'abo.
+      const isClaimFlow = searchParams.get('claim') === '1'
+      let claimStripeEmail: string | null = null
+      try {
+        claimStripeEmail = sessionStorage.getItem('gomytho_claim_stripe_email')
+      } catch { /* ignore */ }
+      if (isClaimFlow && claimStripeEmail) {
+        try { sessionStorage.removeItem('gomytho_claim_stripe_email') } catch { /* ignore */ }
+        setMessage('Récupération de ton abonnement…')
+        const { data: { session: claimSession } } = await supabase.auth.getSession()
+        const token = claimSession?.access_token
+        if (!token) {
+          try {
+            sessionStorage.setItem(
+              NO_SUBSCRIPTION_FLAG_KEY,
+              'Connexion Google interrompue. Réessaie.',
+            )
+          } catch { /* ignore */ }
+          navigate('/login', { replace: true })
+          return
+        }
+        const result = await claimSubscriptionByPaymentEmail(token, claimStripeEmail)
+        if (result.ok) {
+          navigate('/makemytho', { replace: true })
+          return
+        }
+        // Échec → on déconnecte (le compte Google qu'on vient de créer/ouvrir
+        // n'a pas d'abo lié, on évite qu'il reste comme zombie connecté) puis
+        // on renvoie vers /login avec le message d'erreur précis.
+        try {
+          sessionStorage.setItem(NO_SUBSCRIPTION_FLAG_KEY, result.error)
+        } catch { /* ignore */ }
+        try { await supabase.auth.signOut() } catch { /* ignore */ }
+        navigate('/login', { replace: true })
+        return
+      }
 
       // ─── Cas 1 : flux d'inscription Google → Stripe ─────────────────────
       // Le user vient de cliquer « Continuer avec Google » sur /signup pour
