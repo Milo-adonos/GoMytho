@@ -1,7 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import Stripe from 'stripe'
-import { createClient } from '@supabase/supabase-js'
-import { retrieveAndBuildCheckoutPayload, type VerifiedCheckoutPayload } from './_lib/stripe-checkout-payload'
+import type StripeType from 'stripe'
+
+// Imports lourds en DYNAMIC : sur Node v24+ Vercel, certains modules
+// (notamment le SDK Stripe) plantent au top-level → FUNCTION_INVOCATION_FAILED.
+// On charge tout dans le handler avec un try/catch dédié pour avoir
+// un message JSON clair en cas d'échec.
 
 // Durée max côté Vercel ; le corps doit rester brut pour la signature Stripe
 // (lecture via flux req, sans parsing JSON amont).
@@ -22,25 +25,21 @@ function readRawBody(req: VercelRequest): Promise<Buffer> {
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+type VerifiedCheckoutPayload = {
+  plan: 'weekly' | 'monthly'
+  credits: number
+  subscription_status: 'active' | 'trialing'
+  email: string | null
+  customerId: string | null
+}
+
 async function syncSupabaseUserFromPayload(
   supabaseUrl: string,
   serviceKey: string,
   payload: VerifiedCheckoutPayload,
-  /**
-   * `client_reference_id` posé par le frontend dans la session Checkout
-   * (au moment du redirect vers Stripe). On y stocke TOUJOURS le user.id
-   * Supabase de l'utilisateur authentifié — cf. nouveau flux « inscription
-   * AVANT paiement » : on a la garantie que le compte existe déjà et que
-   * son ID est connu côté client. Avec ça, plus aucun match d'email n'est
-   * nécessaire — la liaison se fait par ID, donc :
-   *   • Apple Pay / Google Pay / Revolut Pay / alias → email Stripe peut
-   *     être totalement différent, ça marche quand même
-   *   • Cross-device / casse / accents → idem, ça marche
-   *   • Pas de race condition « webhook avant signup » → l'utilisateur
-   *     existe forcément.
-   */
   clientReferenceId: string | null,
 ) {
+  const { createClient } = await import('@supabase/supabase-js')
   const emailNorm = payload.email?.trim().toLowerCase() || ''
   const cid = payload.customerId || ''
   const row = {
@@ -53,8 +52,7 @@ async function syncSupabaseUserFromPayload(
   const supabase = createClient(supabaseUrl, serviceKey)
   let updated = false
 
-  // ─── 1. PRIORITÉ ABSOLUE : client_reference_id (= user.id Supabase) ──
-  // C'est la voie « propre » du nouveau flux. Si elle marche, on s'arrête là.
+  // 1. Priorité : client_reference_id (= user.id Supabase)
   if (clientReferenceId && UUID_REGEX.test(clientReferenceId)) {
     const r0 = await supabase
       .from('users')
@@ -64,7 +62,7 @@ async function syncSupabaseUserFromPayload(
     if (r0.data?.length) updated = true
   }
 
-  // ─── 2. Fallback email (anciens comptes / liens non passés par /signup) ──
+  // 2. Fallback email
   if (!updated && emailNorm) {
     const r1 = await supabase.from('users').update(row).eq('email', emailNorm).select('id')
     if (r1.data?.length) { updated = true }
@@ -84,20 +82,13 @@ async function syncSupabaseUserFromPayload(
   return updated
 }
 
-/**
- * Enregistre le checkout dans `stripe_pending_links` pour qu'il soit
- * récupérable par session_id / customer_id / email lors d'une connexion
- * ultérieure — même si le user Supabase n'existe pas encore, ou s'inscrit
- * plus tard sur un autre device avec un email différent.
- *
- * Idempotent : `session_id` est PRIMARY KEY → upsert.
- */
 async function recordPendingLink(
   supabaseUrl: string,
   serviceKey: string,
   sessionId: string,
   payload: VerifiedCheckoutPayload,
 ) {
+  const { createClient } = await import('@supabase/supabase-js')
   const supabase = createClient(supabaseUrl, serviceKey)
   const row = {
     session_id: sessionId,
@@ -125,9 +116,7 @@ async function recordPendingLink(
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Wrap absolu : aucune exception ne doit faire passer Vercel en
-  // « A server error has occurred » (= message générique de la
-  // plateforme quand la fonction crash sans répondre). On veut TOUJOURS
-  // un JSON explicite avec la raison, lisible dans Stripe → Webhooks.
+  // FUNCTION_INVOCATION_FAILED. Réponse JSON garantie en toutes circonstances.
   try {
     if (req.method !== 'POST') {
       return res.status(405).json({ error: 'Method not allowed' })
@@ -167,16 +156,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: `Invalid body: ${msg}` })
     }
 
-    let stripe: Stripe
+    // Imports lourds en dynamic.
+    let Stripe: typeof StripeType
+    try {
+      const m = await import('stripe')
+      Stripe = m.default
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[stripe-webhook] Stripe SDK import', msg)
+      return res.status(500).json({ error: `Stripe SDK import: ${msg}` })
+    }
+
+    let retrieveAndBuildCheckoutPayload: typeof import('./_lib/stripe-checkout-payload').retrieveAndBuildCheckoutPayload
+    try {
+      const helper = await import('./_lib/stripe-checkout-payload')
+      retrieveAndBuildCheckoutPayload = helper.retrieveAndBuildCheckoutPayload
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[stripe-webhook] helper import', msg)
+      return res.status(500).json({ error: `Helper import: ${msg}` })
+    }
+
+    let stripe: StripeType
     try {
       stripe = new Stripe(stripeSecret)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       console.error('[stripe-webhook] Stripe SDK init', msg)
-      return res.status(500).json({ error: `Stripe SDK init failed: ${msg}` })
+      return res.status(500).json({ error: `Stripe SDK init: ${msg}` })
     }
 
-    let event: Stripe.Event
+    let event: StripeType.Event
     try {
       event = stripe.webhooks.constructEvent(buf, sig, whSecret)
     } catch (e) {
@@ -188,7 +198,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       switch (event.type) {
         case 'checkout.session.completed': {
-          const session = event.data.object as Stripe.Checkout.Session
+          const session = event.data.object as StripeType.Checkout.Session
           const payload = await retrieveAndBuildCheckoutPayload(stripe, session.id)
           const clientReferenceId =
             typeof session.client_reference_id === 'string' && session.client_reference_id.trim()
@@ -221,7 +231,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({ received: true })
   } catch (fatal) {
-    // Filet ultime — JAMAIS « A server error has occurred » côté Stripe.
     const msg = fatal instanceof Error ? fatal.message : String(fatal)
     const stack = fatal instanceof Error ? fatal.stack : ''
     console.error('[stripe-webhook] FATAL:', msg, stack)
