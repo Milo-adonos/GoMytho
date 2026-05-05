@@ -128,16 +128,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).send('Method not allowed')
   }
 
-  const stripeSecret = process.env.STRIPE_SECRET_KEY
-  const whSecret = process.env.STRIPE_WEBHOOK_SECRET
-  // Variables sans préfixe VITE_ : disponibles partout côté serverless Vercel.
+  const stripeSecret = (process.env.STRIPE_SECRET_KEY || '').trim()
+  const whSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim()
   const supabaseUrl =
     (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim() || ''
   const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() || ''
 
-  if (!stripeSecret || !whSecret) {
-    console.error('[stripe-webhook] missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET')
-    return res.status(500).json({ error: 'Webhook non configuré' })
+  // Diagnostic explicite : on liste précisément quelle variable manque.
+  // Le message de retour est lu dans Stripe Dashboard → Webhooks → Réponse.
+  const missing: string[] = []
+  if (!stripeSecret) missing.push('STRIPE_SECRET_KEY')
+  if (!whSecret) missing.push('STRIPE_WEBHOOK_SECRET')
+  if (!supabaseUrl) missing.push('SUPABASE_URL')
+  if (!serviceKey) missing.push('SUPABASE_SERVICE_ROLE_KEY')
+  if (missing.length) {
+    const errMsg = `Variables d'env Vercel manquantes : ${missing.join(', ')}`
+    console.error('[stripe-webhook]', errMsg)
+    return res.status(500).json({ error: errMsg })
   }
 
   const sig = req.headers['stripe-signature']
@@ -201,8 +208,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         break
     }
   } catch (e) {
-    console.error('[stripe-webhook] handler', e)
-    return res.status(500).json({ error: 'Traitement webhook échoué' })
+    const msg = e instanceof Error ? e.message : String(e)
+    const stack = e instanceof Error ? e.stack : ''
+    console.error('[stripe-webhook] handler exception:', msg, stack)
+    return res.status(500).json({
+      error: `Traitement webhook échoué : ${msg}`,
+    })
   }
 
   return res.status(200).json({ received: true })
