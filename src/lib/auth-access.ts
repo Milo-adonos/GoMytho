@@ -30,14 +30,23 @@ export type UserAccessProfile = {
  * Utilisé sur /choixoffre pour ne pas demander à un client payant de
  * repasser à la caisse, et sur les pages de login pour bloquer les
  * comptes non payants.
+ *
+ * Important : on ne considère PAS le simple fait d'avoir un
+ * `stripe_customer_id` comme une preuve d'accès payant. Un Customer
+ * Stripe persiste après refund / cancel / abandon de paiement, et un
+ * vieux test peut laisser une référence orpheline en DB. La preuve
+ * fiable, c'est :
+ *   - des crédits > 0 (l'abo a été payé et le quota n'est pas épuisé)
+ *   OU
+ *   - un plan weekly/monthly avec un statut qui donne droit à l'accès
+ *     (active, trialing, cancelled — cancelled = annulé mais accès
+ *     conservé jusqu'à la fin de la période payée).
  */
 export function hasPaidGoMythoAccess(profile: UserAccessProfile): boolean {
   if (!profile) return false
 
   const credits = profile.credits_remaining ?? 0
   if (credits > 0) return true
-
-  if (profile.stripe_customer_id) return true
 
   const plan = profile.plan
   const status = profile.subscription_status

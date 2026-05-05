@@ -323,29 +323,36 @@ export default function AppLayout() {
         } catch { /* ignore */ }
       }
 
-      // ─── 3. Vérification accès payant ───────────────────────────────────
-      // Avec le nouveau flux (inscription AVANT Stripe), le webhook fait
-      // toujours la liaison par user.id. Si après le polling la DB ne
-      // confirme toujours pas, on éjecte vers /login.
-      // Exception : si on est en attente du webhook (justFromStripe ou
-      // pendingPlan), on laisse l'utilisateur sur l'app — la prochaine
-      // navigation re-lira la DB.
-      if (!expectsWebhook && !hasPaidGoMythoAccess(dbUser)) {
+      // ─── 3. Vérification accès payant (filet final) ─────────────────────
+      // Ici on a déjà :
+      //   - lu la DB,
+      //   - pollé pendant 6 s si on attendait le webhook,
+      //   - appelé stripe-verify en fallback (qui force la sync DB).
+      // Si AUCUN de ces filets ne donne un abo, c'est que l'utilisateur
+      // n'a tout simplement pas payé (a abandonné le checkout, a fermé la
+      // page Stripe, ou a payé mais Stripe n'a pas encore propagé). On
+      // refuse l'accès à l'app — c'est ce qui empêche un user qui n'a pas
+      // finalisé son paiement d'arriver dans l'interface payante.
+      if (!hasPaidGoMythoAccess(dbUser)) {
         try {
           sessionStorage.setItem(
             NO_SUBSCRIPTION_FLAG_KEY,
-            "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
+            expectsWebhook
+              ? "On n'a pas encore reçu la confirmation de ton paiement. Si tu viens de payer, attends quelques secondes et reconnecte-toi. Sinon, choisis une offre pour commencer."
+              : "Ce compte n'a pas d'abonnement actif. Choisis une offre pour commencer.",
           )
         } catch { /* ignore */ }
+        // Purge le pending_plan : il était valide pour ce parcours-ci, mais
+        // si l'utilisateur revient demain sans avoir payé, on ne veut pas
+        // qu'il continue de bypass à cause de ce flag local.
+        try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
         try { await supabase.auth.signOut() } catch { /* ignore */ }
         window.location.replace('/login')
         return
       }
 
-      // Si on était en attente du webhook et qu'il a livré → purge le flag
-      if (hasPaidGoMythoAccess(dbUser)) {
-        try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
-      }
+      // Abo confirmé → purge le flag d'attente
+      try { localStorage.removeItem('gomytho_pending_plan') } catch { /* ignore */ }
 
       // ─── 4. Construction de l'objet user (DB > cache local > défaut) ────────
       let resolvedUser: AppUser

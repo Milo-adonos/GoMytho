@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 import Header from '@/components/Header'
 import Button from '@/components/Button'
 import { supabase } from '@/lib/supabase'
-import { hasPaidGoMythoAccess } from '@/lib/auth-access'
+import { fetchAccessProfile, hasPaidGoMythoAccess } from '@/lib/auth-access'
 
 // ─── Page d'inscription PRÉ-paiement ─────────────────────────────────────
 //
@@ -142,6 +142,15 @@ export default function Signup() {
       if (!session) {
         setError('📧 Vérifie tes mails (et les spams) pour confirmer ton compte, puis recommence.')
         setIsLoading(false)
+        return
+      }
+
+      // Anti-double paiement : si signUp a en fait reconnecté un compte
+      // existant (Supabase peut le faire si email_confirmed = false), et
+      // que ce compte a DÉJÀ un abo actif, on évite le paiement en double.
+      const existing = await fetchAccessProfile(session.user.id)
+      if (hasPaidGoMythoAccess(existing)) {
+        window.location.replace('/makemytho')
         return
       }
 
