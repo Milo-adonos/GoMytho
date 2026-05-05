@@ -60,6 +60,11 @@ export default function AuthCallback() {
       // Le user vient de cliquer « Continuer avec Google » sur /signup pour
       // s'abonner. On le bascule directement sur le Payment Link Stripe avec
       // son user.id en client_reference_id.
+      //
+      // EXCEPTION : si ce compte Google a DÉJÀ un abo actif (cas du user qui
+      // se serait abonné par le passé puis re-clique « Continuer avec Google »
+      // depuis /signup par erreur), on l'envoie directement dans l'app pour
+      // éviter un double paiement.
       const planFromQuery = searchParams.get('signup_to_stripe')
       let planFromStorage: string | null = null
       try {
@@ -68,6 +73,12 @@ export default function AuthCallback() {
       } catch { /* ignore */ }
       const wantedPlan = planFromQuery || planFromStorage
       if (wantedPlan === 'weekly' || wantedPlan === 'monthly') {
+        // Vérif anti-double-paiement
+        const existing = await fetchAccessProfile(userId)
+        if (hasPaidGoMythoAccess(existing)) {
+          navigate('/makemytho', { replace: true })
+          return
+        }
         const link = buildPaymentLink(PAYMENT_LINKS[wantedPlan], {
           userId,
           email: userEmail,

@@ -252,6 +252,41 @@ export default function AppLayout() {
         }
       }
 
+      // ─── Filet de sécurité : webhook Stripe lent ou perdu ───────────────
+      // Si après 6 s de polling DB on n'a toujours pas l'abo ET qu'on a un
+      // session_id en URL, on force la sync côté serveur via stripe-verify
+      // (qui interroge Stripe directement et écrit dans Supabase). Couvre :
+      //   • webhook arrivé en plus de 6 s (rare)
+      //   • webhook perdu (incident Stripe)
+      //   • signature webhook KO (config Vercel manquante)
+      const sessionIdFromUrl = (searchParams.get('session_id') || '').trim()
+      if (
+        expectsWebhook &&
+        !hasPaidGoMythoAccess(dbUser) &&
+        sessionIdFromUrl &&
+        session.access_token
+      ) {
+        try {
+          const r = await fetch('/api/stripe-verify', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ session_id: sessionIdFromUrl }),
+          })
+          const data = await r.json().catch(() => null)
+          if (r.ok && data?.synced) {
+            // La sync a écrit en DB → on relit
+            dbUser = await fetchProfile()
+          } else if (!r.ok) {
+            console.warn('[AppLayout] stripe-verify fallback KO', data)
+          }
+        } catch (e) {
+          console.warn('[AppLayout] stripe-verify fallback exception', e)
+        }
+      }
+
       // Identifie l'utilisateur dans PostHog (no-op si non configuré).
       try {
         const { identifyUser } = await import('@/lib/analytics')
