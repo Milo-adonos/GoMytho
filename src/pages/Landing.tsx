@@ -424,6 +424,29 @@ export default function Landing() {
           >
             Commencer maintenant →
           </button>
+
+          {/* Encadré contact */}
+          <a
+            href="mailto:gomytho.prank@gmail.com"
+            className="block mt-10 mx-auto max-w-sm rounded-2xl px-5 py-4 transition-all active:scale-[0.98] hover:border-lime/40"
+            style={{
+              background: 'rgba(20,24,38,0.7)',
+              border: '1px solid rgba(198,255,60,0.18)',
+              backdropFilter: 'blur(8px)',
+            }}
+          >
+            <div className="flex items-center justify-center gap-3">
+              <span className="text-2xl">✉️</span>
+              <div className="text-left">
+                <p className="text-xs uppercase tracking-widest text-text-secondary font-bold">
+                  Une question ? Un souci ?
+                </p>
+                <p className="text-sm font-black text-lime mt-0.5" style={{ wordBreak: 'break-all' }}>
+                  gomytho.prank@gmail.com
+                </p>
+              </div>
+            </div>
+          </a>
         </div>
       </section>
 
@@ -435,7 +458,7 @@ export default function Landing() {
             <a href="#" className="hover:text-lime transition-colors active:text-lime">Mentions légales</a>
             <a href="#" className="hover:text-lime transition-colors active:text-lime">CGU</a>
             <a href="#" className="hover:text-lime transition-colors active:text-lime">Confidentialité</a>
-            <a href="#" className="hover:text-lime transition-colors active:text-lime">Contact</a>
+            <a href="mailto:gomytho.prank@gmail.com" className="hover:text-lime transition-colors active:text-lime">Contact</a>
           </div>
           <p className="text-xs text-text-secondary/50">© 2026 GoMytho</p>
           <p style={{ fontSize: '11px', color: 'rgba(138,143,160,0.4)' }}>
