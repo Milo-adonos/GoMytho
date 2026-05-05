@@ -124,97 +124,111 @@ async function recordPendingLink(
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).send('Method not allowed')
-  }
-
-  const stripeSecret = (process.env.STRIPE_SECRET_KEY || '').trim()
-  const whSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim()
-  const supabaseUrl =
-    (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim() || ''
-  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() || ''
-
-  // Diagnostic explicite : on liste précisément quelle variable manque.
-  // Le message de retour est lu dans Stripe Dashboard → Webhooks → Réponse.
-  const missing: string[] = []
-  if (!stripeSecret) missing.push('STRIPE_SECRET_KEY')
-  if (!whSecret) missing.push('STRIPE_WEBHOOK_SECRET')
-  if (!supabaseUrl) missing.push('SUPABASE_URL')
-  if (!serviceKey) missing.push('SUPABASE_SERVICE_ROLE_KEY')
-  if (missing.length) {
-    const errMsg = `Variables d'env Vercel manquantes : ${missing.join(', ')}`
-    console.error('[stripe-webhook]', errMsg)
-    return res.status(500).json({ error: errMsg })
-  }
-
-  const sig = req.headers['stripe-signature']
-  if (!sig || typeof sig !== 'string') {
-    return res.status(400).send('Missing stripe-signature')
-  }
-
-  let buf: Buffer
+  // Wrap absolu : aucune exception ne doit faire passer Vercel en
+  // « A server error has occurred » (= message générique de la
+  // plateforme quand la fonction crash sans répondre). On veut TOUJOURS
+  // un JSON explicite avec la raison, lisible dans Stripe → Webhooks.
   try {
-    buf = await readRawBody(req)
-    if (!buf.length && typeof req.body === 'string') {
-      buf = Buffer.from(req.body)
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' })
     }
-  } catch (e) {
-    console.error('[stripe-webhook] read body', e)
-    return res.status(400).send('Invalid body')
-  }
 
-  const stripe = new Stripe(stripeSecret)
-  let event: Stripe.Event
-  try {
-    event = stripe.webhooks.constructEvent(buf, sig, whSecret)
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error('[stripe-webhook] signature', msg)
-    return res.status(400).send(`Webhook Error: ${msg}`)
-  }
+    const stripeSecret = (process.env.STRIPE_SECRET_KEY || '').trim()
+    const whSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim()
+    const supabaseUrl =
+      (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim() || ''
+    const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim() || ''
 
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session
-        const payload = await retrieveAndBuildCheckoutPayload(stripe, session.id)
-        // `client_reference_id` est posé par le frontend (Unlock.tsx /
-        // Signup.tsx) avec le user.id Supabase de l'utilisateur authentifié.
-        // C'est la clé de liaison la plus fiable — elle survit à TOUS les
-        // mismatches d'email (Apple Pay, alias, casse…).
-        const clientReferenceId =
-          typeof session.client_reference_id === 'string' && session.client_reference_id.trim()
-            ? session.client_reference_id.trim()
-            : null
-        if (supabaseUrl && serviceKey && payload) {
-          // 1) On garde l'enregistrement dans stripe_pending_links comme
-          //    filet pour les flux exotiques (paiement direct via lien
-          //    partagé sans passer par /signup).
-          await recordPendingLink(supabaseUrl, serviceKey, session.id, payload)
-          // 2) Tentative de mise à jour directe de la table `users` : par
-          //    user.id en priorité (client_reference_id), fallback email.
-          await syncSupabaseUserFromPayload(
-            supabaseUrl,
-            serviceKey,
-            payload,
-            clientReferenceId,
-          )
-        } else if (!payload) {
-          console.warn('[stripe-webhook] checkout.session.completed — payload null', session.id)
-        }
-        break
+    const missing: string[] = []
+    if (!stripeSecret) missing.push('STRIPE_SECRET_KEY')
+    if (!whSecret) missing.push('STRIPE_WEBHOOK_SECRET')
+    if (!supabaseUrl) missing.push('SUPABASE_URL')
+    if (!serviceKey) missing.push('SUPABASE_SERVICE_ROLE_KEY')
+    if (missing.length) {
+      const errMsg = `Variables d'env Vercel manquantes : ${missing.join(', ')}`
+      console.error('[stripe-webhook]', errMsg)
+      return res.status(500).json({ error: errMsg })
+    }
+
+    const sig = req.headers['stripe-signature']
+    if (!sig || typeof sig !== 'string') {
+      return res.status(400).json({ error: 'Missing stripe-signature' })
+    }
+
+    let buf: Buffer
+    try {
+      buf = await readRawBody(req)
+      if (!buf.length && typeof req.body === 'string') {
+        buf = Buffer.from(req.body)
       }
-      default:
-        break
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[stripe-webhook] read body', msg)
+      return res.status(400).json({ error: `Invalid body: ${msg}` })
     }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    const stack = e instanceof Error ? e.stack : ''
-    console.error('[stripe-webhook] handler exception:', msg, stack)
-    return res.status(500).json({
-      error: `Traitement webhook échoué : ${msg}`,
-    })
-  }
 
-  return res.status(200).json({ received: true })
+    let stripe: Stripe
+    try {
+      stripe = new Stripe(stripeSecret)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[stripe-webhook] Stripe SDK init', msg)
+      return res.status(500).json({ error: `Stripe SDK init failed: ${msg}` })
+    }
+
+    let event: Stripe.Event
+    try {
+      event = stripe.webhooks.constructEvent(buf, sig, whSecret)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[stripe-webhook] signature', msg)
+      return res.status(400).json({ error: `Webhook signature failed: ${msg}` })
+    }
+
+    try {
+      switch (event.type) {
+        case 'checkout.session.completed': {
+          const session = event.data.object as Stripe.Checkout.Session
+          const payload = await retrieveAndBuildCheckoutPayload(stripe, session.id)
+          const clientReferenceId =
+            typeof session.client_reference_id === 'string' && session.client_reference_id.trim()
+              ? session.client_reference_id.trim()
+              : null
+          if (payload) {
+            await recordPendingLink(supabaseUrl, serviceKey, session.id, payload)
+            await syncSupabaseUserFromPayload(
+              supabaseUrl,
+              serviceKey,
+              payload,
+              clientReferenceId,
+            )
+          } else {
+            console.warn('[stripe-webhook] checkout.session.completed — payload null', session.id)
+          }
+          break
+        }
+        default:
+          break
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      const stack = e instanceof Error ? e.stack : ''
+      console.error('[stripe-webhook] handler exception:', msg, stack)
+      return res.status(500).json({
+        error: `Traitement webhook échoué : ${msg}`,
+      })
+    }
+
+    return res.status(200).json({ received: true })
+  } catch (fatal) {
+    // Filet ultime — JAMAIS « A server error has occurred » côté Stripe.
+    const msg = fatal instanceof Error ? fatal.message : String(fatal)
+    const stack = fatal instanceof Error ? fatal.stack : ''
+    console.error('[stripe-webhook] FATAL:', msg, stack)
+    try {
+      return res.status(500).json({ error: `Webhook fatal: ${msg}` })
+    } catch {
+      return res.status(500).end(`Webhook fatal: ${msg}`)
+    }
+  }
 }
