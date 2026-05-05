@@ -36,12 +36,16 @@ const ADMIN_STATS_EPOCH_MS = new Date(ADMIN_STATS_EPOCH_ISO).getTime()
  * est antérieur à cette date est IGNORÉE par le panel admin (cancelledAllTime,
  * cancelledLast30d, churnRate, churnCount, totalSubscribersAllTime).
  *
- * Pourquoi : avant cette date, des annulations / suppressions ont été faites
- * manuellement sur Stripe (ménage de tests, retraits de gratuités, etc.).
- * Elles ne reflètent pas un vrai churn business → on les neutralise pour
- * repartir d'une base propre. Tout abandon FUTUR sera compté normalement.
+ * Pourquoi : on a annulé/remboursé manuellement des abonnements sur Stripe
+ * (ménage de tests, doublons, demandes de remboursement). Ces actions
+ * n'étaient PAS du churn business — c'est nous qui avons coupé. On
+ * pousse donc régulièrement la baseline à la date du dernier ménage pour
+ * repartir d'une base propre. Tout abandon SPONTANÉ après cette date
+ * sera compté normalement.
+ *
+ * Dernier reset : 2026-05-05 ~14h45 (annulations + remboursements de tests).
  */
-const ADMIN_CHURN_EPOCH_ISO = '2026-04-30T17:00:00+02:00'
+const ADMIN_CHURN_EPOCH_ISO = '2026-05-05T14:45:00+02:00'
 const ADMIN_CHURN_EPOCH_MS = new Date(ADMIN_CHURN_EPOCH_ISO).getTime()
 
 function stripeCreatedOnOrAfterEpoch(tsSeconds: number): boolean {
@@ -142,16 +146,38 @@ async function getAdminPanelExclusionContext(
   return { userIds, emails }
 }
 
+function isDeletedCustomer(c: unknown): boolean {
+  return (
+    typeof c === 'object' &&
+    c !== null &&
+    'deleted' in c &&
+    (c as { deleted?: boolean }).deleted === true
+  )
+}
+
 function subscriptionCustomerEmail(sub: Stripe.Subscription): string | null {
   const c = sub.customer
   if (typeof c === 'string') return null
+  if (isDeletedCustomer(c)) return null
   return (c as Stripe.Customer)?.email || null
 }
 
 function subscriptionCustomerId(sub: Stripe.Subscription): string | null {
   const c = sub.customer
   if (typeof c === 'string') return c
+  if (isDeletedCustomer(c)) return null
   return (c as Stripe.Customer)?.id || null
+}
+
+/**
+ * `true` si le Customer Stripe attaché à cette subscription a été supprimé
+ * sur Stripe (ménage manuel d'un compte test / doublon / refund). On
+ * exclut ces subs partout (elles n'ont plus de sens business).
+ */
+function isSubFromDeletedCustomer(sub: Stripe.Subscription): boolean {
+  const c = sub.customer
+  if (typeof c === 'string') return false
+  return isDeletedCustomer(c)
 }
 
 function invoiceStripeCustomerId(inv: Stripe.Invoice): string | null {
@@ -160,6 +186,66 @@ function invoiceStripeCustomerId(inv: Stripe.Invoice): string | null {
   if (c && typeof c === 'object' && 'deleted' in c && (c as { deleted?: boolean }).deleted) return null
   if (c && typeof c === 'object' && 'id' in c) return String((c as { id?: string }).id || '') || null
   return null
+}
+
+function invoiceChargeId(inv: Stripe.Invoice): string | null {
+  const c = (inv as { charge?: string | Stripe.Charge | null }).charge
+  if (!c) return null
+  if (typeof c === 'string') return c || null
+  return (c as Stripe.Charge | null)?.id || null
+}
+
+/**
+ * Récupère la totalité des remboursements Stripe SUCCESS depuis `sinceMs`,
+ * agrégés par charge ID. Permet ensuite de calculer le CA NET (montant
+ * payé − montant remboursé) par invoice.
+ *
+ * Pourquoi : Stripe ne fournit pas `invoice.amount_refunded` directement
+ * dans la liste des invoices. La seule source fiable côté serveur c'est
+ * la liste des refunds, qu'on indexe par charge associé.
+ */
+async function fetchRefundedAmountsByCharge(
+  stripe: Stripe,
+  sinceMs: number,
+): Promise<Map<string, number>> {
+  const sinceSec = Math.max(0, Math.floor(sinceMs / 1000))
+  const refundsByCharge = new Map<string, number>()
+  let starting_after: string | undefined = undefined
+  for (let i = 0; i < 10; i++) {
+    const page: Stripe.ApiList<Stripe.Refund> = await stripe.refunds.list({
+      created: { gte: sinceSec },
+      limit: 100,
+      ...(starting_after ? { starting_after } : {}),
+    })
+    for (const r of page.data) {
+      // On ne compte que les remboursements RÉELLEMENT débités. `pending`,
+      // `failed`, `canceled` n'ont pas réduit la trésorerie de Stripe →
+      // ne pas les soustraire.
+      if (r.status !== 'succeeded') continue
+      const chargeId =
+        typeof r.charge === 'string' ? r.charge : (r.charge as Stripe.Charge | null)?.id
+      if (!chargeId) continue
+      refundsByCharge.set(chargeId, (refundsByCharge.get(chargeId) || 0) + (r.amount || 0))
+    }
+    if (!page.has_more) break
+    starting_after = page.data[page.data.length - 1]?.id
+  }
+  return refundsByCharge
+}
+
+/**
+ * Montant net (en CENTIMES) d'une invoice : `amount_paid - refunds_for_charge`.
+ * Si l'invoice a été intégralement remboursée → 0. Si remboursement partiel
+ * → différence positive. Jamais négatif (clamp à 0).
+ */
+function invoiceNetAmountCents(
+  inv: Stripe.Invoice,
+  refundsByCharge: Map<string, number>,
+): number {
+  const gross = inv.amount_paid || 0
+  const chargeId = invoiceChargeId(inv)
+  const refunded = chargeId ? (refundsByCharge.get(chargeId) || 0) : 0
+  return Math.max(0, gross - refunded)
 }
 
 /** Abonnements Stripe dont la première souscription connue (ligne courante) est antérieure au baseline panel. */
@@ -216,11 +302,16 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   const thirtyDaysAgo = now - 30 * 86400
   const sixtyDaysAgo = now - 60 * 86400
 
-  // Subscriptions actives + canceled (pour le churn) — on remonte 200 max
-  const [activeSubs, canceledSubs] = await Promise.all([
+  // Subscriptions actives + canceled (pour le churn) — on remonte 200 max.
+  // On filtre AU PASSAGE les subs dont le Customer a été supprimé sur Stripe :
+  // ces subs ne représentent plus aucun revenu/abonné réel et doivent
+  // disparaître de tous les agrégats du panel.
+  const [activeSubsRaw, canceledSubsRaw] = await Promise.all([
     stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] }),
     stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] }),
   ])
+  const activeSubs = { data: activeSubsRaw.data.filter((s) => !isSubFromDeletedCustomer(s)) }
+  const canceledSubs = { data: canceledSubsRaw.data.filter((s) => !isSubFromDeletedCustomer(s)) }
 
   const preEpochStripeCustomerIds = preEpochStripeCustomerIdsFromSubs([
     ...activeSubs.data,
@@ -243,6 +334,18 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
     if (!page.has_more) break
     starting_after = page.data[page.data.length - 1]?.id
   }
+
+  // ─── Remboursements ──────────────────────────────────────────────────────
+  // On les charge en parallèle puis on les soustrait du CA. Sans ça, un
+  // paiement remboursé apparaissait au CA brut, alors que la tréso Stripe
+  // l'a annulé.
+  const refundsByCharge = await fetchRefundedAmountsByCharge(
+    stripe,
+    Math.max(sixtyDaysAgo * 1000, ADMIN_STATS_EPOCH_MS),
+  ).catch((e) => {
+    console.warn('[admin] refunds fetch KO:', (e as Error)?.message)
+    return new Map<string, number>()
+  })
 
   // ─── Set des clients « valides » pour le CA ──────────────────────────────
   // On ne compte que les invoices dont le client est :
@@ -280,16 +383,19 @@ async function fetchStripeStats(stripe: Stripe, panelExcludedEmails?: Set<string
   for (const inv of invoices) {
     if (!isInvoiceCounted(inv)) continue
     const ts = inv.created
-    const amount = (inv.amount_paid || 0) / 100
+    // Montant NET = amount_paid − remboursement(s) du charge associé.
+    const amount = invoiceNetAmountCents(inv, refundsByCharge) / 100
+    if (amount <= 0) continue
     if (ts >= thirtyDaysAgo) revenue30d += amount
     else if (ts >= sixtyDaysAgo) revenuePrev30d += amount
     const day = new Date(ts * 1000).toISOString().split('T')[0]
     dailyRevenue[day] = (dailyRevenue[day] || 0) + amount
   }
 
-  // CA cumulé (uniquement clients valides → restart propre)
+  // CA cumulé NET (uniquement clients valides + remboursements déduits)
   const totalRevenueAllTime = invoices.reduce(
-    (acc, inv) => (isInvoiceCounted(inv) ? acc + (inv.amount_paid || 0) / 100 : acc),
+    (acc, inv) =>
+      isInvoiceCounted(inv) ? acc + invoiceNetAmountCents(inv, refundsByCharge) / 100 : acc,
     0,
   )
 
@@ -777,6 +883,7 @@ async function handleFinance(res: VercelResponse) {
   const stripeInvoices: Stripe.Invoice[] = []
   const stripeSubsActive: Stripe.Subscription[] = []
   const stripeSubsCanceled: Stripe.Subscription[] = []
+  let refundsByCharge = new Map<string, number>()
 
   if (stripe) {
     try {
@@ -793,9 +900,20 @@ async function handleFinance(res: VercelResponse) {
         starting_after = page.data[page.data.length - 1]?.id
       }
       const subsActive = await stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] })
-      stripeSubsActive.push(...subsActive.data)
+      stripeSubsActive.push(...subsActive.data.filter((s) => !isSubFromDeletedCustomer(s)))
       const subsCanceled = await stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] })
-      stripeSubsCanceled.push(...subsCanceled.data)
+      stripeSubsCanceled.push(...subsCanceled.data.filter((s) => !isSubFromDeletedCustomer(s)))
+
+      // Remboursements : on couvre toute la fenêtre des 6 mois pour pouvoir
+      // soustraire correctement même les remboursements anciens. Sans ça,
+      // les graphes mensuels resteraient sur le brut.
+      refundsByCharge = await fetchRefundedAmountsByCharge(
+        stripe,
+        Math.max(sixMonthsAgo.getTime(), ADMIN_STATS_EPOCH_MS),
+      ).catch((e) => {
+        console.warn('[admin/finance] refunds fetch KO:', (e as Error)?.message)
+        return new Map<string, number>()
+      })
     } catch (e: any) {
       console.error('[admin/finance] stripe error:', e?.message || e)
     }
@@ -837,10 +955,13 @@ async function handleFinance(res: VercelResponse) {
     mythos = (data || []) as any
   }
 
-  // ─── 3. Stats du mois en cours ────────────────────────────────────────────
+  // ─── 3. Stats du mois en cours (CA NET, remboursements déduits) ───────────
   const startOfMonthTs = Math.floor(startOfMonth.getTime() / 1000)
   const invoicesThisMonth = stripeInvoicesFiltered.filter((inv) => inv.created >= startOfMonthTs)
-  const revenueThisMonth = invoicesThisMonth.reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
+  const revenueThisMonth = invoicesThisMonth.reduce(
+    (acc, inv) => acc + invoiceNetAmountCents(inv, refundsByCharge) / 100,
+    0,
+  )
   const newSubsThisMonth = stripeSubsActiveFiltered.filter(
     (s) => s.created >= startOfMonthTs && stripeCreatedOnOrAfterEpoch(s.created),
   ).length
@@ -868,7 +989,7 @@ async function handleFinance(res: VercelResponse) {
 
     const rev = stripeInvoicesFiltered
       .filter(inv => inv.created >= mStart && inv.created < mEndTs)
-      .reduce((acc, inv) => acc + (inv.amount_paid || 0) / 100, 0)
+      .reduce((acc, inv) => acc + invoiceNetAmountCents(inv, refundsByCharge) / 100, 0)
     const mythosInMonth = mythos.filter(mt =>
       new Date(mt.created_at) >= m && new Date(mt.created_at) < mEnd
     )
@@ -892,11 +1013,24 @@ async function handleFinance(res: VercelResponse) {
     else if (plan === 'monthly') monthlyCount++
   }
 
-  // ─── 6. Top clients : analyses Supabase + email Stripe ────────────────────
+  // ─── 6. Top clients : on ne liste QUE les abonnés Stripe actifs ──────────
+  // Un compte annulé / remboursé n'a plus de raison d'apparaître dans le
+  // « Top clients par CA » : ils ne paient plus, et leur CA passé a déjà été
+  // soustrait via les remboursements. On part donc de la liste des subs
+  // Stripe actuellement actives + trialing, puis on enrichit avec les
+  // analyses générées (Supabase) et le CA réel encaissé sur 6 mois.
+  const activeStripeEmails = new Set<string>()
+  for (const sub of stripeSubsActiveFiltered) {
+    const em = normEmail(subscriptionCustomerEmail(sub))
+    if (em) activeStripeEmails.add(em)
+  }
+
   const mythosByUser: Record<string, number> = {}
   mythos.forEach(m => { mythosByUser[m.user_id] = (mythosByUser[m.user_id] || 0) + 1 })
 
-  // Map Supabase user.id → email + plan
+  // Map Supabase user.id → email + plan (on prend tous les ids ayant
+  // généré des mythos, on filtrera ensuite par appartenance à
+  // activeStripeEmails).
   const userMap: Record<string, { email: string; plan: string }> = {}
   if (supabase) {
     const ids = Object.keys(mythosByUser)
@@ -911,20 +1045,48 @@ async function handleFinance(res: VercelResponse) {
     }
   }
 
+  // CA NET réellement encaissé par customer Stripe sur la fenêtre 6 mois
+  const netRevenueByCustomer = new Map<string, number>()
+  for (const inv of stripeInvoicesFiltered) {
+    const cid = invoiceStripeCustomerId(inv)
+    if (!cid) continue
+    const net = invoiceNetAmountCents(inv, refundsByCharge) / 100
+    if (net <= 0) continue
+    netRevenueByCustomer.set(cid, (netRevenueByCustomer.get(cid) || 0) + net)
+  }
+
+  // Customer Stripe → email (depuis les subs actives)
+  const customerIdToEmail = new Map<string, string>()
+  for (const sub of stripeSubsActiveFiltered) {
+    const cid = subscriptionCustomerId(sub)
+    const em = normEmail(subscriptionCustomerEmail(sub))
+    if (cid && em) customerIdToEmail.set(cid, em)
+  }
+  // Email actif → CA NET
+  const netRevenueByEmail = new Map<string, number>()
+  for (const [cid, amount] of netRevenueByCustomer) {
+    const em = customerIdToEmail.get(cid)
+    if (!em) continue
+    netRevenueByEmail.set(em, (netRevenueByEmail.get(em) || 0) + amount)
+  }
+
   const topClients = Object.entries(mythosByUser)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5)
     .map(([userId, count]) => {
       const u = userMap[userId]
-      const rev = u?.plan === 'weekly' ? WEEKLY_PRICE * 4.33 : MONTHLY_PRICE
+      const em = normEmail(u?.email)
+      if (!em || !activeStripeEmails.has(em)) return null
+      const realRev = netRevenueByEmail.get(em) ?? 0
       return {
         email: u?.email || userId.slice(0, 8) + '...',
         plan: u?.plan || 'unknown',
         mythos: count,
-        revenue: +rev.toFixed(2),
+        revenue: +realRev.toFixed(2),
         cost: +(count * COST_PER_IMAGE).toFixed(2),
       }
     })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => b.revenue - a.revenue || b.mythos - a.mythos)
+    .slice(0, 5)
 
   return res.status(200).json({
     currentMonth: {
@@ -1116,20 +1278,34 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
 
   if (stripe) {
     try {
-      // Active
+      // On ne charge QUE les subs actives. Les subs annulées / les Customer
+      // supprimés sur Stripe (remboursements + ménage) sont volontairement
+      // exclus du panel : ces gens ne sont plus clients, donc plus dans la
+      // liste « Utilisateurs ». S'ils annulent à nouveau dans le futur, ce
+      // sera capturé par les agrégats churn (dashboard / finance) après la
+      // baseline `ADMIN_CHURN_EPOCH_MS`.
       const subsActive = await stripe.subscriptions.list({ status: 'active', limit: 100, expand: ['data.customer'] })
-      // Canceled
+      // On charge aussi les canceled APRÈS la baseline churn = vrais churns
+      // postérieurs au reset, qu'on veut afficher dans la liste pour le suivi.
       const subsCanceled = await stripe.subscriptions.list({ status: 'canceled', limit: 100, expand: ['data.customer'] })
 
-      const all = [...subsActive.data, ...subsCanceled.data]
-      for (const sub of all) {
+      const validSubs = [
+        ...subsActive.data.filter((s) => !isSubFromDeletedCustomer(s)),
+        ...subsCanceled.data.filter(
+          (s) =>
+            !isSubFromDeletedCustomer(s) &&
+            cancellationOnOrAfterChurnEpoch(s.canceled_at || 0),
+        ),
+      ]
+
+      for (const sub of validSubs) {
         if (!stripeCreatedOnOrAfterEpoch(sub.created)) continue
         const customer = sub.customer as Stripe.Customer | string
         const email = (typeof customer === 'string' ? '' : customer.email) || ''
         if (!email) continue
         const key = email.toLowerCase()
         const existing = stripeUsersByEmail.get(key)
-        if (existing) continue // garde la première (la plus récente vu l'ordre Stripe)
+        if (existing) continue // garde la première (active gagne sur cancelled vu l'ordre)
 
         const priceId = sub.items?.data?.[0]?.price?.id
         const p = planFromPriceId(priceId)
@@ -1232,6 +1408,20 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     (u) => !panelCtx.emails.has(normEmail(u.email)),
   )
   users = users.filter((u) => new Date(u.created_at).getTime() >= ADMIN_STATS_EPOCH_MS)
+
+  // Source de vérité Stripe : on ne garde QUE les comptes qui correspondent
+  // à un Customer Stripe encore présent (active OU canceled-après-baseline-
+  // churn). Cela élimine automatiquement :
+  //  - les comptes Supabase qui n'ont jamais payé (free, doublons),
+  //  - les comptes dont le Customer Stripe a été supprimé,
+  //  - les comptes dont la sub a été annulée AVANT la baseline churn
+  //    (= remboursés / annulés manuellement par toi).
+  // Si l'admin filtre explicitement par status, on respecte son choix.
+  const stripeKnownEmails = new Set<string>(stripeUsersByEmail.keys())
+  if (statusFilter === 'all') {
+    users = users.filter((u) => stripeKnownEmails.has(normEmail(u.email)))
+  }
+
   if (search) {
     const s = search.toLowerCase()
     users = users.filter(u => u.email.toLowerCase().includes(s))
